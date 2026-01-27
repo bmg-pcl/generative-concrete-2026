@@ -1,0 +1,16 @@
+numpy
+matplotlib
+plotly
+ipywidgets
+streamlit
+pandas
+jupyterlab
+pytest
+requests
+openpyxl
+xlrd
+xgboost
+scikit-learn
+bayesflow
+tensorflow
+tensorflow-probability
