@@ -264,3 +264,26 @@ This is the essence of engineering: not getting things right the first time, but
 *"The purpose of computing is insight, not numbers."* — Richard Hamming
 
 *Document Version 2.0 | January 2026*
+ 
+---
+
+## Appendix C: Models and Technical Types
+
+The table below lists the primary models, their implementation locations, and the technical type (ML/AI, chemical, or optimization algorithm).
+
+| Model / Artifact | Path | Technical Type |
+|---|---|---|
+| `Strength Predictor` (XGBoost regressor) | `src/models.py` / `models/strength_model.json` | ML / Supervised regression (Gradient Boosted Trees — XGBoost) |
+| `Predictive Mix Performance ` (Amortized inference) | `src/bayesian.py` | ML / Amortized Bayesian Inference (Normalizing Flows — generative/inference) |
+| `Genetic Mix Optimizer` | `src/ga.py` | Optimization / Metaheuristic (Genetic Algorithm — population-based search) |
+| `Simulated Annealing Optimizer` | `src/annealing.py` | Optimization / Metaheuristic (Simulated Annealing — thermodynamic-inspired search) |
+| `Simple Accrual Chemistry` | `src/chemistry_simple.py` | Chemical / Heuristic linear constitutive model (carbon & cost estimates) |
+| `Molecular Chemistry` | `src/chemistry_advanced.py` | Chemical / Molecular-level thermodynamic & kinetic model (Bogue, hydration, pozzolanic reactions) |
+| `Physics Heuristics` | `src/physics.py` | Empirical / Heuristic physics and cost-carbon utilities |
+| Strength model artifact | `models/strength_model.json` | ML artifact (serialized XGBoost model) |
+| Oxide composition data | `data/oxide_compositions.json` | Chemical reference data (oxide compositions for common SCMs/clinkers) |
+
+Notes:
+- ML models are trained or used for prediction/inference (supervised regression, amortized posterior sampling).
+- Chemical models implement domain physics or heuristics (forward simulations, Bogue calculation, hydration kinetics).
+- Optimization algorithms are search strategies used to explore the inverse design space and produce candidate mixes.
