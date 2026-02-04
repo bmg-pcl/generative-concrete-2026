@@ -301,6 +301,11 @@ with tab3:
             initial_temp = st.number_input("Initial Temperature", 100, 5000, 1000)
             cooling_rate = st.slider("Cooling Rate", 0.80, 0.99, 0.95)
             n_steps = st.number_input("Max Temperature Steps", 20, 200, 50)
+        
+        st.subheader("Objective Weights")
+        w_strength = st.slider("Strength Weight", 0.0, 2.0, 1.0, help="Weight for maximizing compressive strength.")
+        w_carbon = st.slider("Carbon Penalty Weight", 0.0, 1.0, 0.05, help="Weight for minimizing embodied carbon.")
+        w_cost = st.slider("Cost Penalty Weight", 0.0, 1.0, 0.5, help="Weight for minimizing material cost.")
     
     bounds = [(100, 550), (0, 360), (0, 200), (120, 250), (0, 30), (700, 1150), (550, 1000), (1, 365)]
     
@@ -312,7 +317,8 @@ with tab3:
         else:
             carbon = calculate_embodied_carbon(d)
         cost = calculate_mix_cost(d, st.session_state.costs)
-        return strength - 0.05 * carbon - 0.5 * cost
+        # Scalarized fitness: Maximize Strength, Minimize Carbon and Cost
+        return w_strength * strength - w_carbon * carbon - w_cost * cost
     
     if st.button("🚀 Run Live Optimization"):
         progress_bar = st.progress(0)
@@ -325,6 +331,7 @@ with tab3:
         pareto_placeholder = st.empty()
         
         history_best, history_avg, history_diversity = [], [], []
+        history_metrics = {"strength": [], "carbon": [], "cost": []}
         all_pareto_points = []
         
         if algorithm == "Genetic Algorithm (GA)":
@@ -339,6 +346,16 @@ with tab3:
                 # Calculate population diversity (mean standard deviation across genes)
                 diversity = np.mean(np.std(optimizer.population, axis=0))
                 history_diversity.append(diversity)
+                
+                # Track metrics for the best individual
+                best_ind, _ = optimizer.get_best()
+                best_d = {k: v for k, v in zip(param_names, best_ind)}
+                history_metrics["strength"].append(predictor.predict(best_ind))
+                if use_advanced_chemistry:
+                    history_metrics["carbon"].append(carbon_from_clinker(best_d.get("cement", 300)))
+                else:
+                    history_metrics["carbon"].append(calculate_embodied_carbon(best_d))
+                history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))
                 
                 for ind in optimizer.population:
                     d = {k: v for k, v in zip(param_names, ind)}
@@ -387,6 +404,16 @@ with tab3:
                 history_best.append(stats["best_fitness"])
                 history_avg.append(stats["current_fitness"])
                 
+                # Track metrics for the best solution
+                best_sol = sa.best
+                best_d = {k: v for k, v in zip(param_names, best_sol)}
+                history_metrics["strength"].append(predictor.predict(best_sol))
+                if use_advanced_chemistry:
+                    history_metrics["carbon"].append(carbon_from_clinker(best_d.get("cement", 300)))
+                else:
+                    history_metrics["carbon"].append(calculate_embodied_carbon(best_d))
+                history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))
+
                 for sol in [sa.current, sa.best]:
                     d = {k: v for k, v in zip(param_names, sol)}
                     all_pareto_points.append({
@@ -413,8 +440,37 @@ with tab3:
                     break
             
             final_pop = np.array([sa.best])
+            best_ind = sa.best
         
         st.success(f"Optimization complete! Best Fitness: {history_best[-1]:.2f}")
+        
+        # Display Best Solution Breakdown
+        b_col1, b_col2, b_col3, b_col4 = st.columns(4)
+        best_d = {k: v for k, v in zip(param_names, best_ind)}
+        with b_col1:
+            st.metric("Best Strength", f"{history_metrics['strength'][-1]:.1f} MPa")
+        with b_col2:
+            st.metric("Best Carbon", f"{history_metrics['carbon'][-1]:.1f} kg/m³")
+        with b_col3:
+            st.metric("Best Cost", f"${history_metrics['cost'][-1]:.2f}/m³")
+        with b_col4:
+            st.metric("Best Fitness", f"{history_best[-1]:.2f}")
+
+        # Metrics Evolution Plot
+        metrics_fig = go.Figure()
+        metrics_fig.add_trace(go.Scatter(y=history_metrics["strength"], name="Strength (MPa)", line=dict(color="#00E676")))
+        metrics_fig.add_trace(go.Scatter(y=history_metrics["carbon"], name="Carbon (kg/m³)", line=dict(color="#FFB300"), yaxis="y2"))
+        metrics_fig.add_trace(go.Scatter(y=history_metrics["cost"], name="Cost ($/m³)", line=dict(color="#E91E63"), yaxis="y3"))
+        
+        metrics_fig.update_layout(
+            template="plotly_dark", title="Evolution of Best Solution Metrics",
+            xaxis_title="Generation/Step",
+            yaxis=dict(title="Strength (MPa)", titlefont=dict(color="#00E676"), tickfont=dict(color="#00E676")),
+            yaxis2=dict(title="Carbon (kg/m³)", titlefont=dict(color="#FFB300"), tickfont=dict(color="#FFB300"), overlaying="y", side="right"),
+            yaxis3=dict(title="Cost ($/m³)", titlefont=dict(color="#E91E63"), tickfont=dict(color="#E91E63"), overlaying="y", side="right", anchor="free", autoshift=True),
+            height=400, showlegend=True, margin=dict(l=10, r=10, t=40, b=10)
+        )
+        st.plotly_chart(metrics_fig, use_container_width=True)
         
         st.subheader("Population Heatmap & Genetic Signatures")
         pop_df = pd.DataFrame(final_pop, columns=param_names)

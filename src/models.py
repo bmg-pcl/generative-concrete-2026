@@ -56,6 +56,34 @@ class StrengthPredictor:
             
         return float(self.model.predict(mix_design)[0])
 
+    def predict_variance(self, mix_design: np.ndarray) -> float:
+        """
+        Heuristic uncertainty estimator.
+        In a real production system, this would use an ensemble of models 
+        or a heteroscedastic loss function.
+        """
+        # Heuristic: Higher variance for 'exotic' mixes (e.g., very high SCM or low water)
+        # normalize typical ranges
+        cement = mix_design[0] if mix_design.ndim == 1 else mix_design[0, 0]
+        water = mix_design[3] if mix_design.ndim == 1 else mix_design[0, 3]
+        slag = mix_design[1] if mix_design.ndim == 1 else mix_design[0, 1]
+        ash = mix_design[2] if mix_design.ndim == 1 else mix_design[0, 2]
+        
+        w_c = water / max(cement, 1)
+        scm_ratio = (slag + ash) / max(cement, 1)
+        
+        variance = 2.0  # Base noise floor (from TECHNICAL_REPORT)
+        
+        # Increase variance for extreme w/c ratios
+        if w_c < 0.3 or w_c > 0.6:
+            variance += 2.0
+        
+        # Increase variance for high SCM replacement
+        if scm_ratio > 0.4:
+            variance += 1.5
+            
+        return variance
+
 if __name__ == "__main__":
     predictor = StrengthPredictor()
     predictor.train()

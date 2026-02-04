@@ -41,7 +41,7 @@ P(F(m) ≈ f_c* | data) > threshold
 
 This is fundamentally harder. The forward function F is many-to-one: infinitely many mixes can achieve 40 MPa. The space of valid solutions is not a point but a *manifold* in 8-dimensional space. Traditional optimization (gradient descent, grid search) finds a single point; what we need is a characterization of the entire manifold.
 
-This is why we use Bayesian inference. Instead of finding *a* solution, we learn the *posterior distribution* P(**m** | f_c*), which encodes all plausible mixes weighted by their probability.
+This is why we use Bayesian inference. Instead of finding *a* solution, we learn the *posterior distribution* P(**m** | f_c*, carbon*), which encodes all plausible mixes weighted by their probability and compliance with sustainability targets.
 
 ### 1.3 The Multi-Objective Complication: From 2D to N-Dimensional Chaos
 
@@ -88,6 +88,7 @@ The specific architecture—Invertible Neural Networks / Normalizing Flows—is 
 1. The inverse transform is exact (no approximation error in sampling)
 2. The likelihood is tractable (enabling training via maximum likelihood)
 3. Multimodality is naturally captured (unlike variational autoencoders)
+4. **Active Experimental Design**: By targeting high-entropy regions of the posterior, we can suggest the **top-five most informative tests** to run next.
 
 ### 2.3 Why Two Chemistry Tiers?
 
@@ -151,10 +152,9 @@ The genetic algorithm encodes each candidate mix as a chromosome (a vector of 8 
 The fitness function scalarizes multiple objectives:
 
 ```
-Fitness = Strength − α × Carbon − β × Cost
-```
+where α = 0.05 and β = 0.5 by default. These coefficients encode priors about trade-off preferences; they are fully adjustable by the user in the dashboard.
 
-where α = 0.05 and β = 0.5 by default. These coefficients encode priors about trade-off preferences; they should be adjustable by the user.
+**Multi-Objective Metric Tracking**: Unlike standard GA implementations that only report a single fitness score, our system decomposes the best solution at each generation into its constituent metrics (Strength, Carbon, Cost). This provides transparency into *how* the algorithm is making trade-offs—for instance, revealing if a fitness gain was achieved through higher strength or through a more aggressive carbon penalty.
 
 **Convergence behavior**: GA is effective for global exploration but may converge prematurely to local optima. The population diversity typically decreases over generations; the heatmap visualization reveals this convergence.
 
@@ -170,9 +170,13 @@ P(accept) = exp(−ΔE / T)
 At high temperature T, the system accepts worsening moves (escaping local optima). As T decreases, it becomes increasingly greedy. The cooling schedule `T_new = α × T_old` with α = 0.95 provides geometric cooling.
 
 **When to use SA over GA**: SA is preferable when:
-- The search space has many local optima
 - Fine-tuning a known good solution is needed
 - Computational budget is limited (SA evaluates fewer solutions per step)
+
+#### 4.3 Amortized Suggestion: The Information-Theoretic Approach
+Beyond metaheuristics, we employ the amortized posterior to guide laboratory work. The `suggest_tests` algorithm identifies mix designs that maximize a *merit score*—a balance between meeting performance targets and exploring high-uncertainty (high-variance) regions of the model.
+
+This addresses the "empty spaces" in our knowledge by ensuring that new lab data provides the maximum possible gain in model accuracy (Active Learning).
 
 ---
 

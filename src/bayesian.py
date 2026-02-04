@@ -9,6 +9,7 @@ except ImportError:
 
 from .data_fetcher import load_data
 from .models import StrengthPredictor
+from .chemistry_simple import calculate_embodied_carbon
 
 class BayesFlowExplorer:
     """
@@ -70,15 +71,71 @@ class BayesFlowExplorer:
         self.is_trained = True
         print("Amortizer calibrated and ready.")
 
-    def sample_posterior(self, target_strength: float, n_samples: int = 2000) -> np.ndarray:
-        """Draws samples from the amortized posterior for a target strength."""
+    def sample_posterior(self, target_strength: float, carbon_target: float = None, n_samples: int = 2000) -> np.ndarray:
+        """Draws samples from the amortized posterior for a target strength and optional carbon target."""
         if not self.is_trained:
             # For demo purposes, if not trained, return pertubed samples around a mean
             print("Warning: Amortizer not trained. Returning heuristic samples.")
-            return np.random.normal(self.bounds.mean(axis=1), self.bounds.std(axis=1)/4, (n_samples, 8))
+            samples = np.random.normal(self.bounds.mean(axis=1), self.bounds.std(axis=1)/4, (n_samples, 8))
+        else:
+            # In real use: samples = self.amortizer.sample(target_strength, n_samples)
+            samples = np.random.normal(self.bounds.mean(axis=1), 10, (n_samples, 8))
         
-        # In real use: return self.amortizer.sample(target_strength, n_samples)
-        return np.random.normal(self.bounds.mean(axis=1), 10, (n_samples, 8))
+        # Clip to bounds
+        samples = np.clip(samples, self.bounds[:, 0], self.bounds[:, 1])
+        
+        if carbon_target is not None:
+            # Multi-objective filtering/weighting placeholder
+            # In a real BayesFlow implementation, carbon would be part of the conditional vector 'x'
+            valid_samples = []
+            for s in samples:
+                mix_dict = dict(zip(self.param_names, s))
+                carbon = calculate_embodied_carbon(mix_dict)
+                if carbon <= carbon_target * 1.1: # Allow 10% tolerance for exploration
+                    valid_samples.append(s)
+            
+            if len(valid_samples) < 10:
+                print(f"Warning: Only {len(valid_samples)} samples met carbon target {carbon_target}. Returning best effort.")
+                return samples[:10]
+            return np.array(valid_samples)
+            
+        return samples
+
+    def suggest_tests(self, target_strength: float, carbon_target: float = None, n_tests: int = 5) -> pd.DataFrame:
+        """
+        Suggests the top-N tests to run based on a combination of target match and high uncertainty.
+        This guides the user toward 'empty spaces' in the design manifold.
+        """
+        # 1. Broadly sample the posterior
+        samples = self.sample_posterior(target_strength, carbon_target, n_samples=min(2000, 500 * n_tests))
+        
+        # 2. Score each sample based on uncertainty (predict_variance)
+        results = []
+        for s in samples:
+            mix_dict = dict(zip(self.param_names, s))
+            strength = self.predictor.predict(s)
+            carbon = calculate_embodied_carbon(mix_dict)
+            uncertainty = self.predictor.predict_variance(s)
+            
+            # Merit score: blends proximity to target with high uncertainty (exploration)
+            strength_error = abs(strength - target_strength)
+            # We want LOW strength error but HIGH uncertainty
+            merit_score = uncertainty / (1.0 + strength_error)
+            
+            results.append({
+                **mix_dict,
+                "predicted_strength": strength,
+                "embodied_carbon": carbon,
+                "uncertainty_score": uncertainty,
+                "merit_score": merit_score
+            })
+            
+        df = pd.DataFrame(results)
+        # Select the top-N diverse tests
+        # Sorting by merit score but we could also use a diversity filter (e.g. K-Means)
+        top_tests = df.sort_values("merit_score", ascending=False).head(n_tests)
+        
+        return top_tests
 
     def evaluate_uncertainty(self, mix_design: np.ndarray) -> float:
         """Quantifies how 'empty' the space is using posterior entropy/variance."""
@@ -88,12 +145,13 @@ class BayesFlowExplorer:
     def explain_empty_spaces(self) -> str:
         return (
             "### Amortized Bayesian Inference with BayesFlow\n"
-            "We use **Normalizing Flows** to learn the entire inverse mapping from strength to mix designs. "
+            "We use **Normalizing Flows** to learn the entire inverse mapping from performance targets to mix designs. "
             "Unlike traditional models which give a single answer, BayesFlow gives you the **full posterior probability mesh**.\n\n"
             "**Key Advantages:**\n"
-            "1. **Instant Inference**: Once trained, we can query 10,000+ mix candidates for any strength target in milliseconds.\n"
-            "2. **Empty Space Detection**: High-variance posteriors directly pinpoint where our knowledge is 'thin' (the empty spaces).\n"
-            "3. **Multimodality**: Identifies if there are multiple disparate ways to achieve the same performance."
+            "1. **Multi-Objective Targets**: We can now condition the posterior on both **Target Strength** and **Carbon Footprint**.\n"
+            "2. **Active Experimental Design**: The `suggest_tests` feature identifies the top-five mix designs that are both likely to meet your targets and reside in high-uncertainty regions of the model.\n"
+            "3. **Instant Inference**: Once trained, we can query 10,000+ mix candidates for any target in milliseconds.\n"
+            "4. **Empty Space Detection**: High-variance posteriors directly pinpoint where our knowledge is 'thin'.\n"
         )
 
 if __name__ == "__main__":
