@@ -1,1 +1,5 @@
 ./thisvenv
+
+.venv/
+__pycache__/
+*.pyc
