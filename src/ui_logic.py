@@ -113,12 +113,17 @@ def recommend_recipe(
     Returns the mix vector, its named params, and predicted strength/carbon/cost.
     """
     predictor = explorer.predictor
-    if method == "ga":
-        arr = np.array([explorer.designer.best_mix(target_strength, carbon_target=carbon_target)[k]
-                        for k in PARAM_NAMES], dtype=float)
-    elif method == "aco":
-        arr = np.array([explorer.aco_designer.best_mix(target_strength, carbon_target=carbon_target)[k]
-                        for k in PARAM_NAMES], dtype=float)
+    if method in ("ga", "aco"):
+        # Metaheuristics are stochastic and occasionally under-converge; keep the
+        # best candidate over a few cheap restarts so the recommended recipe is
+        # reliably close to the target.
+        designer = explorer.designer if method == "ga" else explorer.aco_designer
+        best_arr, best_err = None, np.inf
+        for _ in range(3):
+            ranked, errors = designer.design(target_strength, carbon_target=carbon_target)
+            if errors[0] < best_err:
+                best_err, best_arr = float(errors[0]), ranked[0]
+        arr = best_arr
     else:
         samples = explorer.sample_posterior(
             target_strength, carbon_target=carbon_target, n_samples=400, method=method

@@ -80,6 +80,7 @@ def test_scalarized_fitness_formula(predictor):
 
 def test_recommend_recipe_hits_target_ga():
     from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)  # deterministic: the GA is stochastic
     explorer = BayesFlowExplorer()
     rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS)
     assert abs(rec["strength"] - 45.0) < 4.0
