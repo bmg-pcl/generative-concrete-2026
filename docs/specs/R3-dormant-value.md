@@ -94,3 +94,20 @@ reach the user — plus one regression to fix:
 - EC2 correlation is for ordinary concrete; with exotics enabled the tensile label must
   inherit the "unvalidated" caveat (fibers change tensile behavior far more than the
   correlation admits).
+
+## Implementation notes (sonnet-ready)
+
+- **Start with R3.2 (tensile).** It is a pure function plus unit tests — no Streamlit
+  state — so it's the low-risk warm-up. R3.3 (mix ticket) is next: pure string/CSV.
+- **R3.4 hits the Streamlit keyed-widget trap — read R4's implementation note before
+  attempting it.** Restoring `transport_km` / `cement_type` / `chemistry_mode` means
+  those Config widgets must be keyed and their `st.session_state[key]` set *before* the
+  widget renders (via a callback or set-before-render), never after. If R4.1 hasn't
+  landed, apply the same set-before-render pattern to just the Config widgets here; do not
+  write a widget's session_state key after the widget is instantiated.
+- **Mix-ticket carbon breakdown must reuse the SAME `carbon_kwargs`** (factors, transport,
+  cement_type) as the displayed total, so the per-material breakdown sums exactly to the
+  shown carbon — the acceptance gate checks `Σ breakdown == displayed`.
+- **`suggest_tests` already exists** in `bayesian.py`; R3.1 is mostly wiring a tab + a
+  merit-formula tweak, not new inference. Cap `novelty` at 3 in the merit score so absurd
+  corners don't dominate the "informative" ranking.

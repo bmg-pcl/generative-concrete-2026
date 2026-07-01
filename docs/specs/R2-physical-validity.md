@@ -93,3 +93,22 @@ The generators can currently propose designs that are not valid concrete:
 - Fixing age narrows the achievable strength range at 28 d (no more 365-day cheats);
   targets near the top of the range will honestly report larger misses — this is the
   point, but the UI should say so.
+
+## Implementation notes (sonnet-ready)
+
+- **ESCALATE the flow retrain — do not attempt it to "complete" R2.1.** The "final
+  design" (BayesFlow θ 8→7, 2-D `(strength, age)` conditioning, re-standardisation, SBC
+  rerun, artifact `format_version`) is a research-grade change with many silent-failure
+  points; it is **out of scope for a sonnet-class implementer**. Ship the **interim
+  only**: add the `age` clamp to GA/ACO/NSGA, and when age is user-fixed route
+  `method="auto"`/`"flow"` to the GA designer with a UI note ("the trained flow ignores
+  the age setting — using the GA designer"). Leave a `TODO(flow-age-conditioning)` and
+  file the retrain as a separate senior task.
+- **Age clamp mechanics:** pass `age` into the designer/`run_nsga`; override *only* the
+  age dimension's `(xl, xu)` to `(age, age)`. `uniform(a, a) == a`, so GA init and
+  mutation collapse correctly; pymoo accepts `xl == xu`. Don't special-case age elsewhere.
+- **Volume tolerance is data-driven, not guessed:** compute `volume_error` over all 1,030
+  UCI rows FIRST, print the distribution, set `tol` to the 90th percentile. If the
+  pass-rate with the density table is < 80%, **widen `tol` and document it — do NOT tweak
+  densities to fit.** Record the measured distribution in the PR description.
+- Do R2.2 before R2.3; the workability flag is a pure heuristic and independent.

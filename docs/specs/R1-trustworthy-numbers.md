@@ -93,3 +93,21 @@ uses a hand-picked constant, duplicated inline in `ui_logic`.
   frame this as increased honesty, not decreased quality.
 - The OOS constraint can shrink NSGA's feasible region; if fronts collapse, relax the
   threshold percentile (95 → 97.5) rather than dropping the constraint.
+
+## Implementation notes (sonnet-ready)
+
+- **Method is CQR** (Conformalized Quantile Regression — Romano, Patterson & Candès,
+  NeurIPS 2019). Do not hand-roll a different conformal variant. Symmetric conformity
+  score `s_i = max(q_lo(x_i) − y_i, y_i − q_hi(x_i))`; correction `q̂` = the k-th smallest
+  `s` with `k = ceil((n_cal + 1) · 0.90)`; the interval is `[q_lo − q̂, q_hi + q̂]`. The
+  quantile indexing is the easy thing to get subtly wrong — **the coverage test is the
+  safety net; if it fails, fix the index, do NOT widen the test's [0.84, 0.97] band.**
+- **The mean model is unchanged.** Keep `self.model` trained on the full 80% `X_train`
+  (RMSE/R² must stay 4.65/0.92). Only the *quantile* model uses a fit/cal sub-split of
+  `X_train`. The 20% test split is read only by `test_interval_coverage` — never train on it.
+- **Robust defaults:** keep every function signature at `robust=False` so existing tests
+  stay green; only the *UI* passes `robust=True`. Do not change function defaults.
+- **Don't "tune" `w_oos` by feel** — set it to the smallest value that makes the robust
+  tests pass; start at 10 and raise only if a strongly-OOS mix still wins the front.
+- Sequencing within R1: do R1.1 then R1.2 (both add keys to `support.npz`; write both in
+  one `train()` pass and regenerate artifacts once), then R1.3.

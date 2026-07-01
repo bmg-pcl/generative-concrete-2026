@@ -97,3 +97,45 @@ failure or a growing tax:
 - The modularization (4.2) is the riskiest refactor in the set — mitigate by moving one
   tab per commit with the AppTest suite run between moves, and by doing it *after* the
   slider-key fix so widget keys move exactly once.
+
+## Implementation notes (sonnet-ready)
+
+### The Streamlit keyed-widget pattern (R4.1, and reused by R3.4) — READ THIS FIRST
+
+The failure mode: writing `st.session_state[key]` *after* a widget with that `key` has
+been instantiated in the same script run throws
+`StreamlitAPIException: st.session_state.<key> cannot be modified after the widget ... is
+instantiated`. Passing both `value=` and relying on a pre-set `session_state[key]` is also
+wrong. The working pattern:
+
+1. Give every mix slider a stable key: `st.slider(..., key=f"{param}_{slot}")`
+   (e.g. `cement_A`). **Do not pass `value=`** — let Streamlit persist under the key.
+2. Initialise the keys once in the state-init block:
+   `st.session_state.setdefault("cement_A", 300)`, etc.
+3. To "Load into Mix A" / apply a preset, write the keys via an **`on_click` callback**
+   (`st.button("Load into Mix A", on_click=_load, args=(rec,))`). A value written inside a
+   callback lands *before* the widgets instantiate on the following rerun — this is the
+   only clean way to set a keyed widget programmatically.
+4. Derive the mix vector from the keys each run:
+   `mix_a = np.array([st.session_state[f"{p}_A"] for p in PARAM_NAMES])` — drop the
+   parallel `st.session_state.mix_a` copy so there is one source of truth.
+5. **Verify with a value-propagation AppTest**, not a crash-only smoke: set a key, call
+   the load callback path, `.run()`, and assert the slider `.value` and the Mix-A metric
+   both changed. A "no exception" assertion will pass even if the bug is present.
+
+### R4.2 modularization
+
+- **Mechanical moves only** — no logic edits in a commit that moves a tab. Run the full
+  unit + AppTest suite between every move. Behaviour drift here is silent; the AppTest
+  suite is the harness, so keep each move small enough that a failure localises.
+- `AppContext` is *built by* `render_config()` and passed into the other renderers as an
+  argument — that argument dependency is what replaces the comment-guarded "Config runs
+  first" ordering. Delete the comment; the dataflow now enforces it.
+
+### R4.3 ruff
+
+- Run `ruff check .` once and triage in the SAME PR: fix trivial findings (unused imports,
+  f-strings without placeholders) and `# noqa` the intentional ones (e.g. `E402` after the
+  `pytest.importorskip`/path setup in tests). **Do not refactor logic to satisfy lint.**
+  If the count is large, scope ruff to `src/` + `tests/` first and add `app.py`/`ui/` once
+  R4.2 has split it.
