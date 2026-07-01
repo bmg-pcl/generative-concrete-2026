@@ -43,6 +43,14 @@ def test_nsga3_runs(predictor):
     assert out["front_size"] >= 2
 
 
+def test_nsga_front_is_volume_balanced(predictor):
+    """R2.2 gate: the NSGA front is batchable by construction (volume constraint)."""
+    from src.physical import volume_error, VOLUME_TOLERANCE
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=20)
+    errs = np.array([volume_error(dict(zip(PARAM_NAMES, m))) for m in out["mixes"]])
+    assert (errs <= VOLUME_TOLERANCE + 1e-6).all()
+
+
 def test_nsga_fixed_age(predictor):
     """R2.1 gate: NSGA holds a fixed design age across the whole front."""
     out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=12, age=28.0)

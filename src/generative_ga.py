@@ -27,6 +27,7 @@ from .ga import GeneticOptimizer
 from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
 from .data_fetcher import load_data
+from .physical import volume_error, enforce_volume, VOLUME_TOLERANCE
 
 # Canonical parameter order (matches the UCI columns and StrengthPredictor inputs).
 PARAM_NAMES: List[str] = [
@@ -36,6 +37,8 @@ PARAM_NAMES: List[str] = [
 
 # Robust-mode out-of-support penalty weight (MPa-scale). See docs/specs/R1.
 OOS_PENALTY_WEIGHT = 10.0
+# Volume-balance penalty weight (MPa-scale per m³ of imbalance). See docs/specs/R2.
+VOLUME_PENALTY_WEIGHT = 200.0
 
 
 def data_envelope(param_names: List[str] = PARAM_NAMES) -> np.ndarray:
@@ -99,10 +102,11 @@ class _InverseDesignerBase:
             else:
                 strength = self.predictor.predict(theta)
             error = abs(strength - target_strength)
+            mix = dict(zip(self.param_names, theta))
             if carbon_target is not None:
-                mix = dict(zip(self.param_names, theta))
-                carbon = calculate_embodied_carbon(mix)
-                error += max(0.0, carbon - carbon_target)
+                error += max(0.0, calculate_embodied_carbon(mix) - carbon_target)
+            # Physical validity: penalise mixes that don't fill ~1 m³ (always on).
+            error += VOLUME_PENALTY_WEIGHT * max(0.0, volume_error(mix) - VOLUME_TOLERANCE)
             if robust:
                 nov = float(self.predictor.novelty(theta)[0])
                 error += OOS_PENALTY_WEIGHT * max(0.0, nov - threshold)
@@ -159,15 +163,20 @@ class _InverseDesignerBase:
         jitter = np.random.normal(0.0, 1.0, (n_samples, self.n_dims)) * self._jitter
         samples = elite[idx] + jitter
         samples = np.clip(samples, eb[:, 0], eb[:, 1])
+        # Physical validity: repair any sample that violates the volume balance.
+        samples = np.array([[enforce_volume(dict(zip(self.param_names, s)))[p]
+                             for p in self.param_names] for s in samples])
+        samples = np.clip(samples, eb[:, 0], eb[:, 1])
         if age is not None:
-            samples[:, self._age_idx] = float(age)  # jitter must not un-pin age
+            samples[:, self._age_idx] = float(age)  # jitter/repair must not un-pin age
         return samples
 
     def best_mix(self, target_strength: float, carbon_target: Optional[float] = None,
                  robust: bool = False, age: Optional[float] = None) -> Dict[str, float]:
-        """Single best mix as a dict -- for one-shot callers like inverse_plan_mix."""
+        """Single best mix as a dict -- for one-shot callers like inverse_plan_mix.
+        Repaired to satisfy the volume balance if the search left it slightly off."""
         ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age)
-        return dict(zip(self.param_names, ranked[0]))
+        return enforce_volume(dict(zip(self.param_names, ranked[0])))
 
 
 class PopulationInverseDesigner(_InverseDesignerBase):

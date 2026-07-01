@@ -18,6 +18,7 @@ from .chemistry_simple import (
 )
 from .chemistry_advanced import embodied_carbon_advanced
 from .exotics import exotic_carbon, exotic_cost, exotic_strength_delta
+from .physical import workability_flag
 from .generative_ga import PARAM_NAMES  # single source of the 8-parameter order
 
 
@@ -65,6 +66,7 @@ def compute_metrics(
         "interval_hi": float(hi[0]) + delta,   # any exotic strength estimate
         "novelty": novelty,
         "in_support": bool(novelty <= predictor.support_threshold()),
+        "workability": workability_flag(d),
         "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})) + exotic_carbon(exotic),
         "cost": calculate_mix_cost(d, costs) + exotic_cost(exotic),
         "curing": estimate_curing_time(d),
@@ -183,6 +185,7 @@ def recommend_recipe(
         "interval_hi": float(hi[0]),
         "novelty": novelty,
         "in_support": bool(novelty <= predictor.support_threshold()),
+        "workability": workability_flag(d),
         "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})),
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
     }

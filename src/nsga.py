@@ -22,6 +22,7 @@ import numpy as np
 from .generative_ga import PARAM_NAMES, data_envelope
 from .ui_logic import mix_dict, carbon_for_mode
 from .chemistry_simple import calculate_mix_cost
+from .physical import volume_error, VOLUME_TOLERANCE
 
 try:
     from pymoo.core.problem import Problem
@@ -49,7 +50,8 @@ if _PYMOO_AVAILABLE:
         """
 
         def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None, robust=False):
-            super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=(1 if robust else 0),
+            # Constraints: volume balance (always) + in-support (robust only).
+            super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=(2 if robust else 1),
                              xl=bounds[:, 0], xu=bounds[:, 1])
             self.predictor = predictor
             self.advanced = advanced
@@ -67,10 +69,13 @@ if _PYMOO_AVAILABLE:
             carbon = np.array([carbon_for_mode(mix_dict(x), self.advanced, **self.carbon_kwargs) for x in X])
             cost = np.array([calculate_mix_cost(mix_dict(x), self.costs) for x in X])
             out["F"] = np.column_stack([-strength, carbon, cost])
+            # Physical-validity constraint (<=0 feasible): the front is batchable by
+            # construction. In robust mode, also require in-support.
+            g_vol = np.array([volume_error(mix_dict(x)) for x in X]) - VOLUME_TOLERANCE
             if self.robust:
-                # In-support constraint: novelty - threshold <= 0 is feasible, so the
-                # whole returned front is inside the trusted data region by construction.
-                out["G"] = self.predictor.novelty(X) - self.threshold
+                out["G"] = np.column_stack([g_vol, self.predictor.novelty(X) - self.threshold])
+            else:
+                out["G"] = g_vol
 
     class _FrontHistory(Callback):
         """Record the best value of each objective per generation for a convergence view."""
