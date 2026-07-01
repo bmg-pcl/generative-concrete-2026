@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import json
 from src.models import StrengthPredictor
 from src.chemistry_simple import calculate_embodied_carbon, estimate_curing_time, calculate_mix_cost, UNIT_COSTS
-from src.chemistry_advanced import analyze_mix, carbon_from_clinker
+from src.chemistry_advanced import analyze_mix, embodied_carbon_advanced
 from src.bayesian import BayesFlowExplorer
 from src.ga import GeneticOptimizer
 from src.annealing import SimulatedAnnealing
@@ -233,7 +233,7 @@ with tab2:
         mix_dict = row.to_dict()
         strength = predictor.predict(row.values)
         if use_advanced_chemistry:
-            carbon = carbon_from_clinker(mix_dict.get("cement", 300))
+            carbon = embodied_carbon_advanced(mix_dict)
         else:
             carbon = calculate_embodied_carbon(mix_dict)
         cost = calculate_mix_cost(mix_dict, st.session_state.costs)
@@ -320,7 +320,7 @@ with tab3:
         d = {k: v for k, v in zip(param_names, x)}
         strength = predictor.predict(x)
         if use_advanced_chemistry:
-            carbon = carbon_from_clinker(d.get("cement", 300))
+            carbon = embodied_carbon_advanced(d)
         else:
             carbon = calculate_embodied_carbon(d)
         cost = calculate_mix_cost(d, st.session_state.costs)
@@ -359,7 +359,7 @@ with tab3:
                 best_d = {k: v for k, v in zip(param_names, best_ind)}
                 history_metrics["strength"].append(predictor.predict(best_ind))
                 if use_advanced_chemistry:
-                    history_metrics["carbon"].append(carbon_from_clinker(best_d.get("cement", 300)))
+                    history_metrics["carbon"].append(embodied_carbon_advanced(best_d))
                 else:
                     history_metrics["carbon"].append(calculate_embodied_carbon(best_d))
                 history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))
@@ -416,7 +416,7 @@ with tab3:
                 best_d = {k: v for k, v in zip(param_names, best_sol)}
                 history_metrics["strength"].append(predictor.predict(best_sol))
                 if use_advanced_chemistry:
-                    history_metrics["carbon"].append(carbon_from_clinker(best_d.get("cement", 300)))
+                    history_metrics["carbon"].append(embodied_carbon_advanced(best_d))
                 else:
                     history_metrics["carbon"].append(calculate_embodied_carbon(best_d))
                 history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))

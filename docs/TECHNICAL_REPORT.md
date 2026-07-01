@@ -212,7 +212,7 @@ We are currently at validation level. Qualification remains future work.
 
 2. **Calibrate to your materials.** Upload at least 20-50 local lab results via the Calibration tab. Regional cement chemistry varies significantly.
 
-3. **Use Advanced Chemistry for carbon accounting.** The simple model underestimates carbon for high-clinker cements by ~10-15%.
+3. **Use Advanced Chemistry for carbon accounting.** On the same system boundary, the simple mass-factor model runs ~8–9% *higher* than the clinker-chemistry model for high-clinker OPC (its fixed factor of 0.912 kg CO₂/kg cement is more conservative than clinker calcination + kiln fuel, ≈0.95·0.88 = 0.836 kg/kg). The advanced tier also lets you lower the clinker factor for blended cements (e.g. LC3 ≈ 0.50), which the simple tier cannot express. *(An earlier revision claimed the simple model **underestimates** by 10–15%; that compared mismatched system boundaries — simple full-mix vs advanced cement-only — and is corrected here.)*
 
 4. **Run GA for exploration, SA for refinement.** Use GA to identify promising regions of the Pareto front, then SA to fine-tune specific solutions.
 
