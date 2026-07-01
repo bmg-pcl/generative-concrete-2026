@@ -9,6 +9,19 @@ Each phase is independently shippable.
 P1 lands. Phases 0–3 recover *correctness and honesty*; 4–6 are *quality and durability*; P7 is
 optional depth.
 
+## Status (2026-07-01)
+
+| Phase | State | Commit |
+|---|---|---|
+| P0 Safety (import guard, interim banner) | ✅ done | `d335053` |
+| P1 Foundation (delete physics.py, consolidate constants) | ✅ done | `9111e17` |
+| P2 Chemistry correctness (unify tiers, JSON clinker factors, report fix) | ✅ done | `60c598e` |
+| P3 Simple GA generator (`PopulationInverseDesigner`) | ✅ done | `1ce9c59` |
+| P4 Retire heuristic planner | ✅ done | `fc4a983` |
+| P5 UI honesty relabel | ✅ done | `fc4a983` |
+| P6 Regression tests (14 passing) | ✅ done | `fc4a983`, `60c598e` |
+| P7 Optional depth (ACO / rejection sampler / real flow) | ⏳ not started | — |
+
 ---
 
 ## Phase 0 — Stop the bleeding (safety, ~½ day)

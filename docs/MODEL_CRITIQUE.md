@@ -3,6 +3,14 @@
 **Date:** 2026-06-28
 **Scope:** `src/chemistry_simple.py`, `src/chemistry_advanced.py`, `src/physics.py` (chemical);
 `src/bayesian.py`, `src/chemistry_advanced.inverse_plan_mix` (generative).
+> **Update (2026-07-01):** The critical and high-severity findings below have since been
+> addressed — see `docs/FIX_PLAN.md` for the phased work. In brief: `physics.py` deleted;
+> `sample_posterior`/`inverse_plan_mix` replaced by a transparent GA inverse designer
+> (`src/generative_ga.py`) that is genuinely target-conditioned and stays in-distribution;
+> TF import guarded; carbon tiers unified on one system boundary with JSON-driven clinker
+> factors; report claim corrected. 14 regression tests pass. The text below is preserved as the
+> original point-in-time assessment.
+
 **Method:** Models were initialized and executed end-to-end (venv via `uv`, core stack
 `numpy/pandas/scikit-learn/xgboost/openpyxl/xlrd`). The XGBoost forward model was retrained
 (RMSE 4.65, R² 0.92 — matches the technical report). Each chemical and generative routine was
