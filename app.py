@@ -752,7 +752,6 @@ with tab4:
     """, unsafe_allow_html=True)
 
 with tab_workflow:
-    st.header("Workflow: from a question to a mix")
     with open("docs/WORKFLOW.md", "r", encoding="utf-8") as f:
         workflow_md = f.read()
     # Streamlit's markdown doesn't render mermaid; drop the diagram block (it renders
