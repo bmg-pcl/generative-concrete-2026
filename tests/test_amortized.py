@@ -59,3 +59,20 @@ def test_explorer_prefers_ga_when_no_weights(monkeypatch):
     assert explorer.amortized is None
     s = explorer.sample_posterior(45.0, n_samples=50)
     assert s.shape == (50, len(PARAM_NAMES))
+    # method="flow" must raise when no flow is trained, like "amortized".
+    with pytest.raises(RuntimeError):
+        explorer.sample_posterior(45.0, n_samples=50, method="flow")
+
+
+def test_flow_method_routes_to_amortizer():
+    """method='flow' must actually invoke the trained flow, not silently use the GA."""
+    from src.bayesian import BayesFlowExplorer
+    explorer = BayesFlowExplorer()
+    if explorer.amortized is None:
+        pytest.skip("no trained amortizer weights available")
+    called = {"flow": 0, "ga": 0}
+    orig_flow = explorer.amortized.sample
+    explorer.amortized.sample = lambda *a, **k: (called.__setitem__("flow", called["flow"] + 1), orig_flow(*a, **k))[1]
+    explorer.designer.sample = lambda *a, **k: called.__setitem__("ga", called["ga"] + 1) or np.zeros((k.get("n_samples", 1), len(PARAM_NAMES)))
+    explorer.sample_posterior(45.0, n_samples=40, method="flow")
+    assert called["flow"] == 1 and called["ga"] == 0

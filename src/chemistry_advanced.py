@@ -219,8 +219,9 @@ def embodied_carbon_advanced(
             continue
         carbon += mix.get(component, 0.0) * factor
 
-    # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km).
-    total_mass = sum(mix.values())
+    # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km). Only material
+    # masses count -- 'age' is a curing time, not a mass.
+    total_mass = sum(mix.get(k, 0.0) for k in SIMPLE_CARBON_FACTORS)
     carbon += (total_mass / 1000.0) * transport_km * 0.1
 
     return carbon

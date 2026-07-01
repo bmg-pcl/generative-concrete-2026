@@ -216,7 +216,7 @@ with tab1:
             if exotic_strength_enabled:
                 st.caption("Strength effect ON (experimental, unvalidated estimate).")
             else:
-                st.caption("Affect cost & carbon only. Enable the exotic strength model in the sidebar to include them in strength.")
+                st.caption("Affect cost & carbon only. Enable the exotic strength model in the Config tab to include them in strength.")
             for adm, props in EXOTIC_ADMIXTURES.items():
                 exotic_state[adm] = st.slider(f"{adm.replace('_', ' ').title()} ({key})", 0, props["max"], exotic_state.get(adm, 0))
         
@@ -307,8 +307,15 @@ with tab2:
     st.caption(f"Backend used: **{used_backend}** · {len(samples)} candidates sampled")
 
     # --- Recommended recipe for the target -------------------------------------
-    rec = recommend_recipe(bayesian, float(target_str), method=backend,
-                           advanced=use_advanced_chemistry, costs=st.session_state.costs)
+    # Cached so it isn't re-searched on every unrelated rerun (it runs its own
+    # backend search, separate from cached_samples above).
+    @st.cache_data(show_spinner=False)
+    def cached_recipe(target, backend_key, advanced, cost_items):
+        return recommend_recipe(bayesian, target, method=backend_key,
+                                advanced=advanced, costs=dict(cost_items))
+
+    rec = cached_recipe(float(target_str), backend, use_advanced_chemistry,
+                        tuple(sorted(st.session_state.costs.items())))
     st.subheader("Recommended recipe")
     r1, r2, r3 = st.columns(3)
     r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")

@@ -91,10 +91,13 @@ def test_recommend_recipe_hits_target_ga():
 def test_validate_lab_csv():
     good = pd.DataFrame([dict(zip(PARAM_NAMES + ["strength"], MIX + [40]))])
     assert validate_lab_csv(good) is None
-    assert "Missing" in validate_lab_csv(good.drop(columns=["strength"]))
+    assert "Missing required" in validate_lab_csv(good.drop(columns=["strength"]))
     bad = good.copy(); bad["cement"] = "oops"
-    assert "Non-numeric" in validate_lab_csv(bad)
+    assert validate_lab_csv(bad) is not None
     assert "no rows" in validate_lab_csv(good.iloc[0:0])
+    # An all-NaN required column must be rejected (would poison retraining).
+    nan_strength = pd.DataFrame([dict(zip(PARAM_NAMES + ["strength"], MIX + [np.nan]))])
+    assert validate_lab_csv(nan_strength) is not None
 
 
 def test_validate_session_state():

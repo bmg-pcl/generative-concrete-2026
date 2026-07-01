@@ -119,14 +119,14 @@ class BayesFlowExplorer:
         Backend selection:
           * method="auto" (default): use the trained amortized flow when it exists
             AND no carbon target is given; otherwise the GA inverse designer.
-          * method="amortized": force the flow (errors if none is trained).
+          * method="amortized" / "flow": force the flow (errors if none is trained).
           * method="ga": force the GA designer.
           * method="aco": force the Ant Colony (ACO_R) designer.
 
         The flow conditions on strength only, so carbon targets always route to a
         metaheuristic designer (which bakes carbon into its objective).
         """
-        if method == "amortized" and self.amortized is None:
+        if method in ("amortized", "flow") and self.amortized is None:
             raise RuntimeError(
                 "No trained amortized posterior available. Train it first via "
                 "BayesFlowExplorer.train() / `python -m src.amortized`, or use method='ga'."
@@ -136,7 +136,7 @@ class BayesFlowExplorer:
                 target_strength, n_samples=n_samples, carbon_target=carbon_target
             )
         use_amortized = (
-            method in ("auto", "amortized")
+            method in ("auto", "amortized", "flow")
             and carbon_target is None
             and self.amortized is not None
         )

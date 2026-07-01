@@ -9,6 +9,7 @@ so the "Chemistry Mode" toggle and the exotics switch affect every tab identical
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 
 from .chemistry_simple import (
     calculate_embodied_carbon,
@@ -154,9 +155,12 @@ def validate_lab_csv(df) -> Optional[str]:
         return f"Missing required column(s): {', '.join(missing)}."
     if len(df) == 0:
         return "The uploaded file has no rows."
-    non_numeric = [c for c in required if not np.issubdtype(df[c].dropna().to_numpy().dtype, np.number)]
-    if non_numeric:
-        return f"Non-numeric values in column(s): {', '.join(non_numeric)}."
+    # A column is bad if any value is missing or non-numeric after coercion. This
+    # also catches an all-NaN column (which an earlier dropna-then-check-dtype test
+    # let through, poisoning the retrain with NaN targets).
+    bad = [c for c in required if pd.to_numeric(df[c], errors="coerce").isna().any()]
+    if bad:
+        return f"Missing or non-numeric values in column(s): {', '.join(bad)}."
     return None
 
 

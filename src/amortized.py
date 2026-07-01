@@ -89,7 +89,9 @@ class AmortizedPosteriorModel:
         # Uniform prior over [lo, hi]: mean = midpoint, std = range / sqrt(12).
         lo, hi = self.bounds[:, 0], self.bounds[:, 1]
         self._theta_mean = (lo + hi) / 2.0
-        self._theta_std = (hi - lo) / np.sqrt(12.0)
+        # Guard against a degenerate (constant) envelope column: a zero std would
+        # produce inf/nan when standardising and de-standardising samples.
+        self._theta_std = np.maximum((hi - lo) / np.sqrt(12.0), 1e-6)
         # Strength stats come from simulating the prior once (cheap, deterministic-ish).
         self._x_mean, self._x_std = self._estimate_x_stats()
 

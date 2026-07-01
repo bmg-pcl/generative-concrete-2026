@@ -50,3 +50,13 @@ def test_transport_adds_carbon():
     base = ca.embodied_carbon_advanced(OPC_MIX)
     shipped = ca.embodied_carbon_advanced(OPC_MIX, transport_km=500)
     assert shipped > base
+
+
+def test_transport_ignores_age():
+    """Age is a curing time, not a mass, and must not inflate transport carbon."""
+    young = {**OPC_MIX, "age": 1}
+    old = {**OPC_MIX, "age": 365}
+    assert (ca.embodied_carbon_advanced(young, transport_km=500)
+            == ca.embodied_carbon_advanced(old, transport_km=500))
+    assert (cs.calculate_embodied_carbon(young, transport_km=500)
+            == cs.calculate_embodied_carbon(old, transport_km=500))

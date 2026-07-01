@@ -49,9 +49,10 @@ def calculate_embodied_carbon(mix: Dict[str, float], transport_km: float = 0.0) 
     - Hydration chemistry
     """
     carbon = sum(mix.get(k, 0) * CARBON_FACTORS.get(k, 0) for k in CARBON_FACTORS)
-    
-    # Transport heuristic: 0.1 kg CO2 per tonne per km
-    total_mass = sum(mix.values())
+
+    # Transport heuristic: 0.1 kg CO2 per tonne per km. Sum only material masses
+    # (the CARBON_FACTORS keys) -- 'age' is a curing time in days, not a mass.
+    total_mass = sum(mix.get(k, 0) for k in CARBON_FACTORS)
     carbon += (total_mass / 1000.0) * transport_km * 0.1
     
     return carbon
