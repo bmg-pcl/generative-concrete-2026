@@ -36,7 +36,7 @@ st.markdown("""
 
 # --- Loading Status ---
 status_container = st.empty()
-status_container.info("🔄 Initializing models...")
+status_container.info("Initializing models...")
 
 # --- Preset Mixtures from Dataset ---
 @st.cache_data
@@ -62,10 +62,10 @@ def load_resources():
     bayesian = BayesFlowExplorer()
     return predictor, bayesian
 
-status_container.info("🔄 Loading strength predictor...")
+status_container.info("Loading strength predictor...")
 predictor, bayesian = load_resources()
 
-status_container.info("🔄 Loading dataset presets...")
+status_container.info("Loading dataset presets...")
 PRESET_MIXTURES = get_preset_mixtures()
 
 status_container.empty()  # Clear loading message
@@ -85,11 +85,11 @@ if 'exotic_b' not in st.session_state:
     st.session_state.exotic_b = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
 
 # --- App Header ---
-st.markdown('<h1 class="main-title">🧪 Generative Mix Design</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-title">Generative Mix Design</h1>', unsafe_allow_html=True)
 st.markdown("AI-powered concrete formulation: prediction, optimization, and inverse design.")
 
 # --- Sidebar ---
-st.sidebar.header("💾 Session Export/Import")
+st.sidebar.header("Session Export/Import")
 st.sidebar.caption("Save or restore your complete session configuration.")
 
 def get_state_json():
@@ -122,39 +122,51 @@ if uploaded_state:
             st.session_state.exotic_b = data["exotic_b"]
         st.sidebar.success("Session Imported!")
 
-st.sidebar.divider()
-st.sidebar.header("💰 Material Costs")
-st.sidebar.caption("Costs in $ per kilogram.")
-for mat in st.session_state.costs:
-    st.session_state.costs[mat] = st.sidebar.number_input(f"{mat.replace('_', ' ').title()} ($/kg)", value=st.session_state.costs[mat], format="%.4f")
-
-st.sidebar.divider()
-st.sidebar.header("🔬 Chemistry Mode")
-chemistry_mode = st.sidebar.radio(
-    "Carbon & Analysis Model",
-    ["Simple (Linear)", "Advanced (Molecular)"],
-    help="Simple uses mass × factor. Advanced uses Bogue calculations and clinker chemistry."
-)
-use_advanced_chemistry = (chemistry_mode == "Advanced (Molecular)")
-
-st.sidebar.divider()
-st.sidebar.header("🧪 Exotic Strength Model")
-exotic_strength_enabled = st.sidebar.toggle(
-    "Include exotics in predicted strength (experimental)",
-    value=False,
-    help=(
-        "OFF (default): exotic admixtures affect only cost and carbon. The strength "
-        "model is trained on the UCI dataset, which contains none of these materials, "
-        "so it cannot predict their effect. ON: a placeholder linear estimate adds "
-        "their contribution to strength — UNVALIDATED, to be replaced when real exotic "
-        "strength data is available."
-    ),
-)
-if exotic_strength_enabled:
-    st.sidebar.warning(EXOTIC_STRENGTH_DISCLAIMER, icon="⚠️")
-
 # --- Main Layout ---
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["⚡ Compare Mixes", "🎯 Inverse Design", "🧬 Pareto Optimization", "🔧 Calibration", "📄 Technical Report", "📚 References"])
+tab1, tab2, tab3, tab4, tab_config, tab5, tab6 = st.tabs([
+    "Compare Mixes", "Inverse Design", "Pareto Optimization",
+    "Calibration", "Config", "Technical Report", "References",
+])
+
+# The Config tab holds costing and carbon settings. Its `with` block runs FIRST
+# (before the other tabs) so use_advanced_chemistry / exotic_strength_enabled and
+# the material costs are defined by the time the other tabs read them.
+with tab_config:
+    st.header("Configuration")
+    st.caption("Costing, carbon model, and experimental options — applied across all tabs.")
+    cfg_costs, cfg_model = st.columns(2)
+    with cfg_costs:
+        st.subheader("Material Costs")
+        st.caption("Costs in $ per kilogram.")
+        for mat in st.session_state.costs:
+            st.session_state.costs[mat] = st.number_input(
+                f"{mat.replace('_', ' ').title()} ($/kg)",
+                value=st.session_state.costs[mat], format="%.4f",
+            )
+    with cfg_model:
+        st.subheader("Carbon & Analysis Model")
+        chemistry_mode = st.radio(
+            "Carbon model",
+            ["Simple (Linear)", "Advanced (Molecular)"],
+            help="Simple uses mass x factor. Advanced uses Bogue calculations and clinker chemistry.",
+        )
+        use_advanced_chemistry = (chemistry_mode == "Advanced (Molecular)")
+
+        st.divider()
+        st.subheader("Exotic Strength Model")
+        exotic_strength_enabled = st.toggle(
+            "Include exotics in predicted strength (experimental)",
+            value=False,
+            help=(
+                "OFF (default): exotic admixtures affect only cost and carbon. The strength "
+                "model is trained on the UCI dataset, which contains none of these materials, "
+                "so it cannot predict their effect. ON: a placeholder linear estimate adds "
+                "their contribution to strength - UNVALIDATED, to be replaced when real exotic "
+                "strength data is available."
+            ),
+        )
+        if exotic_strength_enabled:
+            st.warning(EXOTIC_STRENGTH_DISCLAIMER)
 
 with tab1:
     st.markdown("""
@@ -233,7 +245,7 @@ with tab1:
         st.caption(f"model uncertainty ±{m_b['uncertainty']:.1f} MPa (heuristic) · curing ~{m_b['curing']:.0f} d")
 
 with tab2:
-    st.header("🎯 Inverse Design: Recipes for a Target Strength")
+    st.header("Inverse Design: Recipes for a Target Strength")
 
     # Which generative backends are actually available right now?
     flow_ready = bayesian.amortized is not None
@@ -263,7 +275,7 @@ with tab2:
 
     if backend == "flow" and not flow_ready:
         st.warning("No trained flow weights found. Train with `python -m src.amortized`, "
-                   "or choose GA / ACO. Falling back to GA for now.", icon="⚠️")
+                   "or choose GA / ACO. Falling back to GA for now.")
         backend = "ga"
 
     # Cache the (stochastic) sample cloud so unrelated reruns don't re-search.
@@ -279,7 +291,7 @@ with tab2:
     # --- Recommended recipe for the target -------------------------------------
     rec = recommend_recipe(bayesian, float(target_str), method=backend,
                            advanced=use_advanced_chemistry, costs=st.session_state.costs)
-    st.subheader("✅ Recommended recipe")
+    st.subheader("Recommended recipe")
     r1, r2, r3 = st.columns(3)
     r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")
     r2.metric("Carbon", f"{rec['carbon']:.1f} kg CO₂/m³")
@@ -354,7 +366,7 @@ with tab2:
     """, unsafe_allow_html=True)
 
 with tab3:
-    st.header("🧬 Multi-Objective Pareto Optimization")
+    st.header("Multi-Objective Pareto Optimization")
     st.markdown("""
     **How to use:** Select an optimization algorithm, configure parameters, and click Run. 
     Watch the convergence plot and 3D Pareto frontier evolve in real-time.
@@ -384,7 +396,7 @@ with tab3:
             w_strength, w_carbon, w_cost, advanced=use_advanced_chemistry,
         )
     
-    if st.button("🚀 Run Live Optimization"):
+    if st.button("Run Live Optimization"):
         progress_bar = st.progress(0)
         col_plots_1, col_plots_2 = st.columns(2)
         with col_plots_1:
@@ -564,7 +576,7 @@ with tab3:
     """, unsafe_allow_html=True)
 
 with tab4:
-    st.header("🔧 Calibration")
+    st.header("Calibration")
     st.markdown("""
     **How to use:** Upload a CSV of actual lab test results to improve the model's accuracy. 
     Required columns: `cement, slag, ash, water, superplasticizer, coarse_agg, fine_agg, age, strength`.
@@ -598,13 +610,13 @@ with tab4:
     """, unsafe_allow_html=True)
 
 with tab5:
-    st.header("📄 Technical Report: Generative Mix Design")
+    st.header("Technical Report: Generative Mix Design")
     with open("docs/TECHNICAL_REPORT.md", "r", encoding="utf-8") as f:
         report_content = f.read()
     st.markdown(report_content)
 
 with tab6:
-    st.header("📚 References & Resources")
+    st.header("References & Resources")
     
     st.subheader("Software & Libraries")
     st.markdown("""
