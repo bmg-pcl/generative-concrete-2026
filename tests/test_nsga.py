@@ -43,6 +43,13 @@ def test_nsga3_runs(predictor):
     assert out["front_size"] >= 2
 
 
+def test_robust_nsga_front_in_support(predictor):
+    """R1.3 gate: with robust=True, the whole Pareto front is in-support by construction."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=20, robust=True)
+    assert out["front_size"] >= 1
+    assert predictor.in_support(out["mixes"]).all()
+
+
 def test_warm_start_accepted(predictor):
     # A seed population smaller than pop_size must be padded and accepted.
     seed = np.tile(np.array([350, 100, 0, 175, 5, 1000, 750, 28], float), (10, 1))

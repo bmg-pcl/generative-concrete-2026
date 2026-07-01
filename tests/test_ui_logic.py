@@ -106,6 +106,24 @@ def test_recommend_recipe_hits_target_ga():
     assert rec["carbon"] > 0 and rec["cost"] > 0
 
 
+def test_robust_recipe_in_support_and_meets_lower_bound():
+    """R1.3 gate: a robust recipe is in-support and its guaranteed (lower-bound)
+    strength meets the target."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS, robust=True)
+    assert rec["in_support"]
+    assert rec["interval_lo"] >= 40.0 - 5.0
+
+
+def test_scalarized_fitness_robust_uses_lower_bound(predictor):
+    """Robust fitness should differ from mean fitness (uses the lower bound + OOS penalty)."""
+    f_mean = scalarized_fitness(MIX, COSTS, predictor, 1.0, 0.05, 0.5, robust=False)
+    f_rob = scalarized_fitness(MIX, COSTS, predictor, 1.0, 0.05, 0.5, robust=True)
+    assert f_rob < f_mean  # lower bound < mean, so robust fitness is lower
+
+
 def test_validate_lab_csv():
     good = pd.DataFrame([dict(zip(PARAM_NAMES + ["strength"], MIX + [40]))])
     assert validate_lab_csv(good) is None

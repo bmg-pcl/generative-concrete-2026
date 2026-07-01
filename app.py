@@ -202,6 +202,17 @@ with tab_config:
         }
 
         st.divider()
+        st.subheader("Optimization")
+        robust_mode = st.toggle(
+            "Robust mode (optimize the guaranteed-strength bound, stay in-data)",
+            value=True,
+            help="ON: inverse design and Pareto optimize the conformal LOWER bound of "
+                 "strength and keep candidates inside the trusted data region "
+                 "(NSGA enforces it as a constraint). OFF: optimize the mean prediction, "
+                 "which can chase confident-but-unsupported optima.",
+        )
+
+        st.divider()
         st.subheader("Exotic Strength Model")
         exotic_strength_enabled = st.toggle(
             "Include exotics in predicted strength (experimental)",
@@ -334,10 +345,10 @@ with tab2:
 
     # Cache the (stochastic) sample cloud so unrelated reruns don't re-search.
     @st.cache_data(show_spinner="Sampling the design space…")
-    def cached_samples(target, backend_key, n_samples):
-        return bayesian.sample_posterior(target, n_samples=n_samples, method=backend_key)
+    def cached_samples(target, backend_key, n_samples, robust):
+        return bayesian.sample_posterior(target, n_samples=n_samples, method=backend_key, robust=robust)
 
-    samples = cached_samples(float(target_str), backend, 3000)
+    samples = cached_samples(float(target_str), backend, 3000, robust_mode)
     used_backend = "trained flow" if (backend in ("auto", "flow") and flow_ready) else \
                    ("GA" if backend in ("auto", "ga") else "ACO")
     st.caption(f"Backend used: **{used_backend}** · {len(samples)} candidates sampled")
@@ -346,22 +357,23 @@ with tab2:
     # Cached so it isn't re-searched on every unrelated rerun (it runs its own
     # backend search, separate from cached_samples above).
     @st.cache_data(show_spinner=False)
-    def cached_recipe(target, backend_key, advanced, cost_items, carbon_key):
+    def cached_recipe(target, backend_key, advanced, cost_items, carbon_key, robust):
         transport_km_, cement_type_, factor_items = carbon_key
         ck = {"transport_km": transport_km_, "cement_type": cement_type_, "factors": dict(factor_items)}
-        return recommend_recipe(bayesian, target, method=backend_key,
-                                advanced=advanced, costs=dict(cost_items), carbon_kwargs=ck)
+        return recommend_recipe(bayesian, target, method=backend_key, advanced=advanced,
+                                costs=dict(cost_items), carbon_kwargs=ck, robust=robust)
 
     rec = cached_recipe(float(target_str), backend, use_advanced_chemistry,
                         tuple(sorted(st.session_state.costs.items())),
                         (carbon_kwargs["transport_km"], carbon_kwargs["cement_type"],
-                         tuple(sorted(carbon_kwargs["factors"].items()))))
+                         tuple(sorted(carbon_kwargs["factors"].items()))), robust_mode)
     st.subheader("Recommended recipe")
     r1, r2, r3 = st.columns(3)
     r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")
     r2.metric("Carbon", f"{rec['carbon']:.1f} kg CO₂/m³")
     r3.metric("Cost", f"${rec['cost']:.2f}/m³")
-    st.caption(f"90% interval [{rec['interval_lo']:.0f}–{rec['interval_hi']:.0f}] MPa")
+    st.caption(f"90% interval [{rec['interval_lo']:.0f}–{rec['interval_hi']:.0f}] MPa"
+               + (" · robust: optimized the guaranteed lower bound, kept in-support" if robust_mode else ""))
     if not rec["in_support"]:
         st.warning("This recipe sits outside the well-sampled data region — the prediction is "
                    "extrapolated. Prefer a mix inside the data, or collect lab data here.")
@@ -483,7 +495,7 @@ with tab3:
         return scalarized_fitness(
             x, st.session_state.costs, predictor,
             w_strength, w_carbon, w_cost, advanced=use_advanced_chemistry,
-            carbon_kwargs=carbon_kwargs,
+            carbon_kwargs=carbon_kwargs, robust=robust_mode,
         )
 
     # ---- NSGA-II / NSGA-III: true multi-objective Pareto front --------------
@@ -497,7 +509,7 @@ with tab3:
             st.session_state.nsga_out = run_nsga(
                 predictor, advanced=use_advanced_chemistry, costs=st.session_state.costs,
                 algorithm=algo_key, pop_size=int(nsga_pop), n_gen=int(nsga_gen),
-                seed_population=seed, carbon_kwargs=carbon_kwargs,
+                seed_population=seed, carbon_kwargs=carbon_kwargs, robust=robust_mode,
             )
 
     if is_nsga and st.session_state.get("nsga_out") is not None:

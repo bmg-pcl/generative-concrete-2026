@@ -98,14 +98,26 @@ def scalarized_fitness(
     w_cost: float,
     advanced: bool = False,
     carbon_kwargs: Optional[dict] = None,
+    robust: bool = False,
 ) -> float:
-    """Maximise strength, penalise carbon and cost -- the optimizer objective."""
+    """Maximise strength, penalise carbon and cost -- the optimizer objective.
+
+    With `robust=True`, the strength term is the conformal lower bound (guaranteed
+    strength) and an out-of-support penalty discourages extrapolated mixes."""
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
-    strength = float(predictor.predict(arr))
+    if robust:
+        lo, _, _ = predictor.predict_interval(arr)
+        strength = float(lo[0])
+    else:
+        strength = float(predictor.predict(arr))
     carbon = carbon_for_mode(d, advanced, **(carbon_kwargs or {}))
     cost = calculate_mix_cost(d, costs)
-    return w_strength * strength - w_carbon * carbon - w_cost * cost
+    fitness = w_strength * strength - w_carbon * carbon - w_cost * cost
+    if robust:
+        nov = float(predictor.novelty(arr)[0])
+        fitness -= 10.0 * max(0.0, nov - predictor.support_threshold())
+    return fitness
 
 
 def recommend_recipe(
@@ -116,13 +128,18 @@ def recommend_recipe(
     advanced: bool = False,
     costs: Optional[Dict[str, float]] = None,
     carbon_kwargs: Optional[dict] = None,
+    robust: bool = False,
 ) -> dict:
     """
     Return a single recommended mix for a target strength, via the chosen backend.
 
     - "ga" / "aco": use the metaheuristic designer's single best mix.
-    - "auto" / "flow" / "amortized": sample the posterior and pick the draw whose
-      predicted strength is closest to the target.
+    - "auto" / "flow" / "amortized": sample the posterior and pick the best draw.
+
+    With `robust=True`, the metaheuristics optimize the conformal lower bound and an
+    out-of-support penalty; the sampling backends prefer in-support draws and match on
+    the lower bound, so the recommended recipe is one whose *guaranteed* strength meets
+    the target and that sits inside the trusted data region.
 
     Returns the mix vector, its named params, and predicted strength/carbon/cost.
     """
@@ -134,16 +151,24 @@ def recommend_recipe(
         designer = explorer.designer if method == "ga" else explorer.aco_designer
         best_arr, best_err = None, np.inf
         for _ in range(3):
-            ranked, errors = designer.design(target_strength, carbon_target=carbon_target)
+            ranked, errors = designer.design(target_strength, carbon_target=carbon_target, robust=robust)
             if errors[0] < best_err:
                 best_err, best_arr = float(errors[0]), ranked[0]
         arr = best_arr
     else:
         samples = explorer.sample_posterior(
-            target_strength, carbon_target=carbon_target, n_samples=400, method=method
+            target_strength, carbon_target=carbon_target, n_samples=400, method=method,
+            robust=robust,
         )
-        preds = predictor.predict_batch(samples)
-        arr = samples[int(np.argmin(np.abs(preds - target_strength)))]
+        if robust:
+            lo, _, _ = predictor.predict_interval(samples)
+            nov = predictor.novelty(samples)
+            in_sup = nov <= predictor.support_threshold()
+            score = np.abs(lo - target_strength) + np.where(in_sup, 0.0, 1e3)
+            arr = samples[int(np.argmin(score))]
+        else:
+            preds = predictor.predict_batch(samples)
+            arr = samples[int(np.argmin(np.abs(preds - target_strength)))]
 
     d = mix_dict(arr)
     lo, _, hi = predictor.predict_interval(arr)

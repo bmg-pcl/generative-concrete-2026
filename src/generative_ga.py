@@ -34,6 +34,9 @@ PARAM_NAMES: List[str] = [
     "superplasticizer", "coarse_agg", "fine_agg", "age",
 ]
 
+# Robust-mode out-of-support penalty weight (MPa-scale). See docs/specs/R1.
+OOS_PENALTY_WEIGHT = 10.0
+
 
 def data_envelope(param_names: List[str] = PARAM_NAMES) -> np.ndarray:
     """
@@ -73,24 +76,35 @@ class _InverseDesignerBase:
         self._jitter = jitter_frac * (self.bounds[:, 1] - self.bounds[:, 0])
 
     # -- objective -----------------------------------------------------------
-    def _make_objective(self, target_strength: float, carbon_target: Optional[float]):
+    def _make_objective(self, target_strength: float, carbon_target: Optional[float],
+                        robust: bool = False):
         """
         Returns a scalar error to MINIMISE:
 
-            error = |predict(mix) - target_strength|            (always)
-                  + max(0, carbon(mix) - carbon_target)         (only if carbon_target given)
+            error = |strength(mix) - target_strength|            (always)
+                  + max(0, carbon(mix) - carbon_target)          (only if carbon_target given)
+                  + OOS_PENALTY_WEIGHT·max(0, novelty - thresh)  (robust only)
 
-        The carbon term is a one-sided penalty: it only pushes back when a mix
-        exceeds the carbon budget, so it never fights the strength objective for
-        already-clean mixes.
+        With `robust=True`, `strength` is the conformal lower bound (the guaranteed
+        strength) rather than the mean, and an out-of-support penalty pulls the search
+        away from extrapolated regions the prediction can't be trusted in.
         """
+        threshold = self.predictor.support_threshold() if robust else None
+
         def objective(theta: np.ndarray) -> float:
-            strength = self.predictor.predict(theta)
+            if robust:
+                lo, _, _ = self.predictor.predict_interval(theta)
+                strength = float(lo[0])
+            else:
+                strength = self.predictor.predict(theta)
             error = abs(strength - target_strength)
             if carbon_target is not None:
                 mix = dict(zip(self.param_names, theta))
                 carbon = calculate_embodied_carbon(mix)
                 error += max(0.0, carbon - carbon_target)
+            if robust:
+                nov = float(self.predictor.novelty(theta)[0])
+                error += OOS_PENALTY_WEIGHT * max(0.0, nov - threshold)
             return float(error)
 
         return objective
@@ -114,6 +128,7 @@ class _InverseDesignerBase:
         target_strength: float,
         n_samples: int = 2000,
         carbon_target: Optional[float] = None,
+        robust: bool = False,
     ) -> np.ndarray:
         """
         Produce an (n_samples, n_dims) cloud of target-conditioned mixes.
@@ -123,7 +138,7 @@ class _InverseDesignerBase:
         of good solutions into a smooth spread suitable for the dashboard surface,
         while keeping every sample tied to the requested target.
         """
-        ranked, _ = self.design(target_strength, carbon_target)
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust)
         n_elite = max(10, len(ranked) // 4)
         elite = ranked[:n_elite]
 
@@ -132,9 +147,10 @@ class _InverseDesignerBase:
         samples = elite[idx] + jitter
         return np.clip(samples, self.bounds[:, 0], self.bounds[:, 1])
 
-    def best_mix(self, target_strength: float, carbon_target: Optional[float] = None) -> Dict[str, float]:
+    def best_mix(self, target_strength: float, carbon_target: Optional[float] = None,
+                 robust: bool = False) -> Dict[str, float]:
         """Single best mix as a dict -- for one-shot callers like inverse_plan_mix."""
-        ranked, _ = self.design(target_strength, carbon_target)
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust)
         return dict(zip(self.param_names, ranked[0]))
 
 
@@ -150,9 +166,10 @@ class PopulationInverseDesigner(_InverseDesignerBase):
         carbon_target: Optional[float] = None,
         pop_size: int = 80,
         generations: int = 40,
+        robust: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run the GA and return the final population sorted best-first."""
-        objective = self._make_objective(target_strength, carbon_target)
+        objective = self._make_objective(target_strength, carbon_target, robust=robust)
         optimizer = GeneticOptimizer(
             objective_fn=objective,
             bounds=self.bounds.tolist(),
@@ -177,12 +194,13 @@ class AntColonyInverseDesigner(_InverseDesignerBase):
         n_ants: int = 40,
         archive_size: int = 20,
         generations: int = 40,
+        robust: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run ACO_R and return the final solution archive sorted best-first."""
         # Imported lazily so importing this module doesn't require the ACO engine.
         from .aco import AntColonyOptimizer
 
-        objective = self._make_objective(target_strength, carbon_target)
+        objective = self._make_objective(target_strength, carbon_target, robust=robust)
         optimizer = AntColonyOptimizer(
             objective_fn=objective,
             bounds=self.bounds.tolist(),

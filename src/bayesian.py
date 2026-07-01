@@ -109,7 +109,8 @@ class BayesFlowExplorer:
         return model
 
     def sample_posterior(self, target_strength: float, carbon_target: float = None,
-                         n_samples: int = 2000, method: str = "auto") -> np.ndarray:
+                         n_samples: int = 2000, method: str = "auto",
+                         robust: bool = False) -> np.ndarray:
         """
         Draw mix designs conditioned on the target strength (and optional carbon target).
 
@@ -130,7 +131,7 @@ class BayesFlowExplorer:
             )
         if method == "aco":
             return self.aco_designer.sample(
-                target_strength, n_samples=n_samples, carbon_target=carbon_target
+                target_strength, n_samples=n_samples, carbon_target=carbon_target, robust=robust
             )
         use_amortized = (
             method in ("auto", "amortized", "flow")
@@ -138,11 +139,14 @@ class BayesFlowExplorer:
             and self.amortized is not None
         )
         if use_amortized:
+            # The trained flow can't be re-conditioned on the robust objective; robust
+            # handling for the flow happens in recommend_recipe (filter/lower-bound match).
             return self.amortized.sample(target_strength, n_samples=n_samples)
         return self.designer.sample(
             target_strength,
             n_samples=n_samples,
             carbon_target=carbon_target,
+            robust=robust,
         )
 
     def suggest_tests(self, target_strength: float, carbon_target: float = None, n_tests: int = 5) -> pd.DataFrame:

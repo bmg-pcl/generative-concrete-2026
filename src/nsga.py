@@ -48,19 +48,29 @@ if _PYMOO_AVAILABLE:
         8 mix parameters, box-bounded to the training-data envelope.
         """
 
-        def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None):
-            super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=0,
+        def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None, robust=False):
+            super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=(1 if robust else 0),
                              xl=bounds[:, 0], xu=bounds[:, 1])
             self.predictor = predictor
             self.advanced = advanced
             self.costs = costs
             self.carbon_kwargs = carbon_kwargs or {}
+            self.robust = robust
+            self.threshold = predictor.support_threshold() if robust else None
 
         def _evaluate(self, X, out, *args, **kwargs):
-            strength = self.predictor.predict_batch(X)
+            if self.robust:
+                # Optimize the conformal lower bound (guaranteed strength).
+                strength, _, _ = self.predictor.predict_interval(X)
+            else:
+                strength = self.predictor.predict_batch(X)
             carbon = np.array([carbon_for_mode(mix_dict(x), self.advanced, **self.carbon_kwargs) for x in X])
             cost = np.array([calculate_mix_cost(mix_dict(x), self.costs) for x in X])
             out["F"] = np.column_stack([-strength, carbon, cost])
+            if self.robust:
+                # In-support constraint: novelty - threshold <= 0 is feasible, so the
+                # whole returned front is inside the trusted data region by construction.
+                out["G"] = self.predictor.novelty(X) - self.threshold
 
     class _FrontHistory(Callback):
         """Record the best value of each objective per generation for a convergence view."""
@@ -105,6 +115,7 @@ def run_nsga(
     param_names: List[str] = PARAM_NAMES,
     bounds: Optional[np.ndarray] = None,
     carbon_kwargs: Optional[dict] = None,
+    robust: bool = False,
 ) -> Dict:
     """
     Run NSGA-II or NSGA-III and return the Pareto front.
@@ -122,7 +133,8 @@ def run_nsga(
         raise ImportError("pymoo is not installed. `pip install pymoo` to use NSGA-II/III.")
 
     bounds = data_envelope(param_names) if bounds is None else np.asarray(bounds, dtype=float)
-    problem = MixDesignProblem(predictor, bounds, advanced, costs, carbon_kwargs=carbon_kwargs)
+    problem = MixDesignProblem(predictor, bounds, advanced, costs,
+                               carbon_kwargs=carbon_kwargs, robust=robust)
     sampling = _seed_sampling(seed_population, pop_size, bounds)
 
     if algorithm.lower() == "nsga3":
@@ -146,7 +158,9 @@ def run_nsga(
 
     X = np.atleast_2d(res.X)
     F = np.atleast_2d(res.F)
-    strength = -F[:, 0]
+    # Report MEAN strength for display so the numbers match the Compare tab, even when
+    # robust mode optimized the lower bound (-F[:,0] is the lower bound in that case).
+    strength = predictor.predict_batch(X)
     order = np.argsort(strength)  # sort the front by strength for display
     hist = callback.data
     return {
