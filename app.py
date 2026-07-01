@@ -88,10 +88,7 @@ if 'exotic_b' not in st.session_state:
 st.markdown('<h1 class="main-title">Generative Mix Design</h1>', unsafe_allow_html=True)
 st.markdown("AI-powered concrete formulation: prediction, optimization, and inverse design.")
 
-# --- Sidebar ---
-st.sidebar.header("Session Export/Import")
-st.sidebar.caption("Save or restore your complete session configuration.")
-
+# --- Sidebar: step-by-step guidance + session tools ---
 def get_state_json():
     state = {
         "mix_a": st.session_state.mix_a.tolist(),
@@ -102,25 +99,46 @@ def get_state_json():
     }
     return json.dumps(state)
 
-st.sidebar.download_button(label="Export Session (JSON)", data=get_state_json(), file_name="gmd_session.json", mime="application/json")
-
-uploaded_state = st.sidebar.file_uploader("Import Session", type="json")
-if uploaded_state:
-    try:
-        data = json.load(uploaded_state)
-    except json.JSONDecodeError:
-        data = None
-    error = validate_session_state(data) if data is not None else "File is not valid JSON."
-    if error:
-        st.sidebar.error(f"Import failed: {error}")
-    else:
-        st.session_state.mix_a = np.array(data["mix_a"])
-        st.session_state.mix_b = np.array(data["mix_b"])
-        st.session_state.costs = data["costs"]
-        if "exotic_a" in data:
-            st.session_state.exotic_a = data["exotic_a"]
-            st.session_state.exotic_b = data["exotic_b"]
-        st.sidebar.success("Session Imported!")
+with st.sidebar:
+    st.header("How to use")
+    st.caption("Collapse this panel with the arrow at its top-right; reopen it from the same edge.")
+    with st.expander("Step-by-step guide", expanded=True):
+        st.markdown(
+            "**1. Config** — set material costs and choose the carbon model "
+            "(Simple or Advanced). These apply everywhere.\n\n"
+            "**2. Compare Mixes** — tune Mix A and Mix B and read predicted strength, "
+            "carbon, and cost side by side.\n\n"
+            "**3. Inverse Design** — enter a target strength, pick a backend, and get a "
+            "recommended recipe you can load into Mix A or B.\n\n"
+            "**4. Pareto Optimization** — run the GA or annealing search to explore the "
+            "strength / carbon / cost trade-off.\n\n"
+            "**5. Calibration** — upload your own lab results (CSV) to retrain the model "
+            "on your materials."
+        )
+    st.divider()
+    with st.expander("Session save / restore", expanded=False):
+        st.caption("Save or restore your complete setup as a JSON file.")
+        st.download_button(
+            label="Export Session (JSON)", data=get_state_json(),
+            file_name="gmd_session.json", mime="application/json",
+        )
+        uploaded_state = st.file_uploader("Import Session", type="json")
+        if uploaded_state:
+            try:
+                data = json.load(uploaded_state)
+            except json.JSONDecodeError:
+                data = None
+            error = validate_session_state(data) if data is not None else "File is not valid JSON."
+            if error:
+                st.error(f"Import failed: {error}")
+            else:
+                st.session_state.mix_a = np.array(data["mix_a"])
+                st.session_state.mix_b = np.array(data["mix_b"])
+                st.session_state.costs = data["costs"]
+                if "exotic_a" in data:
+                    st.session_state.exotic_a = data["exotic_a"]
+                    st.session_state.exotic_b = data["exotic_b"]
+                st.success("Session Imported!")
 
 # --- Main Layout ---
 tab1, tab2, tab3, tab4, tab_config, tab5, tab6 = st.tabs([
