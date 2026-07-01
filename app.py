@@ -14,6 +14,7 @@ from src.nsga import run_nsga, pymoo_available
 from src.data_fetcher import append_experimental_results, load_data
 from src.exotics import EXOTIC_ADMIXTURES, EXOTIC_STRENGTH_DISCLAIMER
 from src.ui_logic import (
+    PARAM_NAMES,
     compute_metrics,
     batch_metrics,
     scalarized_fitness,
@@ -73,7 +74,7 @@ PRESET_MIXTURES = get_preset_mixtures()
 
 status_container.empty()  # Clear loading message
 
-param_names = ["cement", "slag", "ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age"]
+param_names = list(PARAM_NAMES)  # single source in src/generative_ga.py
 
 # --- State Management ---
 if 'mix_a' not in st.session_state:

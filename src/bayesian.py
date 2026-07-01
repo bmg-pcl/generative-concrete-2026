@@ -18,7 +18,7 @@ except ImportError:
 from .data_fetcher import load_data
 from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
-from .generative_ga import PopulationInverseDesigner, AntColonyInverseDesigner
+from .generative_ga import PopulationInverseDesigner, AntColonyInverseDesigner, PARAM_NAMES
 
 class BayesFlowExplorer:
     """
@@ -42,10 +42,7 @@ class BayesFlowExplorer:
         self.predictor = StrengthPredictor()
         self.amortizer = None
         self.is_trained = False
-        self.param_names = ["cement", "slag", "ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age"]
-        self.bounds = np.array([
-            (100, 550), (0, 360), (0, 200), (120, 250), (0, 30), (700, 1150), (550, 1000), (1, 365)
-        ])
+        self.param_names = list(PARAM_NAMES)
         # Lazily-built backends (built on first use, sharing our predictor).
         self._designer = None
         self._aco_designer = None

@@ -18,11 +18,7 @@ from .chemistry_simple import (
 )
 from .chemistry_advanced import embodied_carbon_advanced
 from .exotics import exotic_carbon, exotic_cost, exotic_strength_delta
-
-PARAM_NAMES: List[str] = [
-    "cement", "slag", "ash", "water",
-    "superplasticizer", "coarse_agg", "fine_agg", "age",
-]
+from .generative_ga import PARAM_NAMES  # single source of the 8-parameter order
 
 
 def mix_dict(mix) -> Dict[str, float]:
