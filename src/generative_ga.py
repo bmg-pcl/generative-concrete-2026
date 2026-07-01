@@ -71,6 +71,7 @@ class _InverseDesignerBase:
         self.param_names = param_names
         self.bounds = data_envelope(param_names) if bounds is None else np.asarray(bounds, dtype=float)
         self.n_dims = len(self.bounds)
+        self._age_idx = param_names.index("age")
         # Jitter used when expanding the elite set into a sample cloud, as a
         # fraction of each parameter's range.
         self._jitter = jitter_frac * (self.bounds[:, 1] - self.bounds[:, 0])
@@ -109,6 +110,16 @@ class _InverseDesignerBase:
 
         return objective
 
+    def _effective_bounds(self, age: Optional[float]) -> np.ndarray:
+        """Search bounds with the age dimension pinned to `age` (degenerate bound) when
+        a fixed design age is requested, so the optimizer treats age as a condition, not
+        a free variable it can exploit (e.g. prescribing a 365-day cure)."""
+        if age is None:
+            return self.bounds
+        b = self.bounds.copy()
+        b[self._age_idx] = (float(age), float(age))
+        return b
+
     def _rank(self, optimizer, objective) -> Tuple[np.ndarray, np.ndarray]:
         """Collect an optimizer's final population + global best, ranked best-first."""
         best, _ = optimizer.get_best()
@@ -129,6 +140,7 @@ class _InverseDesignerBase:
         n_samples: int = 2000,
         carbon_target: Optional[float] = None,
         robust: bool = False,
+        age: Optional[float] = None,
     ) -> np.ndarray:
         """
         Produce an (n_samples, n_dims) cloud of target-conditioned mixes.
@@ -138,19 +150,23 @@ class _InverseDesignerBase:
         of good solutions into a smooth spread suitable for the dashboard surface,
         while keeping every sample tied to the requested target.
         """
-        ranked, _ = self.design(target_strength, carbon_target, robust=robust)
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age)
         n_elite = max(10, len(ranked) // 4)
         elite = ranked[:n_elite]
 
+        eb = self._effective_bounds(age)
         idx = np.random.randint(0, len(elite), n_samples)
         jitter = np.random.normal(0.0, 1.0, (n_samples, self.n_dims)) * self._jitter
         samples = elite[idx] + jitter
-        return np.clip(samples, self.bounds[:, 0], self.bounds[:, 1])
+        samples = np.clip(samples, eb[:, 0], eb[:, 1])
+        if age is not None:
+            samples[:, self._age_idx] = float(age)  # jitter must not un-pin age
+        return samples
 
     def best_mix(self, target_strength: float, carbon_target: Optional[float] = None,
-                 robust: bool = False) -> Dict[str, float]:
+                 robust: bool = False, age: Optional[float] = None) -> Dict[str, float]:
         """Single best mix as a dict -- for one-shot callers like inverse_plan_mix."""
-        ranked, _ = self.design(target_strength, carbon_target, robust=robust)
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age)
         return dict(zip(self.param_names, ranked[0]))
 
 
@@ -167,12 +183,13 @@ class PopulationInverseDesigner(_InverseDesignerBase):
         pop_size: int = 80,
         generations: int = 40,
         robust: bool = False,
+        age: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run the GA and return the final population sorted best-first."""
         objective = self._make_objective(target_strength, carbon_target, robust=robust)
         optimizer = GeneticOptimizer(
             objective_fn=objective,
-            bounds=self.bounds.tolist(),
+            bounds=self._effective_bounds(age).tolist(),
             pop_size=pop_size,
             maximize=False,  # we are minimising the target-match error
         )
@@ -195,6 +212,7 @@ class AntColonyInverseDesigner(_InverseDesignerBase):
         archive_size: int = 20,
         generations: int = 40,
         robust: bool = False,
+        age: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run ACO_R and return the final solution archive sorted best-first."""
         # Imported lazily so importing this module doesn't require the ACO engine.
@@ -203,7 +221,7 @@ class AntColonyInverseDesigner(_InverseDesignerBase):
         objective = self._make_objective(target_strength, carbon_target, robust=robust)
         optimizer = AntColonyOptimizer(
             objective_fn=objective,
-            bounds=self.bounds.tolist(),
+            bounds=self._effective_bounds(age).tolist(),
             n_ants=n_ants,
             archive_size=archive_size,
             maximize=False,

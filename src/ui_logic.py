@@ -129,6 +129,7 @@ def recommend_recipe(
     costs: Optional[Dict[str, float]] = None,
     carbon_kwargs: Optional[dict] = None,
     robust: bool = False,
+    age: Optional[float] = None,
 ) -> dict:
     """
     Return a single recommended mix for a target strength, via the chosen backend.
@@ -151,14 +152,15 @@ def recommend_recipe(
         designer = explorer.designer if method == "ga" else explorer.aco_designer
         best_arr, best_err = None, np.inf
         for _ in range(3):
-            ranked, errors = designer.design(target_strength, carbon_target=carbon_target, robust=robust)
+            ranked, errors = designer.design(target_strength, carbon_target=carbon_target,
+                                             robust=robust, age=age)
             if errors[0] < best_err:
                 best_err, best_arr = float(errors[0]), ranked[0]
         arr = best_arr
     else:
         samples = explorer.sample_posterior(
             target_strength, carbon_target=carbon_target, n_samples=400, method=method,
-            robust=robust,
+            robust=robust, age=age,
         )
         if robust:
             lo, _, _ = predictor.predict_interval(samples)

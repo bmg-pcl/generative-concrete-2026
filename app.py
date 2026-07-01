@@ -211,6 +211,14 @@ with tab_config:
                  "(NSGA enforces it as a constraint). OFF: optimize the mean prediction, "
                  "which can chase confident-but-unsupported optima.",
         )
+        fix_age = st.checkbox(
+            "Fix design age (inverse design & Pareto)", value=True,
+            help="ON: hold age fixed so the optimizer can't hit a strength target by "
+                 "prescribing a long cure (age is a condition, not a design variable). "
+                 "The trained flow can't honor a fixed age, so pinning routes to the "
+                 "GA/ACO designers. OFF: age is free.",
+        )
+        design_age = st.number_input("Design age (days)", 1, 365, 28) if fix_age else None
 
         st.divider()
         st.subheader("Exotic Strength Model")
@@ -345,28 +353,35 @@ with tab2:
 
     # Cache the (stochastic) sample cloud so unrelated reruns don't re-search.
     @st.cache_data(show_spinner="Sampling the design space…")
-    def cached_samples(target, backend_key, n_samples, robust):
-        return bayesian.sample_posterior(target, n_samples=n_samples, method=backend_key, robust=robust)
+    def cached_samples(target, backend_key, n_samples, robust, age):
+        return bayesian.sample_posterior(target, n_samples=n_samples, method=backend_key,
+                                         robust=robust, age=age)
 
-    samples = cached_samples(float(target_str), backend, 3000, robust_mode)
-    used_backend = "trained flow" if (backend in ("auto", "flow") and flow_ready) else \
+    samples = cached_samples(float(target_str), backend, 3000, robust_mode, design_age)
+    # A pinned design age routes away from the flow (it can't honor a fixed age).
+    flow_usable = flow_ready and (design_age is None)
+    used_backend = "trained flow" if (backend in ("auto", "flow") and flow_usable) else \
                    ("GA" if backend in ("auto", "ga") else "ACO")
-    st.caption(f"Backend used: **{used_backend}** · {len(samples)} candidates sampled")
+    st.caption(f"Backend used: **{used_backend}** · {len(samples)} candidates sampled"
+               + (f" · age pinned to {design_age:.0f} d" if design_age is not None else ""))
+    if design_age is not None and backend in ("auto", "flow") and flow_ready:
+        st.caption("Age is pinned, so the trained flow is bypassed for the GA designer "
+                   "(the flow can't honor a fixed age — see roadmap R2.1).")
 
     # --- Recommended recipe for the target -------------------------------------
     # Cached so it isn't re-searched on every unrelated rerun (it runs its own
     # backend search, separate from cached_samples above).
     @st.cache_data(show_spinner=False)
-    def cached_recipe(target, backend_key, advanced, cost_items, carbon_key, robust):
+    def cached_recipe(target, backend_key, advanced, cost_items, carbon_key, robust, age):
         transport_km_, cement_type_, factor_items = carbon_key
         ck = {"transport_km": transport_km_, "cement_type": cement_type_, "factors": dict(factor_items)}
         return recommend_recipe(bayesian, target, method=backend_key, advanced=advanced,
-                                costs=dict(cost_items), carbon_kwargs=ck, robust=robust)
+                                costs=dict(cost_items), carbon_kwargs=ck, robust=robust, age=age)
 
     rec = cached_recipe(float(target_str), backend, use_advanced_chemistry,
                         tuple(sorted(st.session_state.costs.items())),
                         (carbon_kwargs["transport_km"], carbon_kwargs["cement_type"],
-                         tuple(sorted(carbon_kwargs["factors"].items()))), robust_mode)
+                         tuple(sorted(carbon_kwargs["factors"].items()))), robust_mode, design_age)
     st.subheader("Recommended recipe")
     r1, r2, r3 = st.columns(3)
     r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")
@@ -503,13 +518,15 @@ with tab3:
         seed = None
         if warm and warm_target:
             with st.spinner("Warm-starting from inverse design…"):
-                seed = bayesian.sample_posterior(float(warm_target), n_samples=int(nsga_pop), method="auto")
+                seed = bayesian.sample_posterior(float(warm_target), n_samples=int(nsga_pop),
+                                                 method="auto", age=design_age)
         algo_key = "nsga3" if "III" in algorithm else "nsga2"
         with st.spinner(f"Running {algorithm} — mapping the trade-off surface…"):
             st.session_state.nsga_out = run_nsga(
                 predictor, advanced=use_advanced_chemistry, costs=st.session_state.costs,
                 algorithm=algo_key, pop_size=int(nsga_pop), n_gen=int(nsga_gen),
                 seed_population=seed, carbon_kwargs=carbon_kwargs, robust=robust_mode,
+                age=design_age,
             )
 
     if is_nsga and st.session_state.get("nsga_out") is not None:

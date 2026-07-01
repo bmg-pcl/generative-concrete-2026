@@ -116,6 +116,7 @@ def run_nsga(
     bounds: Optional[np.ndarray] = None,
     carbon_kwargs: Optional[dict] = None,
     robust: bool = False,
+    age: Optional[float] = None,
 ) -> Dict:
     """
     Run NSGA-II or NSGA-III and return the Pareto front.
@@ -133,6 +134,9 @@ def run_nsga(
         raise ImportError("pymoo is not installed. `pip install pymoo` to use NSGA-II/III.")
 
     bounds = data_envelope(param_names) if bounds is None else np.asarray(bounds, dtype=float)
+    if age is not None:  # pin age as a fixed design condition (not a free variable)
+        bounds = bounds.copy()
+        bounds[param_names.index("age")] = (float(age), float(age))
     problem = MixDesignProblem(predictor, bounds, advanced, costs,
                                carbon_kwargs=carbon_kwargs, robust=robust)
     sampling = _seed_sampling(seed_population, pop_size, bounds)

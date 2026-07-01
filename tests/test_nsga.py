@@ -43,6 +43,13 @@ def test_nsga3_runs(predictor):
     assert out["front_size"] >= 2
 
 
+def test_nsga_fixed_age(predictor):
+    """R2.1 gate: NSGA holds a fixed design age across the whole front."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=12, age=28.0)
+    age_idx = PARAM_NAMES.index("age")
+    assert np.allclose(out["mixes"][:, age_idx], 28.0)
+
+
 def test_robust_nsga_front_in_support(predictor):
     """R1.3 gate: with robust=True, the whole Pareto front is in-support by construction."""
     out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=20, robust=True)
