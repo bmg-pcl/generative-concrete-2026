@@ -23,12 +23,12 @@ from src.ui_logic import (
 
 st.set_page_config(page_title="Generative Mix Design", layout="wide", initial_sidebar_state="expanded")
 
-# --- Dark Mode Styling ---
+# --- Custom classes only ---
+# Base dark theme lives in .streamlit/config.toml (supported theming API). Here we
+# keep just the custom classes used via markdown, which don't target Streamlit
+# internals and so won't break on library upgrades.
 st.markdown("""
 <style>
-    .stApp { background-color: #121212; color: #E0E0E0; }
-    .stTabs [data-baseweb="tab-list"] { background-color: #121212; }
-    .stMetric { background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333; }
     .main-title { font-size: 3rem; font-weight: 800; background: -webkit-linear-gradient(#00E676, #2979FF); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
     .footnote { font-size: 0.75rem; color: #888; line-height: 1.4; margin-top: 20px; }
 </style>

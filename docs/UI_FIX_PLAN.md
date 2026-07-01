@@ -12,6 +12,20 @@ into a testable module first so the rest can be verified without a live browser.
 **Critical path:** U5 (extract testable logic) → U0 (coherence) → U2 (perf) → U3 (value).
 U1 (stability) is independent. Each phase is one shippable commit on the PR branch.
 
+## Status (2026-07-01)
+
+| Phase | State |
+|---|---|
+| U5 Extract testable logic (`src/ui_logic.py` + tests) | ✅ done |
+| U0 Coherence & honesty (one carbon/metrics/fitness path, tab-2 reconcile, refs, naming, exotics switch) | ✅ done |
+| U1 Stability (CSV + session validation, KDE guard) | ✅ done |
+| U2 Performance (cached tab-2 sampling, batched predicts) | ✅ done |
+| U3 Surface value (recipe recommender + load buttons, uncertainty on cards) | ✅ done |
+| U4 Polish (`title_font`, dark theme → `.streamlit/config.toml`) | ✅ done |
+
+All verified via `src/ui_logic.py` unit tests (Streamlit-independent) + an `import app`
+smoke test; full suite 34 passed.
+
 ---
 
 ## U5 — Extract testable logic (do first; unblocks verification)
