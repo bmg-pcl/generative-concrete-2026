@@ -194,7 +194,7 @@ Does the code do what the documentation says? This is tested via unit tests:
 Does the model match reality? This requires external benchmarks:
 - XGBoost: 80/20 train-test split, R² = 0.92 ✓
 - Chemistry: Comparison against Taylor (1997) phase compositions ✓
-- BayesFlow: Simulation-Based Calibration (SBC) diagnostics ✗ (not yet run)
+- BayesFlow: Simulation-Based Calibration (SBC) diagnostics ✓ (all 8 parameters calibrate to mean normalized rank ≈0.50; see `docs/AMORTIZED_INFERENCE.md`)
 
 ### 5.3 Qualification (Fitness for Purpose)
 Does the system solve the user's problem? This requires field deployment:
@@ -212,7 +212,7 @@ We are currently at validation level. Qualification remains future work.
 
 2. **Calibrate to your materials.** Upload at least 20-50 local lab results via the Calibration tab. Regional cement chemistry varies significantly.
 
-3. **Use Advanced Chemistry for carbon accounting.** The simple model underestimates carbon for high-clinker cements by ~10-15%.
+3. **Use Advanced Chemistry for carbon accounting.** On the same system boundary, the simple mass-factor model runs ~8–9% *higher* than the clinker-chemistry model for high-clinker OPC (its fixed factor of 0.912 kg CO₂/kg cement is more conservative than clinker calcination + kiln fuel, ≈0.95·0.88 = 0.836 kg/kg). The advanced tier also lets you lower the clinker factor for blended cements (e.g. LC3 ≈ 0.50), which the simple tier cannot express. *(An earlier revision claimed the simple model **underestimates** by 10–15%; that compared mismatched system boundaries — simple full-mix vs advanced cement-only — and is corrected here.)*
 
 4. **Run GA for exploration, SA for refinement.** Use GA to identify promising regions of the Pareto front, then SA to fine-tune specific solutions.
 
@@ -281,9 +281,11 @@ The table below lists the primary models, their implementation locations, and th
 | `Predictive Mix Performance ` (Amortized inference) | `src/bayesian.py` | ML / Amortized Bayesian Inference (Normalizing Flows — generative/inference) |
 | `Genetic Mix Optimizer` | `src/ga.py` | Optimization / Metaheuristic (Genetic Algorithm — population-based search) |
 | `Simulated Annealing Optimizer` | `src/annealing.py` | Optimization / Metaheuristic (Simulated Annealing — thermodynamic-inspired search) |
+| `Ant Colony Optimizer` | `src/aco.py` | Optimization / Metaheuristic (ACO_R — continuous-domain ant colony search) |
+| `Inverse Designers` (GA / ACO) | `src/generative_ga.py` | Generative / Metaheuristic inverse design (target-conditioned mix sampling) |
+| `Amortized Posterior` (BayesFlow flow) | `src/amortized.py` | ML / Amortized Bayesian Inference (trained normalizing flow + SBC) |
 | `Simple Accrual Chemistry` | `src/chemistry_simple.py` | Chemical / Heuristic linear constitutive model (carbon & cost estimates) |
 | `Molecular Chemistry` | `src/chemistry_advanced.py` | Chemical / Molecular-level thermodynamic & kinetic model (Bogue, hydration, pozzolanic reactions) |
-| `Physics Heuristics` | `src/physics.py` | Empirical / Heuristic physics and cost-carbon utilities |
 | Strength model artifact | `models/strength_model.json` | ML artifact (serialized XGBoost model) |
 | Oxide composition data | `data/oxide_compositions.json` | Chemical reference data (oxide compositions for common SCMs/clinkers) |
 

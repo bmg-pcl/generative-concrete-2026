@@ -4,9 +4,19 @@ chemistry_advanced.py - Tier 2: Molecular-Level Generative Chemistry
 A thermodynamic and kinetic simulation layer for cement hydration.
 Provides both FORWARD (analysis) and INVERSE (generative) modes.
 """
+import os
+import json
 import numpy as np
 from typing import Dict, Tuple, List
 from dataclasses import dataclass
+
+# Reuse the Tier-1 emission factors so the two tiers share the SAME non-cement
+# carbon accounting (aggregates, water, SCMs, admixtures, transport). The advanced
+# tier only differs by computing the CEMENT term from clinker chemistry.
+from .chemistry_simple import CARBON_FACTORS as SIMPLE_CARBON_FACTORS
+
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+_OXIDE_JSON = os.path.join(_DATA_DIR, "oxide_compositions.json")
 
 # ============================================================================
 # OXIDE COMPOSITIONS (Typical values, should be loaded from JSON in production)
@@ -17,6 +27,25 @@ DEFAULT_OXIDE_COMPOSITIONS = {
     "FLY_ASH_F": {"CaO": 5.0, "SiO2": 55.0, "Al2O3": 25.0, "Fe2O3": 8.0},
     "FLY_ASH_C": {"CaO": 20.0, "SiO2": 40.0, "Al2O3": 18.0, "Fe2O3": 6.0},
 }
+
+
+def load_oxide_compositions() -> Dict[str, Dict]:
+    """Load cement/SCM oxide compositions (incl. clinker_factor) from data JSON.
+
+    Falls back to DEFAULT_OXIDE_COMPOSITIONS if the file is missing or unreadable.
+    """
+    try:
+        with open(_OXIDE_JSON) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return DEFAULT_OXIDE_COMPOSITIONS
+
+
+def clinker_factor_for(cement_type: str = "OPC", oxide_compositions: Dict = None) -> float:
+    """Clinker fraction for a cement type, read from the oxide JSON (OPC≈0.95,
+    LC3≈0.50). Defaults to 0.95 when the type or field is absent."""
+    comps = oxide_compositions or load_oxide_compositions()
+    return float(comps.get(cement_type, {}).get("clinker_factor", 0.95))
 
 # ============================================================================
 # BOGUE CALCULATION (Clinker Phase Estimation)
@@ -134,71 +163,101 @@ def pozzolanic_reaction(
 # CARBON FROM CLINKER (More Accurate than Linear Model)
 # ============================================================================
 def carbon_from_clinker(
-    cement_mass: float, 
-    clinker_factor: float = 0.95,
-    kiln_fuel_carbon: float = 0.35
+    cement_mass: float,
+    clinker_factor: float = None,
+    kiln_fuel_carbon: float = 0.35,
+    cement_type: str = "OPC",
 ) -> float:
     """
-    Calculates CO2 emissions based on clinker chemistry.
-    
+    Calculates CO2 emissions from the CEMENT term based on clinker chemistry.
+
     The main sources are:
     1. Calcination of limestone: CaCO3 → CaO + CO2 (~0.53 kg CO2/kg clinker)
     2. Fuel combustion in the kiln (~0.35 kg CO2/kg clinker, varies by fuel)
-    
+
+    Note: this is the cement-only contribution. For a full mix carbon figure on the
+    same system boundary as the Tier-1 model, use `embodied_carbon_advanced`.
+
     Args:
         cement_mass: Mass of cement (kg/m³)
-        clinker_factor: Fraction of cement that is clinker (e.g., 0.95 for OPC, 0.65 for LC3)
+        clinker_factor: Fraction of cement that is clinker. If None, it is read from
+            data/oxide_compositions.json for `cement_type` (e.g., 0.95 OPC, 0.50 LC3).
         kiln_fuel_carbon: Carbon intensity of kiln fuel
+        cement_type: Key into the oxide JSON used when clinker_factor is None.
     """
+    if clinker_factor is None:
+        clinker_factor = clinker_factor_for(cement_type)
     clinker_mass = cement_mass * clinker_factor
     calcination_co2 = clinker_mass * 0.53
     fuel_co2 = clinker_mass * kiln_fuel_carbon
     return calcination_co2 + fuel_co2
+
+
+def embodied_carbon_advanced(
+    mix: Dict[str, float],
+    transport_km: float = 0.0,
+    cement_type: str = "OPC",
+) -> float:
+    """
+    Full-mix embodied carbon (kg CO2/m³) on the SAME system boundary as the Tier-1
+    `chemistry_simple.calculate_embodied_carbon`, but with the cement term replaced
+    by clinker chemistry.
+
+    carbon = clinker_chemistry(cement)                       # higher-fidelity cement
+           + Σ mass_i · factor_i   for i ≠ cement            # shared non-cement terms
+           + transport heuristic                             # shared
+
+    The tier toggle therefore changes *fidelity*, not *scope*: switching to Advanced
+    only refines how the cement contribution is computed, so the two tiers are
+    directly comparable.
+    """
+    carbon = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type)
+
+    # Non-cement constituents, using the identical Tier-1 factors.
+    for component, factor in SIMPLE_CARBON_FACTORS.items():
+        if component == "cement":
+            continue
+        carbon += mix.get(component, 0.0) * factor
+
+    # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km).
+    total_mass = sum(mix.values())
+    carbon += (total_mass / 1000.0) * transport_km * 0.1
+
+    return carbon
 
 # ============================================================================
 # INVERSE PLANNER (Generative Mode)
 # ============================================================================
 def inverse_plan_mix(
     target_strength_mpa: float,
-    target_carbon_kg: float,
-    max_cost: float
+    target_carbon_kg: float = None,
+    max_cost: float = None
 ) -> Dict[str, float]:
     """
     Given target properties, generate a plausible mix design.
-    
-    This is a simplified heuristic solver. A full implementation would use
-    constrained optimization or the BayesFlow amortizer.
-    
+
+    This now delegates to the GA-based `PopulationInverseDesigner` (see
+    src/generative_ga.py). It searches -- within the training-data envelope -- for
+    a mix whose model-predicted strength matches the target, optionally penalising
+    mixes above the carbon budget. This replaces the previous open-loop heuristic,
+    which did not track the target (a 25 MPa request produced a ~51 MPa mix) and
+    emitted out-of-distribution water below the dataset minimum.
+
+    Args:
+        target_strength_mpa: Desired compressive strength (MPa).
+        target_carbon_kg: Optional soft carbon budget (kg CO2/m³).
+        max_cost: Accepted for backward compatibility; not yet used as a hard
+            constraint (a cost-aware objective is future work).
+
     Returns:
-        A dictionary of mix components (kg/m³).
+        A dictionary of mix components (kg/m³) plus age (days).
     """
-    # Heuristic: Higher strength → more cement, lower carbon → more SCMs
-    base_cement = 300 + (target_strength_mpa - 30) * 8
-    base_cement = max(200, min(550, base_cement))
-    
-    # Carbon constraint: reduce cement if carbon is tight
-    if target_carbon_kg < base_cement * 0.9:
-        scm_fraction = (base_cement * 0.9 - target_carbon_kg) / (base_cement * 0.9)
-        slag = base_cement * min(0.5, scm_fraction)
-        cement = base_cement - slag
-    else:
-        cement = base_cement
-        slag = 0
-    
-    # Water based on w/c ratio
-    w_c = 0.45 if target_strength_mpa < 40 else 0.35
-    water = cement * w_c
-    
-    return {
-        "cement": cement,
-        "slag": slag,
-        "ash": 0,
-        "water": water,
-        "superplasticizer": 5 if w_c < 0.4 else 0,
-        "coarse_agg": 1000,
-        "fine_agg": 750,
-        "age": 28
-    }
+    # Imported lazily so `chemistry_advanced` stays importable without the model
+    # stack, and to avoid a module-load-time dependency cycle.
+    from .generative_ga import PopulationInverseDesigner
+
+    designer = PopulationInverseDesigner()
+    return designer.best_mix(target_strength_mpa, carbon_target=target_carbon_kg)
 
 # ============================================================================
 # ANALYSIS REPORT (Full Forward Pass)
