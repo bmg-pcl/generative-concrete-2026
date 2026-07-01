@@ -50,9 +50,15 @@ def compute_metrics(
     d = mix_dict(arr)
     base_strength = float(predictor.predict(arr))
     delta = exotic_strength_delta(exotic, enabled=exotic_strength)
+    lo, _, hi = predictor.predict_interval(arr)
+    novelty = float(predictor.novelty(arr)[0])
     return {
         "strength": base_strength + delta,
         "exotic_strength": delta,
+        "interval_lo": float(lo[0]) + delta,   # 90% prediction interval, shifted by
+        "interval_hi": float(hi[0]) + delta,   # any exotic strength estimate
+        "novelty": novelty,
+        "in_support": bool(novelty <= 1.5),
         "carbon": carbon_for_mode(d, advanced) + exotic_carbon(exotic),
         "cost": calculate_mix_cost(d, costs) + exotic_cost(exotic),
         "curing": estimate_curing_time(d),
@@ -71,7 +77,8 @@ def batch_metrics(samples: np.ndarray, costs: Dict[str, float], predictor, advan
     strengths = predictor.predict_batch(samples)
     carbons = np.array([carbon_for_mode(mix_dict(s), advanced) for s in samples])
     money = np.array([calculate_mix_cost(mix_dict(s), costs) for s in samples])
-    return {"strength": strengths, "carbon": carbons, "cost": money}
+    return {"strength": strengths, "carbon": carbons, "cost": money,
+            "novelty": predictor.novelty(samples)}
 
 
 def scalarized_fitness(
@@ -129,10 +136,16 @@ def recommend_recipe(
         arr = samples[int(np.argmin(np.abs(preds - target_strength)))]
 
     d = mix_dict(arr)
+    lo, _, hi = predictor.predict_interval(arr)
+    novelty = float(predictor.novelty(arr)[0])
     return {
         "mix": arr,
         "params": d,
         "strength": float(predictor.predict(arr)),
+        "interval_lo": float(lo[0]),
+        "interval_hi": float(hi[0]),
+        "novelty": novelty,
+        "in_support": bool(novelty <= 1.5),
         "carbon": carbon_for_mode(d, advanced),
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
     }

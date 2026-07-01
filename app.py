@@ -258,14 +258,18 @@ with tab1:
         strength_caption(m_a)
         st.metric("Carbon", f"{m_a['carbon']:.1f} kg CO₂/m³")
         st.metric("Cost", f"${m_a['cost']:.2f}/m³")
-        st.caption(f"model uncertainty ±{m_a['uncertainty']:.1f} MPa (heuristic) · curing ~{m_a['curing']:.0f} d")
+        st.caption(f"90% interval [{m_a['interval_lo']:.0f}–{m_a['interval_hi']:.0f}] MPa · curing ~{m_a['curing']:.0f} d")
+        if not m_a["in_support"]:
+            st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
     with res_b:
         st.subheader("Mix B")
         st.metric("Strength", f"{m_b['strength']:.1f} MPa", delta=f"{m_b['strength']-m_a['strength']:.1f}")
         strength_caption(m_b)
         st.metric("Carbon", f"{m_b['carbon']:.1f} kg CO₂/m³", delta=f"{m_b['carbon']-m_a['carbon']:.1f}", delta_color="inverse")
         st.metric("Cost", f"${m_b['cost']:.2f}/m³", delta=f"${m_b['cost']-m_a['cost']:.2f}", delta_color="inverse")
-        st.caption(f"model uncertainty ±{m_b['uncertainty']:.1f} MPa (heuristic) · curing ~{m_b['curing']:.0f} d")
+        st.caption(f"90% interval [{m_b['interval_lo']:.0f}–{m_b['interval_hi']:.0f}] MPa · curing ~{m_b['curing']:.0f} d")
+        if not m_b["in_support"]:
+            st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
 
 with tab2:
     st.header("Inverse Design: Recipes for a Target Strength")
@@ -326,6 +330,10 @@ with tab2:
     r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")
     r2.metric("Carbon", f"{rec['carbon']:.1f} kg CO₂/m³")
     r3.metric("Cost", f"${rec['cost']:.2f}/m³")
+    st.caption(f"90% interval [{rec['interval_lo']:.0f}–{rec['interval_hi']:.0f}] MPa")
+    if not rec["in_support"]:
+        st.warning("This recipe sits outside the well-sampled data region — the prediction is "
+                   "extrapolated. Prefer a mix inside the data, or collect lab data here.")
     st.caption("  ·  ".join(f"{p}: {rec['params'][p]:.0f}" for p in param_names))
     load_a, load_b = st.columns(2)
     if load_a.button("Load into Mix A"):

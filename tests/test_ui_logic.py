@@ -68,6 +68,14 @@ def test_batch_metrics_shapes(predictor):
     m = batch_metrics(samples, COSTS, predictor)
     assert m["strength"].shape == (3,)
     assert m["carbon"].shape == (3,) and m["cost"].shape == (3,)
+    assert m["novelty"].shape == (3,)
+
+
+def test_metrics_include_interval_and_support(predictor):
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    assert m["interval_lo"] < m["interval_hi"]
+    assert isinstance(m["in_support"], bool)
+    assert m["novelty"] >= 0
 
 
 def test_scalarized_fitness_formula(predictor):
