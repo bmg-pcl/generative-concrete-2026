@@ -14,7 +14,12 @@ import importlib
 import numpy as np
 import pytest
 
-from src.generative_ga import PopulationInverseDesigner, data_envelope, PARAM_NAMES
+from src.generative_ga import (
+    PopulationInverseDesigner,
+    AntColonyInverseDesigner,
+    data_envelope,
+    PARAM_NAMES,
+)
 from src.bayesian import BayesFlowExplorer
 from src.chemistry_advanced import inverse_plan_mix
 
@@ -73,3 +78,35 @@ def test_physics_module_removed():
     """physics.py was dead + broken; it must no longer be importable."""
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("src.physics")
+
+
+# --- ACO variant -----------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def aco_designer():
+    return AntColonyInverseDesigner()
+
+
+def test_aco_hits_target(aco_designer):
+    """The ACO designer must also reach the requested strength."""
+    for target in (30.0, 55.0):
+        mixes, errors = aco_designer.design(target, generations=40)
+        achieved = aco_designer.predictor.predict(mixes[0])
+        assert abs(achieved - target) < 3.0, f"target {target}: got {achieved:.1f} MPa"
+
+
+def test_aco_samples_stay_in_envelope(aco_designer):
+    env = data_envelope()
+    samples = aco_designer.sample(45.0, n_samples=300)
+    assert samples.shape == (300, len(PARAM_NAMES))
+    assert (samples >= env[:, 0] - 1e-6).all()
+    assert (samples <= env[:, 1] + 1e-6).all()
+
+
+def test_explorer_aco_backend():
+    """method='aco' routes through the ant-colony designer and tracks the target."""
+    explorer = BayesFlowExplorer()
+    samples = explorer.sample_posterior(50.0, n_samples=200, method="aco")
+    assert samples.shape == (200, len(PARAM_NAMES))
+    mean_strength = explorer.predictor.predict_batch(samples).mean()
+    assert abs(mean_strength - 50.0) < 12.0

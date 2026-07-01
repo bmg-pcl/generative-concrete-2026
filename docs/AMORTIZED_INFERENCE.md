@@ -161,16 +161,26 @@ Force one with `method="amortized"` or `method="ga"`.
 
 ---
 
-## 6. Why keep the GA designer too?
+## 6. Why keep the metaheuristic designers too?
 
-The GA inverse designer (`src/generative_ga.py`) is the always-available fallback:
+Two transparent metaheuristic designers (`src/generative_ga.py`) are the always-available
+fallbacks, sharing one base class so they differ *only* in the search engine:
 
-- it needs **no TensorFlow**, so the app runs anywhere;
-- it is **transparent** — just a genetic algorithm minimizing `|predict(mix) − target|`;
-- it handles **multi-objective** targets (strength *and* carbon) directly.
+- **GA** (`PopulationInverseDesigner`) — a genetic algorithm minimizing `|predict(mix) − target|`.
+- **ACO** (`AntColonyInverseDesigner`) — Ant Colony Optimization for continuous domains
+  (ACO_R, `src/aco.py`); keeps an archive of good mixes as "pheromone" and samples new mixes
+  around them. A useful independent check on the GA — if both converge to the same target
+  in-envelope, you trust the result more.
 
-The amortized flow adds **speed at scale** (thousands of instant queries) and a **calibrated
-uncertainty story**. They share one interface, so callers never change.
+Both:
+
+- need **no TensorFlow**, so the app runs anywhere;
+- are **transparent** (no neural network);
+- handle **multi-objective** targets (strength *and* carbon) directly via the shared objective.
+
+Select with `sample_posterior(..., method="ga"|"aco")`. The amortized flow adds **speed at scale**
+(thousands of instant queries) and a **calibrated uncertainty story**. All three share one
+interface, so callers never change.
 
 ---
 

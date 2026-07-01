@@ -18,7 +18,7 @@ except ImportError:
 from .data_fetcher import load_data
 from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
-from .generative_ga import PopulationInverseDesigner
+from .generative_ga import PopulationInverseDesigner, AntColonyInverseDesigner
 
 class BayesFlowExplorer:
     """
@@ -48,6 +48,7 @@ class BayesFlowExplorer:
         ])
         # Lazily-built backends (built on first use, sharing our predictor).
         self._designer = None
+        self._aco_designer = None
         self._amortized = None  # None=untried, False=unavailable, else the model
 
     @property
@@ -56,6 +57,13 @@ class BayesFlowExplorer:
         if self._designer is None:
             self._designer = PopulationInverseDesigner(predictor=self.predictor)
         return self._designer
+
+    @property
+    def aco_designer(self) -> AntColonyInverseDesigner:
+        """The ACO-based inverse designer, built on first use (shares our predictor)."""
+        if self._aco_designer is None:
+            self._aco_designer = AntColonyInverseDesigner(predictor=self.predictor)
+        return self._aco_designer
 
     @property
     def amortized(self):
@@ -113,14 +121,19 @@ class BayesFlowExplorer:
             AND no carbon target is given; otherwise the GA inverse designer.
           * method="amortized": force the flow (errors if none is trained).
           * method="ga": force the GA designer.
+          * method="aco": force the Ant Colony (ACO_R) designer.
 
-        The flow conditions on strength only, so carbon targets always route to the
-        GA (which bakes carbon into its objective).
+        The flow conditions on strength only, so carbon targets always route to a
+        metaheuristic designer (which bakes carbon into its objective).
         """
         if method == "amortized" and self.amortized is None:
             raise RuntimeError(
                 "No trained amortized posterior available. Train it first via "
                 "BayesFlowExplorer.train() / `python -m src.amortized`, or use method='ga'."
+            )
+        if method == "aco":
+            return self.aco_designer.sample(
+                target_strength, n_samples=n_samples, carbon_target=carbon_target
             )
         use_amortized = (
             method in ("auto", "amortized")

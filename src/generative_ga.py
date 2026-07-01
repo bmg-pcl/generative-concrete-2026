@@ -47,10 +47,14 @@ def data_envelope(param_names: List[str] = PARAM_NAMES) -> np.ndarray:
     return np.array([(df[name].min(), df[name].max()) for name in param_names], dtype=float)
 
 
-class PopulationInverseDesigner:
+class _InverseDesignerBase:
     """
-    GA-based inverse designer: given a target strength (and optional carbon target),
-    generate a spread of realistic mixes that achieve it.
+    Shared plumbing for metaheuristic inverse designers.
+
+    A subclass only has to implement `design()` -- run some optimizer and return the
+    final population ranked best-first. Everything else (the objective, turning the
+    ranked population into a sample cloud, the single-best-mix convenience) lives
+    here, so the GA and ACO variants stay tiny and identical apart from the search.
     """
 
     def __init__(
@@ -91,46 +95,25 @@ class PopulationInverseDesigner:
 
         return objective
 
-    # -- core search ---------------------------------------------------------
-    def design(
-        self,
-        target_strength: float,
-        carbon_target: Optional[float] = None,
-        pop_size: int = 80,
-        generations: int = 40,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Run the GA and return the final population sorted best-first.
-
-        Returns:
-            (mixes, errors) where mixes has shape (N, n_dims) and errors is the
-            objective value (lower = closer to target) for each row.
-        """
-        objective = self._make_objective(target_strength, carbon_target)
-        optimizer = GeneticOptimizer(
-            objective_fn=objective,
-            bounds=self.bounds.tolist(),
-            pop_size=pop_size,
-            maximize=False,  # we are minimising the target-match error
-        )
-        optimizer.run(generations)
-
-        # Include the global best (tracked separately from the live population).
+    def _rank(self, optimizer, objective) -> Tuple[np.ndarray, np.ndarray]:
+        """Collect an optimizer's final population + global best, ranked best-first."""
         best, _ = optimizer.get_best()
         population = np.vstack([best, optimizer.population])
-
         errors = np.array([objective(ind) for ind in population])
         order = np.argsort(errors)
         return population[order], errors[order]
 
-    # -- generative interface -----------------------------------------------
+    # -- to be provided by subclasses ---------------------------------------
+    def design(self, target_strength: float, carbon_target: Optional[float] = None,
+               **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError
+
+    # -- generative interface (shared) --------------------------------------
     def sample(
         self,
         target_strength: float,
         n_samples: int = 2000,
         carbon_target: Optional[float] = None,
-        pop_size: int = 80,
-        generations: int = 40,
     ) -> np.ndarray:
         """
         Produce an (n_samples, n_dims) cloud of target-conditioned mixes.
@@ -140,7 +123,7 @@ class PopulationInverseDesigner:
         of good solutions into a smooth spread suitable for the dashboard surface,
         while keeping every sample tied to the requested target.
         """
-        ranked, _ = self.design(target_strength, carbon_target, pop_size, generations)
+        ranked, _ = self.design(target_strength, carbon_target)
         n_elite = max(10, len(ranked) // 4)
         elite = ranked[:n_elite]
 
@@ -149,26 +132,78 @@ class PopulationInverseDesigner:
         samples = elite[idx] + jitter
         return np.clip(samples, self.bounds[:, 0], self.bounds[:, 1])
 
-    def best_mix(
+    def best_mix(self, target_strength: float, carbon_target: Optional[float] = None) -> Dict[str, float]:
+        """Single best mix as a dict -- for one-shot callers like inverse_plan_mix."""
+        ranked, _ = self.design(target_strength, carbon_target)
+        return dict(zip(self.param_names, ranked[0]))
+
+
+class PopulationInverseDesigner(_InverseDesignerBase):
+    """
+    GA-based inverse designer: given a target strength (and optional carbon target),
+    generate a spread of realistic mixes that achieve it.
+    """
+
+    def design(
         self,
         target_strength: float,
         carbon_target: Optional[float] = None,
         pop_size: int = 80,
         generations: int = 40,
-    ) -> Dict[str, float]:
-        """Single best mix as a dict -- for one-shot callers like inverse_plan_mix."""
-        ranked, _ = self.design(target_strength, carbon_target, pop_size, generations)
-        return dict(zip(self.param_names, ranked[0]))
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Run the GA and return the final population sorted best-first."""
+        objective = self._make_objective(target_strength, carbon_target)
+        optimizer = GeneticOptimizer(
+            objective_fn=objective,
+            bounds=self.bounds.tolist(),
+            pop_size=pop_size,
+            maximize=False,  # we are minimising the target-match error
+        )
+        optimizer.run(generations)
+        return self._rank(optimizer, objective)
+
+
+class AntColonyInverseDesigner(_InverseDesignerBase):
+    """
+    ACO-based inverse designer: identical interface to the GA variant, but uses
+    Ant Colony Optimization for continuous domains (ACO_R, see src/aco.py) as the
+    search engine. Useful as an independent metaheuristic to compare against the GA.
+    """
+
+    def design(
+        self,
+        target_strength: float,
+        carbon_target: Optional[float] = None,
+        n_ants: int = 40,
+        archive_size: int = 20,
+        generations: int = 40,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Run ACO_R and return the final solution archive sorted best-first."""
+        # Imported lazily so importing this module doesn't require the ACO engine.
+        from .aco import AntColonyOptimizer
+
+        objective = self._make_objective(target_strength, carbon_target)
+        optimizer = AntColonyOptimizer(
+            objective_fn=objective,
+            bounds=self.bounds.tolist(),
+            n_ants=n_ants,
+            archive_size=archive_size,
+            maximize=False,
+        )
+        optimizer.run(generations)
+        return self._rank(optimizer, objective)
 
 
 if __name__ == "__main__":
-    designer = PopulationInverseDesigner()
-    for target in (25.0, 45.0, 65.0):
-        mixes, errors = designer.design(target, generations=40)
-        best = mixes[0]
-        achieved = designer.predictor.predict(best)
-        print(
-            f"target={target:>4.0f} MPa -> achieved={achieved:5.1f} MPa "
-            f"(err={errors[0]:.2f}) | cement={best[0]:.0f} slag={best[1]:.0f} "
-            f"ash={best[2]:.0f} water={best[3]:.0f} age={best[7]:.0f}"
-        )
+    for name, cls in (("GA", PopulationInverseDesigner), ("ACO", AntColonyInverseDesigner)):
+        designer = cls()
+        print(f"=== {name} inverse designer ===")
+        for target in (25.0, 45.0, 65.0):
+            mixes, errors = designer.design(target, generations=40)
+            best = mixes[0]
+            achieved = designer.predictor.predict(best)
+            print(
+                f"  target={target:>4.0f} MPa -> achieved={achieved:5.1f} MPa "
+                f"(err={errors[0]:.2f}) | cement={best[0]:.0f} slag={best[1]:.0f} "
+                f"ash={best[2]:.0f} water={best[3]:.0f} age={best[7]:.0f}"
+            )

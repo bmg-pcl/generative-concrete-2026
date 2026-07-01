@@ -281,6 +281,9 @@ The table below lists the primary models, their implementation locations, and th
 | `Predictive Mix Performance ` (Amortized inference) | `src/bayesian.py` | ML / Amortized Bayesian Inference (Normalizing Flows — generative/inference) |
 | `Genetic Mix Optimizer` | `src/ga.py` | Optimization / Metaheuristic (Genetic Algorithm — population-based search) |
 | `Simulated Annealing Optimizer` | `src/annealing.py` | Optimization / Metaheuristic (Simulated Annealing — thermodynamic-inspired search) |
+| `Ant Colony Optimizer` | `src/aco.py` | Optimization / Metaheuristic (ACO_R — continuous-domain ant colony search) |
+| `Inverse Designers` (GA / ACO) | `src/generative_ga.py` | Generative / Metaheuristic inverse design (target-conditioned mix sampling) |
+| `Amortized Posterior` (BayesFlow flow) | `src/amortized.py` | ML / Amortized Bayesian Inference (trained normalizing flow + SBC) |
 | `Simple Accrual Chemistry` | `src/chemistry_simple.py` | Chemical / Heuristic linear constitutive model (carbon & cost estimates) |
 | `Molecular Chemistry` | `src/chemistry_advanced.py` | Chemical / Molecular-level thermodynamic & kinetic model (Bogue, hydration, pozzolanic reactions) |
 | Strength model artifact | `models/strength_model.json` | ML artifact (serialized XGBoost model) |

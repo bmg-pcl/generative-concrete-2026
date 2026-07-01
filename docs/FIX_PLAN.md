@@ -19,9 +19,10 @@ optional depth.
 | P3 Simple GA generator (`PopulationInverseDesigner`) | ✅ done | `1ce9c59` |
 | P4 Retire heuristic planner | ✅ done | `fc4a983` |
 | P5 UI honesty relabel | ✅ done | `fc4a983` |
-| P6 Regression tests (18 passing) | ✅ done | `fc4a983`, `60c598e` |
-| P7 Real amortized BayesFlow flow + SBC | ✅ done | this commit |
-| P7 remainder (ACO variant, rejection sampler) | ⏳ optional | — |
+| P6 Regression tests (21 passing) | ✅ done | `fc4a983`, `60c598e` |
+| P7 Real amortized BayesFlow flow + SBC | ✅ done | `54dd91e` |
+| P7 ACO generator variant | ✅ done | this commit |
+| P7 remainder (smoother rejection sampler) | ⏳ optional | — |
 
 ---
 
@@ -125,8 +126,11 @@ the requested strength.
 ## Phase 7 — Optional depth (later)
 *Not required for a correct, honest system.*
 
-15. Add **ACO** as a second population generator behind the same interface (the `Optimizer` base
-    already anticipates it) for comparison against the GA.
+15. ✅ **Done.** Added **ACO** (Ant Colony Optimization for continuous domains, ACO_R) as a second
+    population generator behind the same interface: `src/aco.py` (`AntColonyOptimizer`, an
+    `Optimizer` subclass) + `AntColonyInverseDesigner` sharing the GA designer's plumbing via a
+    common base. Selectable as `sample_posterior(..., method="aco")`. Both metaheuristics hit their
+    targets in-envelope.
 16. Add **importance/rejection sampling** for a smoother posterior surface if the discrete GA
     population looks too sparse in the UI.
 17. ✅ **Done.** Trained a **real amortized BayesFlow posterior** (`src/amortized.py`) behind the
