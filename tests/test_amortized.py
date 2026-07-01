@@ -50,6 +50,17 @@ def test_save_load_roundtrip(tmp_path, tiny_model):
     assert s.shape == (32, len(PARAM_NAMES))
 
 
+def test_load_detects_stale_dataset(tmp_path, tiny_model, monkeypatch):
+    """A flow trained on a different dataset size must be refused as stale."""
+    import src.amortized as A
+    prefix = str(tmp_path / "ckpt")
+    tiny_model.save(prefix)  # records the current dataset fingerprint
+    # Simulate calibration changing the dataset (more rows).
+    monkeypatch.setattr(A, "dataset_fingerprint", lambda: 10_000_000)
+    reloaded = A.AmortizedPosteriorModel(num_coupling_layers=3)
+    assert reloaded.load(prefix) is False
+
+
 def test_explorer_prefers_ga_when_no_weights(monkeypatch):
     """With no trained weights, BayesFlowExplorer must fall back to the GA designer."""
     from src.amortized import AmortizedPosteriorModel as APM

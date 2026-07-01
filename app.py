@@ -736,8 +736,15 @@ with tab4:
             with st.spinner("Incorporating new field data..."):
                 append_experimental_results(new_df)
                 predictor.train()
-                load_resources.clear()  # invalidate the cached predictor
+                load_resources.clear()   # rebuild the predictor + explorer
+                st.cache_data.clear()     # invalidate cached samples/recipes/presets
                 st.success("Model calibrated with actual field results!")
+                st.info(
+                    "The amortized BayesFlow flow is now **stale** — it was trained against the "
+                    "previous model — so Inverse Design falls back to the GA designer. Retrain the "
+                    "flow with `python -m src.amortized` to re-enable it.",
+                    icon="ℹ️",
+                )
                 st.balloons()
     
     st.markdown("""

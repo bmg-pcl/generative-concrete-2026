@@ -38,6 +38,16 @@ import numpy as np
 
 from .models import StrengthPredictor
 from .generative_ga import PARAM_NAMES, data_envelope
+from .data_fetcher import load_data
+
+
+def dataset_fingerprint() -> int:
+    """Row count of the current training dataset. Used to detect when a saved flow
+    is stale relative to a re-calibrated dataset. -1 if the data can't be read."""
+    try:
+        return int(len(load_data()))
+    except Exception:
+        return -1
 
 # BayesFlow / TensorFlow are optional heavy deps; import lazily-guarded so the rest
 # of the package keeps working without them.
@@ -172,13 +182,26 @@ class AmortizedPosteriorModel:
             prefix + "_norm.npz",
             theta_mean=self._theta_mean, theta_std=self._theta_std,
             x_mean=self._x_mean, x_std=self._x_std, bounds=self.bounds,
+            n_train=dataset_fingerprint(),  # to detect staleness after calibration
         )
 
     def load(self, prefix: str = WEIGHTS_PREFIX) -> bool:
-        """Load trained weights + normalisation. Returns False if none exist."""
+        """
+        Load trained weights + normalisation. Returns False if none exist OR if the
+        flow is stale -- i.e. it was trained against a different dataset than the one
+        now on disk (e.g. after Calibration appended lab rows and retrained XGBoost).
+        The flow is conditioned on the *old* forward model, so a mismatch means it no
+        longer matches reality; callers then fall back to the GA designer.
+        """
         if not os.path.exists(prefix + "_norm.npz"):
             return False
         norm = np.load(prefix + "_norm.npz")
+        if "n_train" in norm:
+            saved_n, current_n = int(norm["n_train"]), dataset_fingerprint()
+            if saved_n != current_n:
+                print(f"Amortized flow is STALE: trained on {saved_n} rows, dataset now has "
+                      f"{current_n}. Retrain with `python -m src.amortized`; using the GA designer.")
+                return False
         self._theta_mean, self._theta_std = norm["theta_mean"], norm["theta_std"]
         self._x_mean, self._x_std = float(norm["x_mean"]), float(norm["x_std"])
         self._ensure_built()
