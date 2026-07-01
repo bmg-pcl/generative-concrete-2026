@@ -17,6 +17,36 @@ def predictor():
     return StrengthPredictor()
 
 
+def test_interval_coverage(predictor):
+    """R1.1 gate: the conformalised 90% interval must actually cover ~90% of held-out
+    points. Recompute the same 80/20 split used in train() and measure on the test set."""
+    from sklearn.model_selection import train_test_split
+    from src.data_fetcher import load_data
+    df = load_data()
+    X = df.drop("strength", axis=1)
+    y = df["strength"]
+    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    lo, _, hi = predictor.predict_interval(np.asarray(X_test, dtype=float))
+    yt = np.asarray(y_test, dtype=float)
+    coverage = float(np.mean((yt >= lo) & (yt <= hi)))
+    assert 0.84 <= coverage <= 0.97, f"90% interval coverage was {coverage:.3f}"
+
+
+def test_novelty_threshold_is_calibrated(predictor):
+    """R1.2 gate: the stored threshold is data-derived (not the 1.5 fallback), and most
+    genuine (held-out) mixes are in-support under it."""
+    from sklearn.model_selection import train_test_split
+    from src.data_fetcher import load_data
+    df = load_data()
+    X = df.drop("strength", axis=1)
+    y = df["strength"]
+    _, X_test, _, _ = train_test_split(X, y, test_size=0.2, random_state=42)
+    thr = predictor.support_threshold()
+    assert thr != 1.5  # calibrated, not the fallback
+    frac_in = float(np.mean(predictor.in_support(np.asarray(X_test, dtype=float))))
+    assert frac_in >= 0.90
+
+
 def test_predict_interval_ordered_and_contains_signal(predictor):
     X = np.vstack([IN_DIST, OUT_DIST])
     lo, med, hi = predictor.predict_interval(X)

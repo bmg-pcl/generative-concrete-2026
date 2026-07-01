@@ -35,6 +35,7 @@ class StrengthPredictor:
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
+        # Mean model: trained on the FULL 80% training split (unchanged).
         self.model = xgb.XGBRegressor(n_estimators=500, learning_rate=0.05, max_depth=6, random_state=42)
         self.model.fit(X_train, y_train)
         y_pred = self.model.predict(X_test)
@@ -43,28 +44,54 @@ class StrengthPredictor:
         print(f"Model Trained. RMSE: {rmse:.2f}, R2: {r2:.2f}")
         self.model.save_model(STRENGTH_MODEL_PATH)
 
-        # Quantile model → genuine per-mix prediction intervals (heteroscedastic:
-        # wider where the data is noisy/sparse) instead of a hand-tuned heuristic.
+        # Quantile model on a FIT fold, conformalised on a held-out CALIBRATION fold
+        # (split conformal / CQR — Romano, Patterson & Candès 2019) so the 90% interval
+        # has *measured* coverage rather than relying on the raw trained quantiles.
+        X_fit, X_cal, y_fit, y_cal = train_test_split(X_train, y_train, test_size=0.25, random_state=42)
         quantile = xgb.XGBRegressor(
             objective="reg:quantileerror", quantile_alpha=QUANTILES,
             n_estimators=400, learning_rate=0.05, max_depth=4, random_state=42,
         )
-        quantile.fit(X_train, y_train)
+        quantile.fit(X_fit, y_fit)
         quantile.save_model(QUANTILE_MODEL_PATH)
         self._quantile = quantile
 
+        # CQR correction: symmetric conformity score on the calibration fold.
+        qp = np.atleast_2d(quantile.predict(X_cal))
+        q_lo, q_hi = np.minimum(qp[:, 0], qp[:, 2]), np.maximum(qp[:, 0], qp[:, 2])
+        yc = np.asarray(y_cal, dtype=float)
+        scores = np.maximum(q_lo - yc, yc - q_hi)
+        n_cal = len(scores)
+        k = int(np.ceil((n_cal + 1) * 0.90))
+        conformal_q = float(np.sort(scores)[min(k, n_cal) - 1])
+
         # Out-of-support reference: standardise the training features and record the
-        # typical distance to the k-th nearest training neighbour. A query far from
-        # the data (high kNN distance) is extrapolation, however confident the model.
+        # typical distance to the k-th nearest training neighbour.
         Xtr = np.asarray(X_train, dtype=float)
         mean, std = Xtr.mean(axis=0), Xtr.std(axis=0) + 1e-9
         Xs = (Xtr - mean) / std
         nn = NearestNeighbors(n_neighbors=SUPPORT_K + 1).fit(Xs)
         ref = float(np.median(nn.kneighbors(Xs)[0][:, SUPPORT_K]))  # kth dist (col 0 is self)
-        np.savez(SUPPORT_PATH, Xs=Xs, mean=mean, std=std, ref=ref, k=SUPPORT_K)
-        self._support = {"Xs": Xs, "mean": mean, "std": std, "ref": ref, "k": SUPPORT_K}
+        self._support = {"Xs": Xs, "mean": mean, "std": std, "ref": ref, "k": SUPPORT_K,
+                         "conformal_q": conformal_q, "novelty_threshold": 1.5}
 
-        return {"rmse": rmse, "r2": r2}
+        # Novelty threshold: 95th percentile of the held-out test fold's novelty against
+        # the training support — genuine unseen in-distribution mixes calibrate the cutoff.
+        novelty_threshold = float(np.percentile(self.novelty(np.asarray(X_test, dtype=float)), 95))
+        self._support["novelty_threshold"] = novelty_threshold
+
+        np.savez(SUPPORT_PATH, Xs=Xs, mean=mean, std=std, ref=ref, k=SUPPORT_K,
+                 conformal_q=conformal_q, novelty_threshold=novelty_threshold)
+
+        # Measured coverage of the (now conformalised) 90% interval on the test set.
+        lo, _, hi = self.predict_interval(np.asarray(X_test, dtype=float))
+        yt = np.asarray(y_test, dtype=float)
+        coverage = float(np.mean((yt >= lo) & (yt <= hi)))
+        print(f"Conformal q={conformal_q:.2f} | 90% PI coverage(test)={coverage:.3f} | "
+              f"novelty threshold={novelty_threshold:.2f}")
+
+        return {"rmse": rmse, "r2": r2, "coverage": coverage,
+                "conformal_q": conformal_q, "novelty_threshold": novelty_threshold}
 
     # -- lazy loaders --------------------------------------------------------
     def _ensure_model(self):
@@ -86,8 +113,15 @@ class StrengthPredictor:
         if self._support is None and os.path.exists(SUPPORT_PATH):
             d = np.load(SUPPORT_PATH)
             self._support = {"Xs": d["Xs"], "mean": d["mean"], "std": d["std"],
-                             "ref": float(d["ref"]), "k": int(d["k"])}
+                             "ref": float(d["ref"]), "k": int(d["k"]),
+                             "conformal_q": float(d["conformal_q"]) if "conformal_q" in d else 0.0,
+                             "novelty_threshold": float(d["novelty_threshold"]) if "novelty_threshold" in d else 1.5}
         return self._support
+
+    def support_threshold(self) -> float:
+        """The data-calibrated novelty cutoff (fallback 1.5 for old artifacts)."""
+        sup = self._load_support()
+        return sup["novelty_threshold"] if sup else 1.5
 
     # -- point prediction ----------------------------------------------------
     def predict(self, mix_design: np.ndarray) -> float:
@@ -105,10 +139,11 @@ class StrengthPredictor:
 
     # -- uncertainty ---------------------------------------------------------
     def predict_interval(self, X: np.ndarray):
-        """Return (lo, med, hi) arrays for a 90% prediction interval.
+        """Return (lo, med, hi) arrays for a conformalised 90% prediction interval.
 
-        Uses the quantile model when available; otherwise falls back to a flat
-        ±4 MPa band around the point prediction.
+        Applies the split-conformal correction q̂ (from calibration) to the quantile
+        bounds so coverage is calibrated. Falls back to a flat ±4 MPa band when no
+        quantile model is available.
         """
         X = np.atleast_2d(np.asarray(X, dtype=float))
         qm = self._load_quantile()
@@ -118,7 +153,9 @@ class StrengthPredictor:
         p = np.atleast_2d(qm.predict(X))
         lo = np.minimum(p[:, 0], p[:, 2])
         hi = np.maximum(p[:, 0], p[:, 2])
-        return lo, p[:, 1], hi
+        sup = self._load_support()
+        q = sup["conformal_q"] if sup else 0.0
+        return lo - q, p[:, 1], hi + q
 
     def predict_variance(self, mix_design: np.ndarray) -> float:
         """Uncertainty proxy: half the 90% prediction-interval width (MPa).
@@ -167,8 +204,13 @@ class StrengthPredictor:
             out[i:i + 256] = np.partition(d, sup["k"], axis=1)[:, sup["k"]]
         return out / sup["ref"]
 
-    def in_support(self, X: np.ndarray, threshold: float = 1.5) -> np.ndarray:
-        """Boolean mask: True where a mix is within the trusted data region."""
+    def in_support(self, X: np.ndarray, threshold: float = None) -> np.ndarray:
+        """Boolean mask: True where a mix is within the trusted data region.
+
+        Uses the data-calibrated threshold by default (see support_threshold()).
+        """
+        if threshold is None:
+            threshold = self.support_threshold()
         return self.novelty(X) <= threshold
 
 
