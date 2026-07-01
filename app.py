@@ -11,6 +11,13 @@ from src.bayesian import BayesFlowExplorer
 from src.ga import GeneticOptimizer
 from src.annealing import SimulatedAnnealing
 from src.data_fetcher import append_experimental_results, load_data
+from src.exotics import (
+    EXOTIC_ADMIXTURES,
+    EXOTIC_STRENGTH_DISCLAIMER,
+    exotic_carbon,
+    exotic_cost,
+    exotic_strength_delta,
+)
 
 st.set_page_config(page_title="Generative Mix Design", layout="wide", initial_sidebar_state="expanded")
 
@@ -63,22 +70,6 @@ PRESET_MIXTURES = get_preset_mixtures()
 status_container.empty()  # Clear loading message
 
 param_names = ["cement", "slag", "ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age"]
-
-# Extended admixtures
-EXOTIC_ADMIXTURES = {
-    "silica_fume": {"default": 0, "max": 50, "carbon_factor": 0.02, "cost": 0.80, "category": "Pozzolan"},
-    "metakaolin": {"default": 0, "max": 80, "carbon_factor": 0.30, "cost": 0.45, "category": "Pozzolan"},
-    "rice_husk_ash": {"default": 0, "max": 60, "carbon_factor": 0.01, "cost": 0.15, "category": "Pozzolan"},
-    "limestone_filler": {"default": 0, "max": 100, "carbon_factor": 0.01, "cost": 0.05, "category": "Filler"},
-    "calcined_clay": {"default": 0, "max": 150, "carbon_factor": 0.25, "cost": 0.12, "category": "Filler"},
-    "steel_fiber": {"default": 0, "max": 80, "carbon_factor": 1.80, "cost": 1.50, "category": "Fiber"},
-    "polypropylene_fiber": {"default": 0, "max": 10, "carbon_factor": 3.50, "cost": 4.00, "category": "Fiber"},
-    "basalt_fiber": {"default": 0, "max": 20, "carbon_factor": 0.60, "cost": 2.50, "category": "Fiber"},
-    "nano_silica": {"default": 0, "max": 5, "carbon_factor": 5.00, "cost": 25.00, "category": "Nano"},
-    "graphene_oxide": {"default": 0, "max": 1, "carbon_factor": 50.00, "cost": 500.00, "category": "Nano"},
-    "calcium_chloride": {"default": 0, "max": 10, "carbon_factor": 0.80, "cost": 0.30, "category": "Chemical"},
-    "shrink_reducer": {"default": 0, "max": 8, "carbon_factor": 2.00, "cost": 6.00, "category": "Chemical"},
-}
 
 # --- State Management ---
 if 'mix_a' not in st.session_state:
@@ -138,6 +129,22 @@ chemistry_mode = st.sidebar.radio(
 )
 use_advanced_chemistry = (chemistry_mode == "Advanced (Molecular)")
 
+st.sidebar.divider()
+st.sidebar.header("🧪 Exotic Strength Model")
+exotic_strength_enabled = st.sidebar.toggle(
+    "Include exotics in predicted strength (experimental)",
+    value=False,
+    help=(
+        "OFF (default): exotic admixtures affect only cost and carbon. The strength "
+        "model is trained on the UCI dataset, which contains none of these materials, "
+        "so it cannot predict their effect. ON: a placeholder linear estimate adds "
+        "their contribution to strength — UNVALIDATED, to be replaced when real exotic "
+        "strength data is available."
+    ),
+)
+if exotic_strength_enabled:
+    st.sidebar.warning(EXOTIC_STRENGTH_DISCLAIMER, icon="⚠️")
+
 # --- Main Layout ---
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["⚡ Generative Mix Design", "📊 Amortized Performance", "🧬 Pareto Optimization", "🔧 Calibration", "📄 Technical Report", "📚 References"])
 
@@ -168,6 +175,10 @@ with tab1:
                 mix_vals[7] = st.slider(f"Age (days) ({key})", 1, 365, int(mix_vals[7]))
         
         with st.expander(f"Exotic Admixtures ({key})", expanded=False):
+            if exotic_strength_enabled:
+                st.caption("Strength effect ON (experimental, unvalidated estimate).")
+            else:
+                st.caption("Affect cost & carbon only. Enable the exotic strength model in the sidebar to include them in strength.")
             for adm, props in EXOTIC_ADMIXTURES.items():
                 exotic_state[adm] = st.slider(f"{adm.replace('_', ' ').title()} ({key})", 0, props["max"], exotic_state.get(adm, 0))
         
@@ -180,12 +191,13 @@ with tab1:
 
     def get_metrics(mix, exotic):
         d = {k: v for k, v in zip(param_names, mix)}
-        extra_carbon = sum(exotic.get(k, 0) * EXOTIC_ADMIXTURES[k]["carbon_factor"] for k in EXOTIC_ADMIXTURES)
-        extra_cost = sum(exotic.get(k, 0) * EXOTIC_ADMIXTURES[k]["cost"] for k in EXOTIC_ADMIXTURES)
+        base_strength = predictor.predict(mix)
+        exotic_strength = exotic_strength_delta(exotic, enabled=exotic_strength_enabled)
         return {
-            "strength": predictor.predict(mix),
-            "carbon": calculate_embodied_carbon(d) + extra_carbon,
-            "cost": calculate_mix_cost(d, st.session_state.costs) + extra_cost,
+            "strength": base_strength + exotic_strength,
+            "exotic_strength": exotic_strength,
+            "carbon": calculate_embodied_carbon(d) + exotic_carbon(exotic),
+            "cost": calculate_mix_cost(d, st.session_state.costs) + exotic_cost(exotic),
             "curing": estimate_curing_time(d),
             "uncertainty": bayesian.evaluate_uncertainty(mix)
         }
@@ -193,16 +205,25 @@ with tab1:
     m_a = get_metrics(st.session_state.mix_a, st.session_state.exotic_a)
     m_b = get_metrics(st.session_state.mix_b, st.session_state.exotic_b)
 
+    def strength_caption(metrics):
+        """Honest note on how exotics relate to the strength number shown."""
+        if exotic_strength_enabled and metrics.get("exotic_strength"):
+            st.caption(f"includes {metrics['exotic_strength']:+.1f} MPa exotic estimate (unvalidated)")
+        else:
+            st.caption("model strength — exotics affect cost & carbon only")
+
     st.divider()
     res_a, res_b = st.columns(2)
     with res_a:
         st.subheader("Mix A")
         st.metric("Strength", f"{m_a['strength']:.1f} MPa")
+        strength_caption(m_a)
         st.metric("Carbon", f"{m_a['carbon']:.1f} kg CO₂/m³")
         st.metric("Cost", f"${m_a['cost']:.2f}/m³")
     with res_b:
         st.subheader("Mix B")
         st.metric("Strength", f"{m_b['strength']:.1f} MPa", delta=f"{m_b['strength']-m_a['strength']:.1f}")
+        strength_caption(m_b)
         st.metric("Carbon", f"{m_b['carbon']:.1f} kg CO₂/m³", delta=f"{m_b['carbon']-m_a['carbon']:.1f}", delta_color="inverse")
         st.metric("Cost", f"${m_b['cost']:.2f}/m³", delta=f"${m_b['cost']-m_a['cost']:.2f}", delta_color="inverse")
 
