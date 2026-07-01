@@ -283,7 +283,6 @@ The table below lists the primary models, their implementation locations, and th
 | `Simulated Annealing Optimizer` | `src/annealing.py` | Optimization / Metaheuristic (Simulated Annealing — thermodynamic-inspired search) |
 | `Simple Accrual Chemistry` | `src/chemistry_simple.py` | Chemical / Heuristic linear constitutive model (carbon & cost estimates) |
 | `Molecular Chemistry` | `src/chemistry_advanced.py` | Chemical / Molecular-level thermodynamic & kinetic model (Bogue, hydration, pozzolanic reactions) |
-| `Physics Heuristics` | `src/physics.py` | Empirical / Heuristic physics and cost-carbon utilities |
 | Strength model artifact | `models/strength_model.json` | ML artifact (serialized XGBoost model) |
 | Oxide composition data | `data/oxide_compositions.json` | Chemical reference data (oxide compositions for common SCMs/clinkers) |
 
