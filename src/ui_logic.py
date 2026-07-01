@@ -142,6 +142,32 @@ def recommend_recipe(
     }
 
 
+def pareto_front_mask(strength, carbon, cost) -> np.ndarray:
+    """
+    Boolean mask of the non-dominated (Pareto-optimal) points.
+
+    Objectives: MAXIMIZE strength, MINIMIZE carbon, MINIMIZE cost. Point i is
+    dominated if some other point is at least as good on all three objectives and
+    strictly better on at least one; non-dominated points form the Pareto front.
+
+    O(n^2) but vectorised per point; callers should cap n (a few thousand) since the
+    scalarized search can evaluate many points.
+    """
+    strength = np.asarray(strength, dtype=float)
+    carbon = np.asarray(carbon, dtype=float)
+    cost = np.asarray(cost, dtype=float)
+    n = len(strength)
+    on_front = np.ones(n, dtype=bool)
+    for i in range(n):
+        dominated_by = (
+            (strength >= strength[i]) & (carbon <= carbon[i]) & (cost <= cost[i])
+            & ((strength > strength[i]) | (carbon < carbon[i]) | (cost < cost[i]))
+        )
+        if dominated_by.any():
+            on_front[i] = False
+    return on_front
+
+
 def validate_lab_csv(df) -> Optional[str]:
     """
     Return None if a calibration upload is usable, else a human-readable error.

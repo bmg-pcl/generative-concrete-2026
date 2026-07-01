@@ -9,6 +9,7 @@ import pytest
 from src.ui_logic import (
     PARAM_NAMES,
     carbon_for_mode,
+    pareto_front_mask,
     compute_metrics,
     batch_metrics,
     scalarized_fitness,
@@ -98,6 +99,19 @@ def test_validate_lab_csv():
     # An all-NaN required column must be rejected (would poison retraining).
     nan_strength = pd.DataFrame([dict(zip(PARAM_NAMES + ["strength"], MIX + [np.nan]))])
     assert validate_lab_csv(nan_strength) is not None
+
+
+def test_pareto_front_mask():
+    # Objectives: max strength, min carbon, min cost.
+    # A: 40/200/100  B: 50/200/100 (dominates A)  C: 45/150/120 (non-dominated vs B)
+    # D: 50/210/110 (dominated by B)
+    strength = [40, 50, 45, 50]
+    carbon = [200, 200, 150, 210]
+    cost = [100, 100, 120, 110]
+    mask = pareto_front_mask(strength, carbon, cost)
+    assert list(mask) == [False, True, True, False]
+    # A single point is always on its own front.
+    assert list(pareto_front_mask([30], [100], [50])) == [True]
 
 
 def test_validate_session_state():

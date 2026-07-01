@@ -17,6 +17,7 @@ from src.ui_logic import (
     scalarized_fitness,
     recommend_recipe,
     carbon_for_mode,
+    pareto_front_mask,
     validate_lab_csv,
     validate_session_state,
 )
@@ -487,7 +488,7 @@ with tab3:
                 
                 # 3D Pareto
                 pareto_df = pd.DataFrame(all_pareto_points[-pop_size:])
-                pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Dynamic Pareto Frontier")
+                pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Current population (evaluated mixes)")
                 pareto_fig.update_layout(height=650, margin=dict(l=0, r=0, t=30, b=0))
                 pareto_placeholder.plotly_chart(pareto_fig, use_container_width=True)
             
@@ -527,7 +528,7 @@ with tab3:
                 convergence_placeholder.plotly_chart(conv_fig, use_container_width=True)
                 
                 pareto_df = pd.DataFrame(all_pareto_points[-100:])
-                pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Annealing Solution Trajectory")
+                pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Annealing trajectory (evaluated mixes)")
                 pareto_fig.update_layout(height=650)
                 pareto_placeholder.plotly_chart(pareto_fig, use_container_width=True)
                 
@@ -566,7 +567,34 @@ with tab3:
             height=400, showlegend=True, margin=dict(l=10, r=10, t=40, b=10)
         )
         st.plotly_chart(metrics_fig, use_container_width=True)
-        
+
+        # True Pareto front: the non-dominated subset of every mix evaluated during
+        # the search (max strength, min carbon, min cost). The scalarized search above
+        # produces a cloud; this extracts the actual trade-off surface from it.
+        st.subheader("Pareto-optimal set (non-dominated mixes)")
+        all_df = pd.DataFrame(all_pareto_points)
+        if len(all_df) > 3000:
+            all_df = all_df.tail(3000).reset_index(drop=True)
+        on_front = pareto_front_mask(all_df["Strength"], all_df["Carbon"], all_df["Cost"])
+        front_df = all_df[on_front].sort_values("Strength")
+        st.caption(
+            f"{on_front.sum()} non-dominated mixes out of {len(all_df)} evaluated — "
+            "each one cannot be improved on strength, carbon, or cost without worsening another."
+        )
+        front_fig = go.Figure()
+        front_fig.add_trace(go.Scatter3d(
+            x=all_df["Strength"], y=all_df["Carbon"], z=all_df["Cost"], mode="markers",
+            marker=dict(size=2, color="#555", opacity=0.35), name="evaluated", hoverinfo="skip"))
+        front_fig.add_trace(go.Scatter3d(
+            x=front_df["Strength"], y=front_df["Carbon"], z=front_df["Cost"], mode="markers",
+            marker=dict(size=5, color=front_df["Strength"], colorscale="Viridis", opacity=0.95),
+            text=front_df["Mix"], hoverinfo="text", name="Pareto front"))
+        front_fig.update_layout(
+            template="plotly_dark", height=600, margin=dict(l=0, r=0, t=10, b=0),
+            scene=dict(xaxis_title="Strength (MPa)", yaxis_title="Carbon (kg/m³)", zaxis_title="Cost ($/m³)"),
+            legend=dict(orientation="h", y=1.05))
+        st.plotly_chart(front_fig, use_container_width=True)
+
         st.subheader("Population Heatmap & Genetic Signatures")
         pop_df = pd.DataFrame(final_pop, columns=param_names)
         heatmap_fig = px.imshow(pop_df.T, labels=dict(x="Individual", y="Parameter", color="Value"), color_continuous_scale="Viridis", template="plotly_dark")
@@ -592,11 +620,14 @@ with tab3:
     minimums. As the 'Temperature' (T) cools, the walker becomes increasingly local, refining 
     its current position into a globally optimal configuration.<br><br>
     
-    <em>Pareto Frontier Duality:</em> In multi-objective design, 'the best mix' does not exist. 
-    Instead, we find the set of points where one objective (e.g., Cost) cannot be improved without 
-    sacrificing another (e.g., Strength). This 3D boundary is the Pareto Frontier. Our scalarization 
-    technique (Strength - 0.05*Carbon - 0.5*Cost) essentially sections this frontier at a specific 
-    angle of priority.
+    <em>Pareto Frontier:</em> In multi-objective design, 'the best mix' does not exist. Instead there
+    is a set of points where one objective (e.g., Cost) cannot be improved without sacrificing another
+    (e.g., Strength) — the Pareto front. The weighted objective (Strength - w<sub>C</sub>·Carbon -
+    w<sub>$</sub>·Cost) drives a single search direction, so the live scatter above is the cloud of
+    <em>evaluated</em> mixes, not the front itself. The "Pareto-optimal set" plot extracts the true
+    <strong>non-dominated</strong> subset of every evaluated mix, so the label reflects what is
+    actually computed. (A dedicated multi-objective method such as NSGA-II would populate the whole
+    front more evenly; that is future work.)
     </div>
     """, unsafe_allow_html=True)
 
