@@ -24,14 +24,18 @@ class BayesFlowExplorer:
     """
     Explores the inverse design space p(parameters | target strength).
 
-    NOTE ON THE CURRENT IMPLEMENTATION (see docs/FIX_PLAN.md):
-    The target-conditioned sampling below is provided by a simple, transparent
-    GA-based inverse designer (`PopulationInverseDesigner`), NOT by a trained
-    normalizing flow. This is deliberate: the GA generator is easy to understand,
-    needs no TensorFlow, and -- unlike the previous placeholder -- actually
-    depends on the requested target. The BayesFlow scaffolding (`build_model`/
-    `train`) is retained as future work (Phase 7) for a true amortized posterior,
-    but is not used by `sample_posterior`.
+    GENERATIVE BACKENDS (see docs/FIX_PLAN.md and docs/AMORTIZED_INFERENCE.md):
+    `sample_posterior` has two interchangeable backends behind one interface:
+
+      1. A trained **amortized BayesFlow posterior** (a normalizing flow in
+         `src/amortized.py`) -- used automatically when trained weights exist and
+         no carbon target is given (the flow conditions on strength only).
+      2. A transparent **GA inverse designer** (`PopulationInverseDesigner`) --
+         the always-available fallback; it needs no TensorFlow and also handles the
+         carbon objective.
+
+    Both are genuinely conditioned on the requested target (unlike the original
+    placeholder, which returned an identical noise cloud for every query).
     """
 
     def __init__(self):
@@ -42,8 +46,9 @@ class BayesFlowExplorer:
         self.bounds = np.array([
             (100, 550), (0, 360), (0, 200), (120, 250), (0, 30), (700, 1150), (550, 1000), (1, 365)
         ])
-        # Lazily-built GA inverse designer that backs the generative interface.
+        # Lazily-built backends (built on first use, sharing our predictor).
         self._designer = None
+        self._amortized = None  # None=untried, False=unavailable, else the model
 
     @property
     def designer(self) -> PopulationInverseDesigner:
@@ -51,66 +56,79 @@ class BayesFlowExplorer:
         if self._designer is None:
             self._designer = PopulationInverseDesigner(predictor=self.predictor)
         return self._designer
-        
-    def _prior(self):
-        """Draws samples from the parameter prior."""
-        return np.random.uniform(self.bounds[:, 0], self.bounds[:, 1])
 
-    def _simulator(self, theta):
-        """Simulates strength given parameters using the trained XGBoost model + noise."""
-        strength = self.predictor.predict(theta)
-        noise = np.random.normal(0, 2.0) # Assume 2MPa observation noise
-        return np.array([strength + noise])
+    @property
+    def amortized(self):
+        """
+        The trained amortized BayesFlow posterior if available, else None.
 
-    def build_model(self):
-        """Configures the BayesFlow neural networks."""
-        if bf is None:
-            return
-            
-        # Summary Network (Process strength data)
-        summary_net = bf.networks.SimpleSequenceNet(n_out=16) 
-        
-        # Inference Network (Normalizing Flow)
-        inference_net = bf.networks.InvertibleNetwork(
-            num_params=len(self.bounds),
-            num_coupling_layers=4
+        Available means: the pinned TF/BayesFlow stack is installed AND trained
+        weights exist on disk (models/amortizer/). Result is cached; when it is
+        None the callers transparently fall back to the GA designer.
+        """
+        if self._amortized is False:
+            return None
+        if self._amortized is None:
+            self._amortized = self._load_amortized()
+        return self._amortized or None
+
+    def _load_amortized(self):
+        try:
+            from .amortized import AmortizedPosteriorModel
+            if not AmortizedPosteriorModel.weights_exist():
+                return False
+            model = AmortizedPosteriorModel(predictor=self.predictor)
+            if not model.load():
+                return False
+            self.is_trained = True
+            return model
+        except Exception as e:  # missing TF/BayesFlow, or load failure
+            print(f"Amortized posterior unavailable ({type(e).__name__}: {e}); using GA designer.")
+            return False
+
+    def train(self, epochs=40, iterations_per_epoch=300, batch_size=64):
+        """
+        Train and persist the amortized BayesFlow posterior (see src/amortized.py).
+
+        Requires the pinned TF/BayesFlow stack (requirements.txt). Trains a
+        normalizing flow via simulation-based inference against the XGBoost forward
+        model, saves the weights, and wires them in so `sample_posterior` uses the
+        flow automatically. Returns the trained AmortizedPosteriorModel.
+        """
+        from .amortized import AmortizedPosteriorModel
+        model = AmortizedPosteriorModel(predictor=self.predictor)
+        model.train(epochs=epochs, iterations_per_epoch=iterations_per_epoch, batch_size=batch_size)
+        model.save()
+        self._amortized = model
+        self.is_trained = True
+        return model
+
+    def sample_posterior(self, target_strength: float, carbon_target: float = None,
+                         n_samples: int = 2000, method: str = "auto") -> np.ndarray:
+        """
+        Draw mix designs conditioned on the target strength (and optional carbon target).
+
+        Backend selection:
+          * method="auto" (default): use the trained amortized flow when it exists
+            AND no carbon target is given; otherwise the GA inverse designer.
+          * method="amortized": force the flow (errors if none is trained).
+          * method="ga": force the GA designer.
+
+        The flow conditions on strength only, so carbon targets always route to the
+        GA (which bakes carbon into its objective).
+        """
+        if method == "amortized" and self.amortized is None:
+            raise RuntimeError(
+                "No trained amortized posterior available. Train it first via "
+                "BayesFlowExplorer.train() / `python -m src.amortized`, or use method='ga'."
+            )
+        use_amortized = (
+            method in ("auto", "amortized")
+            and carbon_target is None
+            and self.amortized is not None
         )
-        
-        self.amortizer = bf.amortizers.AmortizedPosterior(inference_net, summary_net)
-
-    def train(self, epochs=20, iterations_per_epoch=100, batch_size=32):
-        """
-        Placeholder for training a true amortized BayesFlow posterior (Phase 7).
-
-        This is NOT yet implemented: the loop below only generates simulation data
-        and the actual `bf.trainers.Trainer(...)` fit is not wired up. It does not
-        affect `sample_posterior`, which is served by the GA inverse designer. The
-        method is kept as a scaffold and intentionally leaves `is_trained = False`
-        so nothing mistakes it for a calibrated flow.
-        """
-        if bf is None:
-            print("BayesFlow/TensorFlow not installed; amortized training is unavailable. "
-                  "sample_posterior() uses the GA inverse designer instead.")
-            return
-
-        if self.amortizer is None:
-            self.build_model()
-
-        print("BayesFlow amortized training is not yet implemented (Phase 7). "
-              "Generating simulation data only; no fit is performed.")
-        # Future work: draw (theta, x) from _prior/_simulator and call
-        # bf.trainers.Trainer(amortizer=self.amortizer). Left unwired on purpose.
-
-    def sample_posterior(self, target_strength: float, carbon_target: float = None, n_samples: int = 2000) -> np.ndarray:
-        """
-        Draw a cloud of mix designs conditioned on the target strength (and an
-        optional carbon target).
-
-        Delegates to the GA-based `PopulationInverseDesigner`: it searches -- within
-        the training-data envelope -- for mixes whose predicted strength matches the
-        target, then returns a spread around the best of them. Unlike the previous
-        placeholder, the result genuinely depends on `target_strength`.
-        """
+        if use_amortized:
+            return self.amortized.sample(target_strength, n_samples=n_samples)
         return self.designer.sample(
             target_strength,
             n_samples=n_samples,
@@ -166,15 +184,25 @@ class BayesFlowExplorer:
         return float(self.predictor.predict_variance(np.asarray(mix_design, dtype=float)))
 
     def explain_empty_spaces(self) -> str:
+        backend = "trained amortized normalizing flow" if self.amortized is not None \
+            else "GA inverse designer (train the flow to enable the BayesFlow backend)"
         return (
-            "### Amortized Bayesian Inference with BayesFlow\n"
-            "We use **Normalizing Flows** to learn the entire inverse mapping from performance targets to mix designs. "
-            "Unlike traditional models which give a single answer, BayesFlow gives you the **full posterior probability mesh**.\n\n"
-            "**Key Advantages:**\n"
-            "1. **Multi-Objective Targets**: We can now condition the posterior on both **Target Strength** and **Carbon Footprint**.\n"
-            "2. **Active Experimental Design**: The `suggest_tests` feature identifies the top-five mix designs that are both likely to meet your targets and reside in high-uncertainty regions of the model.\n"
-            "3. **Instant Inference**: Once trained, we can query 10,000+ mix candidates for any target in milliseconds.\n"
-            "4. **Empty Space Detection**: High-variance posteriors directly pinpoint where our knowledge is 'thin'.\n"
+            "### Amortized Bayesian Inference\n"
+            f"**Active backend:** {backend}.\n\n"
+            "We learn the inverse mapping from performance targets to mix designs. Rather than a "
+            "single answer, we return a **spread of candidate mixes** consistent with the target.\n\n"
+            "**How it works (see `docs/AMORTIZED_INFERENCE.md`):**\n"
+            "1. **Amortized flow**: a BayesFlow normalizing flow is trained once, via simulation-based "
+            "inference against the XGBoost forward model, to sample `p(mix | target strength)` "
+            "instantly for any target.\n"
+            "2. **Calibration**: the flow is checked with Simulation-Based Calibration (SBC); "
+            "well-calibrated posteriors have uniform rank statistics.\n"
+            "3. **GA fallback**: when the flow is untrained (or a carbon target is set), a transparent "
+            "genetic-algorithm designer provides the same interface with no neural network.\n"
+            "4. **Active experimental design**: `suggest_tests` blends target proximity with model "
+            "uncertainty to point at high-value, under-explored 'empty spaces'.\n\n"
+            "**Honest caveat:** the flow is trained against the forward *model*, not raw lab data, so "
+            "its posterior reflects the model's view of the world (the 'simulation gap').\n"
         )
 
 if __name__ == "__main__":

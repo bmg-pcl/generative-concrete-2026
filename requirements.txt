@@ -1,4 +1,11 @@
-numpy
+# NOTE: The amortized BayesFlow stack (bayesflow 1.x) is built on the classic
+# TensorFlow/TFP graph API and has tight version constraints:
+#   - bayesflow 1.x uses tf.keras / tfp (not the Keras-3 rewrite in bayesflow 2.x)
+#   - tensorflow 2.14 pairs with tensorflow-probability 0.22.x
+#   - tensorflow 2.14 requires numpy < 2 (ABI break in numpy 2.x)
+# The core app (XGBoost + GA generator + chemistry) works without these; they are
+# only needed to train/sample the amortized posterior in src/amortized.py.
+numpy<2
 matplotlib
 plotly
 ipywidgets
@@ -11,6 +18,6 @@ openpyxl
 xlrd
 xgboost
 scikit-learn
-bayesflow
-tensorflow
-tensorflow-probability
+bayesflow<2
+tensorflow==2.14.*
+tensorflow-probability==0.22.*

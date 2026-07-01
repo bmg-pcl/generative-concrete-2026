@@ -19,8 +19,9 @@ optional depth.
 | P3 Simple GA generator (`PopulationInverseDesigner`) | ✅ done | `1ce9c59` |
 | P4 Retire heuristic planner | ✅ done | `fc4a983` |
 | P5 UI honesty relabel | ✅ done | `fc4a983` |
-| P6 Regression tests (14 passing) | ✅ done | `fc4a983`, `60c598e` |
-| P7 Optional depth (ACO / rejection sampler / real flow) | ⏳ not started | — |
+| P6 Regression tests (18 passing) | ✅ done | `fc4a983`, `60c598e` |
+| P7 Real amortized BayesFlow flow + SBC | ✅ done | this commit |
+| P7 remainder (ACO variant, rejection sampler) | ⏳ optional | — |
 
 ---
 
@@ -128,8 +129,11 @@ the requested strength.
     already anticipates it) for comparison against the GA.
 16. Add **importance/rejection sampling** for a smoother posterior surface if the discrete GA
     population looks too sparse in the UI.
-17. Train a **real amortized BayesFlow posterior** behind the same `sample_posterior` interface and
-    run the **SBC diagnostic** the report admits (§5.2) has never been run.
+17. ✅ **Done.** Trained a **real amortized BayesFlow posterior** (`src/amortized.py`) behind the
+    same `sample_posterior` interface, with the **SBC diagnostic** the report admits (§5.2) had
+    never been run — all 8 parameters calibrate to a mean normalized rank of ≈0.50. It is the
+    default backend when trained weights exist; the GA designer remains the fallback. Fully
+    documented in `docs/AMORTIZED_INFERENCE.md`.
 
 ---
 

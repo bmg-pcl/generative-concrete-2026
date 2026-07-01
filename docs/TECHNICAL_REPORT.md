@@ -194,7 +194,7 @@ Does the code do what the documentation says? This is tested via unit tests:
 Does the model match reality? This requires external benchmarks:
 - XGBoost: 80/20 train-test split, R² = 0.92 ✓
 - Chemistry: Comparison against Taylor (1997) phase compositions ✓
-- BayesFlow: Simulation-Based Calibration (SBC) diagnostics ✗ (not yet run)
+- BayesFlow: Simulation-Based Calibration (SBC) diagnostics ✓ (all 8 parameters calibrate to mean normalized rank ≈0.50; see `docs/AMORTIZED_INFERENCE.md`)
 
 ### 5.3 Qualification (Fitness for Purpose)
 Does the system solve the user's problem? This requires field deployment:

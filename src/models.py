@@ -56,6 +56,17 @@ class StrengthPredictor:
             
         return float(self.model.predict(mix_design)[0])
 
+    def predict_batch(self, X: np.ndarray) -> np.ndarray:
+        """Predict strength for a batch of mixes; returns a 1D array (len N)."""
+        if self.model is None:
+            if os.path.exists(STRENGTH_MODEL_PATH):
+                self.model = xgb.XGBRegressor()
+                self.model.load_model(STRENGTH_MODEL_PATH)
+            else:
+                raise ValueError("Model not trained. Run train() first.")
+        X = np.atleast_2d(np.asarray(X, dtype=float))
+        return np.asarray(self.model.predict(X), dtype=float).ravel()
+
     def predict_variance(self, mix_design: np.ndarray) -> float:
         """
         Heuristic uncertainty estimator.

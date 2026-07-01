@@ -18,7 +18,15 @@ pip install -r requirements.txt
 python -m src.data_fetcher --check
 ```
 
-### 3. Launch the Lab-Twin
+### 3. (Optional) Train the amortized posterior
+```bash
+python -m src.amortized   # trains the BayesFlow normalizing flow + runs SBC calibration
+```
+Skippable: without it, inverse design falls back to the transparent GA generator.
+See [`docs/AMORTIZED_INFERENCE.md`](docs/AMORTIZED_INFERENCE.md) for what amortized
+inference is and why we use it.
+
+### 4. Launch the Lab-Twin
 ```bash
 streamlit run app.py
 ```
