@@ -18,13 +18,22 @@ except ImportError:
 from .data_fetcher import load_data
 from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
+from .generative_ga import PopulationInverseDesigner
 
 class BayesFlowExplorer:
     """
-    Evaluates the design space using BayesFlow for Amortized Bayesian Inference.
-    Learns the posterior distribution p(parameters | strength) across the entire space.
+    Explores the inverse design space p(parameters | target strength).
+
+    NOTE ON THE CURRENT IMPLEMENTATION (see docs/FIX_PLAN.md):
+    The target-conditioned sampling below is provided by a simple, transparent
+    GA-based inverse designer (`PopulationInverseDesigner`), NOT by a trained
+    normalizing flow. This is deliberate: the GA generator is easy to understand,
+    needs no TensorFlow, and -- unlike the previous placeholder -- actually
+    depends on the requested target. The BayesFlow scaffolding (`build_model`/
+    `train`) is retained as future work (Phase 7) for a true amortized posterior,
+    but is not used by `sample_posterior`.
     """
-    
+
     def __init__(self):
         self.predictor = StrengthPredictor()
         self.amortizer = None
@@ -33,6 +42,15 @@ class BayesFlowExplorer:
         self.bounds = np.array([
             (100, 550), (0, 360), (0, 200), (120, 250), (0, 30), (700, 1150), (550, 1000), (1, 365)
         ])
+        # Lazily-built GA inverse designer that backs the generative interface.
+        self._designer = None
+
+    @property
+    def designer(self) -> PopulationInverseDesigner:
+        """The GA-based inverse designer, built on first use (shares our predictor)."""
+        if self._designer is None:
+            self._designer = PopulationInverseDesigner(predictor=self.predictor)
+        return self._designer
         
     def _prior(self):
         """Draws samples from the parameter prior."""
@@ -61,53 +79,43 @@ class BayesFlowExplorer:
         self.amortizer = bf.amortizers.AmortizedPosterior(inference_net, summary_net)
 
     def train(self, epochs=20, iterations_per_epoch=100, batch_size=32):
-        """Trains the amortizer using simulation-based learning."""
+        """
+        Placeholder for training a true amortized BayesFlow posterior (Phase 7).
+
+        This is NOT yet implemented: the loop below only generates simulation data
+        and the actual `bf.trainers.Trainer(...)` fit is not wired up. It does not
+        affect `sample_posterior`, which is served by the GA inverse designer. The
+        method is kept as a scaffold and intentionally leaves `is_trained = False`
+        so nothing mistakes it for a calibrated flow.
+        """
+        if bf is None:
+            print("BayesFlow/TensorFlow not installed; amortized training is unavailable. "
+                  "sample_posterior() uses the GA inverse designer instead.")
+            return
+
         if self.amortizer is None:
             self.build_model()
-            
-        print("Training BayesFlow Amortizer...")
-        # Simple training loop vs bf.trainers.Trainer for brevity here
-        for epoch in range(epochs):
-            # Generate synthetic data
-            theta = np.array([self._prior() for _ in range(batch_size * iterations_per_epoch)]).astype(np.float32)
-            x = np.array([self._simulator(t) for t in theta]).astype(np.float32)
-            
-            # This is a placeholder for the actual BayesFlow training call
-            # In a real run, we'd use bf.trainers.Trainer(amortizer=self.amortizer)
-            pass
-        
-        self.is_trained = True
-        print("Amortizer calibrated and ready.")
+
+        print("BayesFlow amortized training is not yet implemented (Phase 7). "
+              "Generating simulation data only; no fit is performed.")
+        # Future work: draw (theta, x) from _prior/_simulator and call
+        # bf.trainers.Trainer(amortizer=self.amortizer). Left unwired on purpose.
 
     def sample_posterior(self, target_strength: float, carbon_target: float = None, n_samples: int = 2000) -> np.ndarray:
-        """Draws samples from the amortized posterior for a target strength and optional carbon target."""
-        if not self.is_trained:
-            # For demo purposes, if not trained, return pertubed samples around a mean
-            print("Warning: Amortizer not trained. Returning heuristic samples.")
-            samples = np.random.normal(self.bounds.mean(axis=1), self.bounds.std(axis=1)/4, (n_samples, 8))
-        else:
-            # In real use: samples = self.amortizer.sample(target_strength, n_samples)
-            samples = np.random.normal(self.bounds.mean(axis=1), 10, (n_samples, 8))
-        
-        # Clip to bounds
-        samples = np.clip(samples, self.bounds[:, 0], self.bounds[:, 1])
-        
-        if carbon_target is not None:
-            # Multi-objective filtering/weighting placeholder
-            # In a real BayesFlow implementation, carbon would be part of the conditional vector 'x'
-            valid_samples = []
-            for s in samples:
-                mix_dict = dict(zip(self.param_names, s))
-                carbon = calculate_embodied_carbon(mix_dict)
-                if carbon <= carbon_target * 1.1: # Allow 10% tolerance for exploration
-                    valid_samples.append(s)
-            
-            if len(valid_samples) < 10:
-                print(f"Warning: Only {len(valid_samples)} samples met carbon target {carbon_target}. Returning best effort.")
-                return samples[:10]
-            return np.array(valid_samples)
-            
-        return samples
+        """
+        Draw a cloud of mix designs conditioned on the target strength (and an
+        optional carbon target).
+
+        Delegates to the GA-based `PopulationInverseDesigner`: it searches -- within
+        the training-data envelope -- for mixes whose predicted strength matches the
+        target, then returns a spread around the best of them. Unlike the previous
+        placeholder, the result genuinely depends on `target_strength`.
+        """
+        return self.designer.sample(
+            target_strength,
+            n_samples=n_samples,
+            carbon_target=carbon_target,
+        )
 
     def suggest_tests(self, target_strength: float, carbon_target: float = None, n_tests: int = 5) -> pd.DataFrame:
         """
@@ -146,9 +154,16 @@ class BayesFlowExplorer:
         return top_tests
 
     def evaluate_uncertainty(self, mix_design: np.ndarray) -> float:
-        """Quantifies how 'empty' the space is using posterior entropy/variance."""
-        # Higher variance in predicted strength for this mix = emptier space
-        return float(np.random.uniform(0.1, 0.9)) # Heuristic placeholder
+        """
+        Quantifies how 'empty' (uncertain) the design space is around a mix.
+
+        Backed by the predictor's heuristic variance estimate rather than a random
+        number: mixes with extreme w/c ratios or high SCM replacement -- regions the
+        1998 UCI data covers sparsely -- score higher. This is still a heuristic
+        (a real system would use deep ensembles), but it is at least deterministic
+        and grounded in the mix, not noise.
+        """
+        return float(self.predictor.predict_variance(np.asarray(mix_design, dtype=float)))
 
     def explain_empty_spaces(self) -> str:
         return (
