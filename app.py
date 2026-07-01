@@ -5,7 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import json
 import re
-from src.models import StrengthPredictor
+from datetime import datetime, timezone
+from src.models import StrengthPredictor, load_metrics_history
 from src.chemistry_simple import calculate_mix_cost, UNIT_COSTS, CARBON_FACTORS
 from src.bayesian import BayesFlowExplorer
 from src.ga import GeneticOptimizer
@@ -21,6 +22,7 @@ from src.ui_logic import (
     recommend_recipe,
     carbon_for_mode,
     pareto_front_mask,
+    mix_ticket,
     validate_lab_csv,
     validate_session_state,
 )
@@ -97,9 +99,11 @@ st.markdown("AI-powered concrete formulation: prediction, optimization, and inve
 # --- Sidebar: step-by-step guidance + session tools ---
 def get_state_json():
     state = {
+        "version": 2,
         "mix_a": st.session_state.mix_a.tolist(),
         "mix_b": st.session_state.mix_b.tolist(),
         "costs": st.session_state.costs,
+        "carbon_factors": st.session_state.carbon_factors,   # was dropped in v1 (regression)
         "exotic_a": st.session_state.exotic_a,
         "exotic_b": st.session_state.exotic_b,
     }
@@ -142,6 +146,8 @@ with st.sidebar:
                 st.session_state.mix_a = np.array(data["mix_a"])
                 st.session_state.mix_b = np.array(data["mix_b"])
                 st.session_state.costs = data["costs"]
+                if "carbon_factors" in data:   # v2; v1 files simply keep the defaults
+                    st.session_state.carbon_factors = data["carbon_factors"]
                 if "exotic_a" in data:
                     st.session_state.exotic_a = data["exotic_a"]
                     st.session_state.exotic_b = data["exotic_b"]
@@ -236,6 +242,13 @@ with tab_config:
         if exotic_strength_enabled:
             st.warning(EXOTIC_STRENGTH_DISCLAIMER)
 
+# Config bundle for mix-ticket export (all Config values are in scope here).
+ticket_config = {
+    **carbon_kwargs, "advanced": use_advanced_chemistry, "costs": st.session_state.costs,
+    "robust": robust_mode,
+    "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+}
+
 with tab1:
     st.markdown("""
     **How to use:** Configure two mix designs side-by-side to compare predicted performance. 
@@ -304,22 +317,30 @@ with tab1:
         strength_caption(m_a)
         st.metric("Carbon", f"{m_a['carbon']:.1f} kg CO₂/m³")
         st.metric("Cost", f"${m_a['cost']:.2f}/m³")
-        st.caption(f"90% interval [{m_a['interval_lo']:.0f}–{m_a['interval_hi']:.0f}] MPa · curing ~{m_a['curing']:.0f} d (heuristic)")
+        st.caption(f"90% interval [{m_a['interval_lo']:.0f}–{m_a['interval_hi']:.0f}] MPa · "
+                   f"tensile ~{m_a['tensile']:.1f} MPa (EC2 derived) · curing ~{m_a['curing']:.0f} d (heuristic)")
         if not m_a["in_support"]:
             st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
         if m_a["workability"]:
             st.caption(f"Workability: {m_a['workability']}")
+        st.download_button("Download ticket (A)", key="ticket_a",
+                           data=mix_ticket(dict(zip(param_names, st.session_state.mix_a)), m_a, ticket_config),
+                           file_name="mix_A_ticket.csv", mime="text/csv")
     with res_b:
         st.subheader("Mix B")
         st.metric("Strength", f"{m_b['strength']:.1f} MPa", delta=f"{m_b['strength']-m_a['strength']:.1f}")
         strength_caption(m_b)
         st.metric("Carbon", f"{m_b['carbon']:.1f} kg CO₂/m³", delta=f"{m_b['carbon']-m_a['carbon']:.1f}", delta_color="inverse")
         st.metric("Cost", f"${m_b['cost']:.2f}/m³", delta=f"${m_b['cost']-m_a['cost']:.2f}", delta_color="inverse")
-        st.caption(f"90% interval [{m_b['interval_lo']:.0f}–{m_b['interval_hi']:.0f}] MPa · curing ~{m_b['curing']:.0f} d (heuristic)")
+        st.caption(f"90% interval [{m_b['interval_lo']:.0f}–{m_b['interval_hi']:.0f}] MPa · "
+                   f"tensile ~{m_b['tensile']:.1f} MPa (EC2 derived) · curing ~{m_b['curing']:.0f} d (heuristic)")
         if not m_b["in_support"]:
             st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
         if m_b["workability"]:
             st.caption(f"Workability: {m_b['workability']}")
+        st.download_button("Download ticket (B)", key="ticket_b",
+                           data=mix_ticket(dict(zip(param_names, st.session_state.mix_b)), m_b, ticket_config),
+                           file_name="mix_B_ticket.csv", mime="text/csv")
 
 with tab2:
     st.header("Inverse Design: Recipes for a Target Strength")
@@ -406,6 +427,11 @@ with tab2:
     if load_b.button("Load into Mix B"):
         st.session_state.mix_b = np.array([rec["params"][p] for p in param_names])
         st.success("Loaded into Mix B — see the Compare Mixes tab.")
+    st.download_button(
+        "Download recipe ticket (CSV)", key="ticket_rec",
+        data=mix_ticket(rec["params"], rec, ticket_config),
+        file_name="recommended_recipe_ticket.csv", mime="text/csv",
+    )
 
     # --- Density surface over two chosen parameters -----------------------------
     st.subheader("Design-space spread")
@@ -822,10 +848,57 @@ with tab4:
                     icon="ℹ️",
                 )
                 st.balloons()
-    
+
+    st.divider()
+    st.subheader("Active learning: which lab tests to run next")
+    st.caption(
+        "Rather than testing at random, this ranks candidate mixes by how much running "
+        "them would sharpen the model — mixes near your target, in under-sampled regions "
+        "(high novelty), with wide prediction intervals. Running the top rows and feeding "
+        "the results back above shrinks the model's blind spots fastest."
+    )
+    al_c1, al_c2 = st.columns([1, 1])
+    with al_c1:
+        al_target = st.number_input("Target strength for suggestions (MPa)", 10, 100, 45, key="al_target")
+    with al_c2:
+        al_n = st.number_input("Number of tests to suggest", 3, 20, 5, key="al_n")
+    if st.button("Suggest tests"):
+        with st.spinner("Ranking informative candidate mixes…"):
+            st.session_state.al_suggestions = bayesian.suggest_tests(
+                float(al_target), n_tests=int(al_n)
+            )
+    if st.session_state.get("al_suggestions") is not None:
+        sugg = st.session_state.al_suggestions
+        st.dataframe(sugg, use_container_width=True, height=260)
+        st.download_button(
+            "Download suggested tests (CSV)", data=sugg.to_csv(index=False),
+            file_name="suggested_lab_tests.csv", mime="text/csv",
+        )
+        st.caption("merit = interval half-width × min(novelty, 3) / (1 + |strength − target|)")
+
+    hist = load_metrics_history()
+    if hist:
+        st.divider()
+        st.subheader("Model accuracy over retrains")
+        hist_df = pd.DataFrame(hist)
+        acc_fig = go.Figure()
+        acc_fig.add_trace(go.Scatter(y=hist_df["rmse"], mode="lines+markers",
+                                     name="RMSE (MPa)", line=dict(color="#E91E63")))
+        acc_fig.add_trace(go.Scatter(y=hist_df["r2"], mode="lines+markers",
+                                     name="R²", line=dict(color="#00E676"), yaxis="y2"))
+        acc_fig.update_layout(
+            template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
+            xaxis_title="Retrain #",
+            yaxis=dict(title=dict(text="RMSE (MPa)", font=dict(color="#E91E63")), tickfont=dict(color="#E91E63")),
+            yaxis2=dict(title=dict(text="R²", font=dict(color="#00E676")), tickfont=dict(color="#00E676"),
+                        overlaying="y", side="right"),
+            legend=dict(orientation="h", y=1.2))
+        st.plotly_chart(acc_fig, use_container_width=True)
+        st.dataframe(hist_df, use_container_width=True, height=180)
+
     st.markdown("""
     <div class="footnote">
-    <strong>About Calibration:</strong> Machine learning models are only as good as their training data. 
+    <strong>About Calibration:</strong> Machine learning models are only as good as their training data.
     The UCI dataset was collected in Taiwan in the 1990s and may not reflect modern admixtures, regional 
     materials, or your specific cement suppliers. The calibration feature allows you to upload actual 
     laboratory test results (from destructive cylinder breaks or NDE methods like rebound hammer or 

@@ -15,6 +15,8 @@ from .chemistry_simple import (
     calculate_embodied_carbon,
     calculate_mix_cost,
     estimate_curing_time,
+    CARBON_FACTORS,
+    UNIT_COSTS,
 )
 from .chemistry_advanced import embodied_carbon_advanced
 from .exotics import exotic_carbon, exotic_cost, exotic_strength_delta
@@ -25,6 +27,21 @@ from .generative_ga import PARAM_NAMES  # single source of the 8-parameter order
 def mix_dict(mix) -> Dict[str, float]:
     """Turn an 8-vector into a named mix dict."""
     return {k: float(v) for k, v in zip(PARAM_NAMES, mix)}
+
+
+def tensile_estimate(fc: float) -> float:
+    """Mean axial tensile strength derived from compressive strength (Eurocode 2).
+
+    f_ctm = 0.30·fc^(2/3)              for fc ≤ 50 MPa
+          = 2.12·ln(1 + (fc+8)/10)     for fc > 50 MPa
+
+    This is a *correlation* from compressive strength, not an independent prediction;
+    label it as derived, and treat it as unvalidated once exotics (esp. fibers) are on.
+    """
+    fc = max(float(fc), 0.0)
+    if fc <= 50.0:
+        return 0.30 * fc ** (2.0 / 3.0)
+    return 2.12 * np.log(1.0 + (fc + 8.0) / 10.0)
 
 
 def carbon_for_mode(mix: Dict[str, float], advanced: bool, transport_km: float = 0.0,
@@ -62,6 +79,7 @@ def compute_metrics(
     return {
         "strength": base_strength + delta,
         "exotic_strength": delta,
+        "tensile": tensile_estimate(base_strength + delta),  # EC2 correlation (derived)
         "interval_lo": float(lo[0]) + delta,   # 90% prediction interval, shifted by
         "interval_hi": float(hi[0]) + delta,   # any exotic strength estimate
         "novelty": novelty,
@@ -186,6 +204,8 @@ def recommend_recipe(
         "novelty": novelty,
         "in_support": bool(novelty <= predictor.support_threshold()),
         "workability": workability_flag(d),
+        "tensile": tensile_estimate(float(predictor.predict(arr))),
+        "curing": estimate_curing_time(d),
         "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})),
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
     }
@@ -215,6 +235,56 @@ def pareto_front_mask(strength, carbon, cost) -> np.ndarray:
         if dominated_by.any():
             on_front[i] = False
     return on_front
+
+
+def carbon_breakdown(mix: Dict[str, float], advanced: bool = False, transport_km: float = 0.0,
+                     cement_type: str = "OPC", factors: Dict[str, float] = None) -> Dict[str, float]:
+    """Per-source carbon contributions (kg CO₂/m³) that sum to carbon_for_mode(...)."""
+    from .chemistry_advanced import carbon_from_clinker
+    factors = factors or CARBON_FACTORS
+    bd = {}
+    for k, f in factors.items():
+        if k == "cement" and advanced:
+            bd[k] = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type)
+        else:
+            bd[k] = mix.get(k, 0.0) * f
+    total_mass = sum(mix.get(k, 0.0) for k in factors)
+    bd["transport"] = (total_mass / 1000.0) * transport_km * 0.1
+    return bd
+
+
+def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict) -> str:
+    """A CSV 'mix ticket' — the recipe + predictions (with interval), carbon and cost
+    breakdowns, the active config, and the standing disclaimer. The carbon breakdown
+    sums exactly to the displayed carbon."""
+    cfg_carbon = {k: config[k] for k in ("advanced", "transport_km", "cement_type", "factors")
+                  if k in config}
+    costs = config.get("costs") or UNIT_COSTS
+    bd = carbon_breakdown(mix, **cfg_carbon)
+
+    rows = ["section,key,value", f"meta,generated,{config.get('timestamp', '')}"]
+    for p in PARAM_NAMES:
+        rows.append(f"mix,{p},{mix.get(p, 0.0):.1f}")
+    rows += [
+        f"prediction,strength_MPa,{metrics['strength']:.1f}",
+        f"prediction,interval90_lo,{metrics['interval_lo']:.1f}",
+        f"prediction,interval90_hi,{metrics['interval_hi']:.1f}",
+        f"prediction,tensile_EC2_MPa,{metrics.get('tensile', 0.0):.2f}",
+        f"prediction,curing_days_heuristic,{metrics['curing']:.0f}",
+        f"prediction,novelty,{metrics['novelty']:.2f}",
+        f"prediction,in_support,{metrics['in_support']}",
+    ]
+    for k, v in bd.items():
+        rows.append(f"carbon_kgCO2,{k},{v:.2f}")
+    rows.append(f"carbon_kgCO2,TOTAL,{sum(bd.values()):.2f}")
+    for k, c in costs.items():
+        rows.append(f"cost_usd,{k},{mix.get(k, 0.0) * c:.2f}")
+    for k in ("advanced", "cement_type", "transport_km", "robust"):
+        if k in config:
+            rows.append(f"config,{k},{config[k]}")
+    rows.append('disclaimer,,"Design exploration only — validate physically (ASTM/EN) '
+                'before any structural use."')
+    return "\n".join(rows)
 
 
 def validate_lab_csv(df) -> Optional[str]:

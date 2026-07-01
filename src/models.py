@@ -6,11 +6,37 @@ import pandas as pd
 import numpy as np
 from .data_fetcher import load_data
 import os
+import json
+from datetime import datetime, timezone
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 STRENGTH_MODEL_PATH = os.path.join(MODEL_DIR, "strength_model.json")
 QUANTILE_MODEL_PATH = os.path.join(MODEL_DIR, "strength_quantiles.json")
 SUPPORT_PATH = os.path.join(MODEL_DIR, "support.npz")
+METRICS_HISTORY_PATH = os.path.join(MODEL_DIR, "metrics_history.json")
+
+
+def _append_metrics_history(record: dict):
+    """Append a training record to the (runtime, gitignored) metrics history so the
+    Calibration tab can show before/after accuracy as lab data is added."""
+    try:
+        history = []
+        if os.path.exists(METRICS_HISTORY_PATH):
+            with open(METRICS_HISTORY_PATH) as f:
+                history = json.load(f)
+        history.append(record)
+        with open(METRICS_HISTORY_PATH, "w") as f:
+            json.dump(history, f, indent=2)
+    except (OSError, ValueError):
+        pass  # history is a nice-to-have, never fatal
+
+
+def load_metrics_history() -> list:
+    try:
+        with open(METRICS_HISTORY_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return []
 
 # 90% prediction-interval quantiles and the k for out-of-support kNN distance.
 QUANTILES = np.array([0.05, 0.5, 0.95])
@@ -90,6 +116,10 @@ class StrengthPredictor:
         print(f"Conformal q={conformal_q:.2f} | 90% PI coverage(test)={coverage:.3f} | "
               f"novelty threshold={novelty_threshold:.2f}")
 
+        _append_metrics_history({
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "n_rows": int(len(X)), "rmse": float(rmse), "r2": float(r2),
+        })
         return {"rmse": rmse, "r2": r2, "coverage": coverage,
                 "conformal_q": conformal_q, "novelty_threshold": novelty_threshold}
 

@@ -17,6 +17,9 @@ from src.ui_logic import (
     validate_lab_csv,
     validate_session_state,
     mix_dict,
+    tensile_estimate,
+    carbon_breakdown,
+    mix_ticket,
 )
 from src.chemistry_simple import calculate_embodied_carbon, calculate_mix_cost
 from src.chemistry_advanced import embodied_carbon_advanced
@@ -155,3 +158,46 @@ def test_validate_session_state():
     assert "missing" in validate_session_state({"mix_a": MIX}).lower()
     assert "values" in validate_session_state({"mix_a": [1, 2], "mix_b": MIX, "costs": COSTS})
     assert validate_session_state([1, 2, 3]) is not None
+
+
+def test_tensile_estimate_ec2_branches():
+    # Below/above the 50 MPa branch switch, both EC2 formulae.
+    assert tensile_estimate(30.0) == pytest.approx(0.30 * 30.0 ** (2.0 / 3.0))
+    assert tensile_estimate(60.0) == pytest.approx(2.12 * np.log(1.0 + (60.0 + 8.0) / 10.0))
+    # Continuous across the 50 MPa branch switch (first branch at 50.0, second just above).
+    assert tensile_estimate(50.0) == pytest.approx(tensile_estimate(50.01), abs=0.05)
+    assert tensile_estimate(70.0) > tensile_estimate(40.0) > tensile_estimate(20.0)
+    # Non-negative and clamps a nonsensical negative input.
+    assert tensile_estimate(-5.0) == 0.0
+
+
+def test_carbon_breakdown_sums_to_carbon_for_mode():
+    d = mix_dict(MIX)
+    # Simple mode, with a transport leg: the per-source breakdown must sum exactly
+    # to the single displayed carbon figure (the mix ticket relies on this).
+    bd = carbon_breakdown(d, advanced=False, transport_km=50.0)
+    assert sum(bd.values()) == pytest.approx(
+        carbon_for_mode(d, advanced=False, transport_km=50.0)
+    )
+    assert "transport" in bd
+
+
+def test_mix_ticket_is_parseable_and_balanced(predictor):
+    d = mix_dict(MIX)
+    exotic = _no_exotics()
+    m = compute_metrics(MIX, exotic, COSTS, predictor)
+    config = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
+              "factors": None, "costs": COSTS, "robust": True, "timestamp": "2026-07-01T00:00:00+00:00"}
+    csv = mix_ticket(d, m, config)
+    lines = csv.splitlines()
+    assert lines[0] == "section,key,value"
+    # Every mix parameter appears as a row.
+    for p in PARAM_NAMES:
+        assert any(line.startswith(f"mix,{p},") for line in lines)
+    # The carbon TOTAL row equals the displayed carbon (breakdown reconciles).
+    total_line = next(l for l in lines if l.startswith("carbon_kgCO2,TOTAL,"))
+    ticket_total = float(total_line.split(",")[2])
+    assert ticket_total == pytest.approx(
+        carbon_for_mode(d, advanced=False, transport_km=0.0), abs=0.05
+    )
+    assert any("disclaimer" in l for l in lines)

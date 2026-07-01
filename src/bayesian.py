@@ -156,39 +156,34 @@ class BayesFlowExplorer:
 
     def suggest_tests(self, target_strength: float, carbon_target: float = None, n_tests: int = 5) -> pd.DataFrame:
         """
-        Suggests the top-N tests to run based on a combination of target match and high uncertainty.
-        This guides the user toward 'empty spaces' in the design manifold.
+        Active experimental design: suggest the top-N most *informative* lab tests to run
+        next — mixes that are near the target, uncertain (wide interval), and in
+        under-sampled regions (high novelty). Running these shrinks the model's blind
+        spots fastest.
+
+            merit = interval_halfwidth · min(novelty, 3) / (1 + |strength − target|)
         """
-        # 1. Broadly sample the posterior
         samples = self.sample_posterior(target_strength, carbon_target, n_samples=min(2000, 500 * n_tests))
-        
-        # 2. Score each sample based on uncertainty (predict_variance)
+        lo, _, hi = self.predictor.predict_interval(samples)
+        strength = self.predictor.predict_batch(samples)
+        novelty = self.predictor.novelty(samples)
+        halfwidth = (hi - lo) / 2.0
+        merit = halfwidth * np.minimum(novelty, 3.0) / (1.0 + np.abs(strength - target_strength))
+
         results = []
-        for s in samples:
-            mix_dict = dict(zip(self.param_names, s))
-            strength = self.predictor.predict(s)
-            carbon = calculate_embodied_carbon(mix_dict)
-            uncertainty = self.predictor.predict_variance(s)
-            
-            # Merit score: blends proximity to target with high uncertainty (exploration)
-            strength_error = abs(strength - target_strength)
-            # We want LOW strength error but HIGH uncertainty
-            merit_score = uncertainty / (1.0 + strength_error)
-            
+        for i, s in enumerate(samples):
+            mix = dict(zip(self.param_names, s))
             results.append({
-                **mix_dict,
-                "predicted_strength": strength,
-                "embodied_carbon": carbon,
-                "uncertainty_score": uncertainty,
-                "merit_score": merit_score
+                **{k: round(float(v), 1) for k, v in mix.items()},
+                "predicted_strength": round(float(strength[i]), 1),
+                "interval_lo": round(float(lo[i]), 1),
+                "interval_hi": round(float(hi[i]), 1),
+                "novelty": round(float(novelty[i]), 2),
+                "embodied_carbon": round(float(calculate_embodied_carbon(mix)), 1),
+                "merit_score": round(float(merit[i]), 3),
             })
-            
         df = pd.DataFrame(results)
-        # Select the top-N diverse tests
-        # Sorting by merit score but we could also use a diversity filter (e.g. K-Means)
-        top_tests = df.sort_values("merit_score", ascending=False).head(n_tests)
-        
-        return top_tests
+        return df.sort_values("merit_score", ascending=False).head(n_tests).reset_index(drop=True)
 
     def evaluate_uncertainty(self, mix_design: np.ndarray) -> float:
         """
