@@ -48,16 +48,17 @@ if _PYMOO_AVAILABLE:
         8 mix parameters, box-bounded to the training-data envelope.
         """
 
-        def __init__(self, predictor, bounds, advanced, costs):
+        def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None):
             super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=0,
                              xl=bounds[:, 0], xu=bounds[:, 1])
             self.predictor = predictor
             self.advanced = advanced
             self.costs = costs
+            self.carbon_kwargs = carbon_kwargs or {}
 
         def _evaluate(self, X, out, *args, **kwargs):
             strength = self.predictor.predict_batch(X)
-            carbon = np.array([carbon_for_mode(mix_dict(x), self.advanced) for x in X])
+            carbon = np.array([carbon_for_mode(mix_dict(x), self.advanced, **self.carbon_kwargs) for x in X])
             cost = np.array([calculate_mix_cost(mix_dict(x), self.costs) for x in X])
             out["F"] = np.column_stack([-strength, carbon, cost])
 
@@ -103,6 +104,7 @@ def run_nsga(
     random_seed: int = 1,
     param_names: List[str] = PARAM_NAMES,
     bounds: Optional[np.ndarray] = None,
+    carbon_kwargs: Optional[dict] = None,
 ) -> Dict:
     """
     Run NSGA-II or NSGA-III and return the Pareto front.
@@ -120,7 +122,7 @@ def run_nsga(
         raise ImportError("pymoo is not installed. `pip install pymoo` to use NSGA-II/III.")
 
     bounds = data_envelope(param_names) if bounds is None else np.asarray(bounds, dtype=float)
-    problem = MixDesignProblem(predictor, bounds, advanced, costs)
+    problem = MixDesignProblem(predictor, bounds, advanced, costs, carbon_kwargs=carbon_kwargs)
     sampling = _seed_sampling(seed_population, pop_size, bounds)
 
     if algorithm.lower() == "nsga3":

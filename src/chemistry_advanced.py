@@ -197,6 +197,7 @@ def embodied_carbon_advanced(
     mix: Dict[str, float],
     transport_km: float = 0.0,
     cement_type: str = "OPC",
+    factors: Dict[str, float] = None,
 ) -> float:
     """
     Full-mix embodied carbon (kg CO2/m³) on the SAME system boundary as the Tier-1
@@ -211,17 +212,18 @@ def embodied_carbon_advanced(
     only refines how the cement contribution is computed, so the two tiers are
     directly comparable.
     """
+    factors = factors or SIMPLE_CARBON_FACTORS
     carbon = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type)
 
-    # Non-cement constituents, using the identical Tier-1 factors.
-    for component, factor in SIMPLE_CARBON_FACTORS.items():
+    # Non-cement constituents, using the same (editable) Tier-1 factors.
+    for component, factor in factors.items():
         if component == "cement":
             continue
         carbon += mix.get(component, 0.0) * factor
 
     # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km). Only material
     # masses count -- 'age' is a curing time, not a mass.
-    total_mass = sum(mix.get(k, 0.0) for k in SIMPLE_CARBON_FACTORS)
+    total_mass = sum(mix.get(k, 0.0) for k in factors)
     carbon += (total_mass / 1000.0) * transport_km * 0.1
 
     return carbon

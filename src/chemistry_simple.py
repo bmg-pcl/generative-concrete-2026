@@ -10,16 +10,18 @@ For molecular-level analysis, see chemistry_advanced.py.
 import numpy as np
 from typing import Dict
 
-# Industry standard CO2 emission factors (kg CO2 / kg material)
-# Values are approximate and can vary by region/producer
+# Cradle-to-gate CO2 emission factors (kg CO2e / kg material). Order-of-magnitude
+# values consistent with the ICE database (Hammond & Jones, Inventory of Carbon &
+# Energy v3, Univ. of Bath) and the WBCSD/CSI Cement CO2 Protocol. They are regional
+# and producer-dependent — editable per region in the app's Config tab.
 CARBON_FACTORS = {
-    "cement": 0.912,        # High for Portland Cement (assumes ~95% clinker)
-    "slag": 0.052,          # Low (byproduct of steel)
-    "ash": 0.004,           # Very low (byproduct of coal)
-    "water": 0.0003,        # Minimal
-    "superplasticizer": 1.5, # High per kg, but used in small amounts
-    "coarse_agg": 0.008,    # Quarrying and crushing
-    "fine_agg": 0.005,      # Extraction and processing
+    "cement": 0.912,         # Portland cement, ~95% clinker (ICE ~0.83–0.95)
+    "slag": 0.052,           # GGBS, allocation as a steel byproduct (ICE ~0.05–0.08)
+    "ash": 0.004,            # Fly ash, byproduct of coal combustion (near-zero)
+    "water": 0.0003,         # Potable/mixing water — minimal
+    "superplasticizer": 1.5, # PCE admixture, high per kg but tiny dosage
+    "coarse_agg": 0.008,     # Crushed stone: quarrying + crushing (ICE ~0.005–0.01)
+    "fine_agg": 0.005,       # Sand: extraction + processing
 }
 
 # Approximate Unit Costs (Currency / kg)
@@ -38,7 +40,8 @@ def calculate_mix_cost(mix: Dict[str, float], custom_costs: Dict[str, float] = N
     costs = custom_costs or UNIT_COSTS
     return sum(mix.get(k, 0) * costs.get(k, 0) for k in costs)
 
-def calculate_embodied_carbon(mix: Dict[str, float], transport_km: float = 0.0) -> float:
+def calculate_embodied_carbon(mix: Dict[str, float], transport_km: float = 0.0,
+                              factors: Dict[str, float] = None) -> float:
     """
     Calculates embodied carbon for a concrete mix (kg CO2 per m³).
     
@@ -48,11 +51,12 @@ def calculate_embodied_carbon(mix: Dict[str, float], transport_km: float = 0.0) 
     - Regional electricity grid carbon intensity
     - Hydration chemistry
     """
-    carbon = sum(mix.get(k, 0) * CARBON_FACTORS.get(k, 0) for k in CARBON_FACTORS)
+    factors = factors or CARBON_FACTORS
+    carbon = sum(mix.get(k, 0) * factors.get(k, 0) for k in factors)
 
     # Transport heuristic: 0.1 kg CO2 per tonne per km. Sum only material masses
-    # (the CARBON_FACTORS keys) -- 'age' is a curing time in days, not a mass.
-    total_mass = sum(mix.get(k, 0) for k in CARBON_FACTORS)
+    # (the factor keys) -- 'age' is a curing time in days, not a mass.
+    total_mass = sum(mix.get(k, 0) for k in factors)
     carbon += (total_mass / 1000.0) * transport_km * 0.1
     
     return carbon

@@ -26,9 +26,14 @@ def mix_dict(mix) -> Dict[str, float]:
     return {k: float(v) for k, v in zip(PARAM_NAMES, mix)}
 
 
-def carbon_for_mode(mix: Dict[str, float], advanced: bool) -> float:
-    """The single carbon function the whole UI uses; respects the chemistry toggle."""
-    return embodied_carbon_advanced(mix) if advanced else calculate_embodied_carbon(mix)
+def carbon_for_mode(mix: Dict[str, float], advanced: bool, transport_km: float = 0.0,
+                    cement_type: str = "OPC", factors: Dict[str, float] = None) -> float:
+    """The single carbon function the whole UI uses; respects the chemistry toggle,
+    the transport distance, the clinker/cement source, and any factor overrides."""
+    if advanced:
+        return embodied_carbon_advanced(mix, transport_km=transport_km,
+                                        cement_type=cement_type, factors=factors)
+    return calculate_embodied_carbon(mix, transport_km=transport_km, factors=factors)
 
 
 def compute_metrics(
@@ -39,6 +44,7 @@ def compute_metrics(
     advanced: bool = False,
     exotic_strength: bool = False,
     uncertainty_fn: Optional[Callable] = None,
+    carbon_kwargs: Optional[dict] = None,
 ) -> dict:
     """
     All performance metrics for one mix, on the selected chemistry tier.
@@ -59,14 +65,15 @@ def compute_metrics(
         "interval_hi": float(hi[0]) + delta,   # any exotic strength estimate
         "novelty": novelty,
         "in_support": bool(novelty <= 1.5),
-        "carbon": carbon_for_mode(d, advanced) + exotic_carbon(exotic),
+        "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})) + exotic_carbon(exotic),
         "cost": calculate_mix_cost(d, costs) + exotic_cost(exotic),
         "curing": estimate_curing_time(d),
         "uncertainty": float(uncertainty_fn(arr)) if uncertainty_fn else None,
     }
 
 
-def batch_metrics(samples: np.ndarray, costs: Dict[str, float], predictor, advanced: bool = False) -> dict:
+def batch_metrics(samples: np.ndarray, costs: Dict[str, float], predictor, advanced: bool = False,
+                  carbon_kwargs: Optional[dict] = None) -> dict:
     """
     Vectorised strength/carbon/cost for many mixes at once.
 
@@ -75,7 +82,8 @@ def batch_metrics(samples: np.ndarray, costs: Dict[str, float], predictor, advan
     """
     samples = np.atleast_2d(np.asarray(samples, dtype=float))
     strengths = predictor.predict_batch(samples)
-    carbons = np.array([carbon_for_mode(mix_dict(s), advanced) for s in samples])
+    cf = carbon_kwargs or {}
+    carbons = np.array([carbon_for_mode(mix_dict(s), advanced, **cf) for s in samples])
     money = np.array([calculate_mix_cost(mix_dict(s), costs) for s in samples])
     return {"strength": strengths, "carbon": carbons, "cost": money,
             "novelty": predictor.novelty(samples)}
@@ -89,12 +97,13 @@ def scalarized_fitness(
     w_carbon: float,
     w_cost: float,
     advanced: bool = False,
+    carbon_kwargs: Optional[dict] = None,
 ) -> float:
     """Maximise strength, penalise carbon and cost -- the optimizer objective."""
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
     strength = float(predictor.predict(arr))
-    carbon = carbon_for_mode(d, advanced)
+    carbon = carbon_for_mode(d, advanced, **(carbon_kwargs or {}))
     cost = calculate_mix_cost(d, costs)
     return w_strength * strength - w_carbon * carbon - w_cost * cost
 
@@ -106,6 +115,7 @@ def recommend_recipe(
     carbon_target: Optional[float] = None,
     advanced: bool = False,
     costs: Optional[Dict[str, float]] = None,
+    carbon_kwargs: Optional[dict] = None,
 ) -> dict:
     """
     Return a single recommended mix for a target strength, via the chosen backend.
@@ -146,7 +156,7 @@ def recommend_recipe(
         "interval_hi": float(hi[0]),
         "novelty": novelty,
         "in_support": bool(novelty <= 1.5),
-        "carbon": carbon_for_mode(d, advanced),
+        "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})),
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
     }
 

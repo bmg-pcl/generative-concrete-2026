@@ -44,6 +44,15 @@ def test_carbon_for_mode_matches_underlying():
     assert carbon_for_mode(d, advanced=True) == embodied_carbon_advanced(d)
 
 
+def test_carbon_for_mode_transport_and_factor_overrides():
+    d = mix_dict(MIX)
+    base = carbon_for_mode(d, advanced=False)
+    assert carbon_for_mode(d, advanced=False, transport_km=500) > base   # transport adds
+    zero_factors = {k: 0.0 for k in ["cement", "slag", "ash", "water",
+                                     "superplasticizer", "coarse_agg", "fine_agg"]}
+    assert carbon_for_mode(d, advanced=False, factors=zero_factors) == 0.0  # override applies
+
+
 def test_metrics_respect_chemistry_mode(predictor):
     simple = compute_metrics(MIX, _no_exotics(), COSTS, predictor, advanced=False)
     advanced = compute_metrics(MIX, _no_exotics(), COSTS, predictor, advanced=True)

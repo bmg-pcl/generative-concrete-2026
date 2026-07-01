@@ -50,8 +50,9 @@ that achieve it, all clamped to the training-data envelope. Three backends behin
 
 **Chemistry (carbon & cost).** Two tiers on the same system boundary: a linear mass-factor
 tier (fast screening) and a clinker-chemistry tier (Bogue phases, hydration, clinker factors
-loaded from `data/oxide_compositions.json`, e.g. OPC 0.95 vs LC3 0.50). The UI toggle changes
-fidelity, not scope.
+from `data/oxide_compositions.json`, e.g. OPC 0.95 vs LC3 0.50). The UI toggle changes fidelity,
+not scope. Emission factors (ICE database / WBCSD-CSI defaults), **transport distance**, and
+**clinker/cement source** are all editable in the Config tab and apply across every tab.
 
 **Multi-objective optimization.** Two paths: GA / simulated annealing search a *weighted*
 objective (strength vs. carbon vs. cost), and **NSGA-II / NSGA-III** (via

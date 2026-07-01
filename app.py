@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import json
 import re
 from src.models import StrengthPredictor
-from src.chemistry_simple import calculate_mix_cost, UNIT_COSTS
+from src.chemistry_simple import calculate_mix_cost, UNIT_COSTS, CARBON_FACTORS
 from src.bayesian import BayesFlowExplorer
 from src.ga import GeneticOptimizer
 from src.annealing import SimulatedAnnealing
@@ -83,6 +83,8 @@ if 'mix_b' not in st.session_state:
     st.session_state.mix_b = np.array([300, 100, 50, 160, 5, 1000, 800, 28])
 if 'costs' not in st.session_state:
     st.session_state.costs = UNIT_COSTS.copy()
+if 'carbon_factors' not in st.session_state:
+    st.session_state.carbon_factors = CARBON_FACTORS.copy()
 if 'exotic_a' not in st.session_state:
     st.session_state.exotic_a = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
 if 'exotic_b' not in st.session_state:
@@ -166,6 +168,14 @@ with tab_config:
                 f"{mat.replace('_', ' ').title()} ($/kg)",
                 value=st.session_state.costs[mat], format="%.4f",
             )
+        with st.expander("Emission factors (kg CO₂ / kg material)"):
+            st.caption("Regional/producer-specific — defaults from the ICE database & WBCSD/CSI protocol.")
+            for mat in st.session_state.carbon_factors:
+                st.session_state.carbon_factors[mat] = st.number_input(
+                    f"{mat.replace('_', ' ').title()} (kg CO₂/kg)",
+                    value=float(st.session_state.carbon_factors[mat]), format="%.4f",
+                    key=f"cf_{mat}",
+                )
     with cfg_model:
         st.subheader("Carbon & Analysis Model")
         chemistry_mode = st.radio(
@@ -174,6 +184,22 @@ with tab_config:
             help="Simple uses mass x factor. Advanced uses Bogue calculations and clinker chemistry.",
         )
         use_advanced_chemistry = (chemistry_mode == "Advanced (Molecular)")
+
+        transport_km = st.number_input(
+            "Transport distance (km)", 0, 2000, 0,
+            help="Round-trip haul from plant to site. Adds ~0.1 kg CO₂ per tonne per km.",
+        )
+        cement_source = st.selectbox(
+            "Clinker / cement source", ["OPC (Portland)", "LC3 (limestone calcined clay)"],
+            help="Advanced tier only: sets the clinker factor (OPC ≈ 0.95, LC3 ≈ 0.50).",
+        )
+        cement_type = "LC3" if cement_source.startswith("LC3") else "OPC"
+        # One carbon config threaded to every carbon computation across the tabs.
+        carbon_kwargs = {
+            "transport_km": float(transport_km),
+            "cement_type": cement_type,
+            "factors": st.session_state.carbon_factors,
+        }
 
         st.divider()
         st.subheader("Exotic Strength Model")
@@ -238,6 +264,7 @@ with tab1:
             advanced=use_advanced_chemistry,
             exotic_strength=exotic_strength_enabled,
             uncertainty_fn=bayesian.evaluate_uncertainty,
+            carbon_kwargs=carbon_kwargs,
         )
 
     m_a = get_metrics(st.session_state.mix_a, st.session_state.exotic_a)
@@ -319,12 +346,16 @@ with tab2:
     # Cached so it isn't re-searched on every unrelated rerun (it runs its own
     # backend search, separate from cached_samples above).
     @st.cache_data(show_spinner=False)
-    def cached_recipe(target, backend_key, advanced, cost_items):
+    def cached_recipe(target, backend_key, advanced, cost_items, carbon_key):
+        transport_km_, cement_type_, factor_items = carbon_key
+        ck = {"transport_km": transport_km_, "cement_type": cement_type_, "factors": dict(factor_items)}
         return recommend_recipe(bayesian, target, method=backend_key,
-                                advanced=advanced, costs=dict(cost_items))
+                                advanced=advanced, costs=dict(cost_items), carbon_kwargs=ck)
 
     rec = cached_recipe(float(target_str), backend, use_advanced_chemistry,
-                        tuple(sorted(st.session_state.costs.items())))
+                        tuple(sorted(st.session_state.costs.items())),
+                        (carbon_kwargs["transport_km"], carbon_kwargs["cement_type"],
+                         tuple(sorted(carbon_kwargs["factors"].items()))))
     st.subheader("Recommended recipe")
     r1, r2, r3 = st.columns(3)
     r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")
@@ -345,7 +376,8 @@ with tab2:
 
     # --- Density surface over two chosen parameters -----------------------------
     st.subheader("Design-space spread")
-    hov = batch_metrics(samples[:300], st.session_state.costs, predictor, advanced=use_advanced_chemistry)
+    hov = batch_metrics(samples[:300], st.session_state.costs, predictor,
+                        advanced=use_advanced_chemistry, carbon_kwargs=carbon_kwargs)
     hover_texts = []
     for i in range(len(samples[:300])):
         lines = [
@@ -451,6 +483,7 @@ with tab3:
         return scalarized_fitness(
             x, st.session_state.costs, predictor,
             w_strength, w_carbon, w_cost, advanced=use_advanced_chemistry,
+            carbon_kwargs=carbon_kwargs,
         )
 
     # ---- NSGA-II / NSGA-III: true multi-objective Pareto front --------------
@@ -464,7 +497,7 @@ with tab3:
             st.session_state.nsga_out = run_nsga(
                 predictor, advanced=use_advanced_chemistry, costs=st.session_state.costs,
                 algorithm=algo_key, pop_size=int(nsga_pop), n_gen=int(nsga_gen),
-                seed_population=seed,
+                seed_population=seed, carbon_kwargs=carbon_kwargs,
             )
 
     if is_nsga and st.session_state.get("nsga_out") is not None:
@@ -548,14 +581,14 @@ with tab3:
                 best_ind, _ = optimizer.get_best()
                 best_d = {k: v for k, v in zip(param_names, best_ind)}
                 history_metrics["strength"].append(predictor.predict(best_ind))
-                history_metrics["carbon"].append(carbon_for_mode(best_d, use_advanced_chemistry))
+                history_metrics["carbon"].append(carbon_for_mode(best_d, use_advanced_chemistry, **carbon_kwargs))
                 history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))
                 
                 for ind in optimizer.population:
                     d = {k: v for k, v in zip(param_names, ind)}
                     all_pareto_points.append({
                         "Strength": predictor.predict(ind),
-                        "Carbon": carbon_for_mode(d, use_advanced_chemistry),
+                        "Carbon": carbon_for_mode(d, use_advanced_chemistry, **carbon_kwargs),
                         "Cost": calculate_mix_cost(d, st.session_state.costs),
                         "Mix": "<br>".join([f"{param_names[i]}: {ind[i]:.1f}" for i in range(8)])
                     })
@@ -602,14 +635,14 @@ with tab3:
                 best_sol = sa.best
                 best_d = {k: v for k, v in zip(param_names, best_sol)}
                 history_metrics["strength"].append(predictor.predict(best_sol))
-                history_metrics["carbon"].append(carbon_for_mode(best_d, use_advanced_chemistry))
+                history_metrics["carbon"].append(carbon_for_mode(best_d, use_advanced_chemistry, **carbon_kwargs))
                 history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))
 
                 for sol in [sa.current, sa.best]:
                     d = {k: v for k, v in zip(param_names, sol)}
                     all_pareto_points.append({
                         "Strength": predictor.predict(sol),
-                        "Carbon": carbon_for_mode(d, use_advanced_chemistry),
+                        "Carbon": carbon_for_mode(d, use_advanced_chemistry, **carbon_kwargs),
                         "Cost": calculate_mix_cost(d, st.session_state.costs),
                         "Mix": "<br>".join([f"{param_names[i]}: {sol[i]:.1f}" for i in range(8)])
                     })
