@@ -160,45 +160,34 @@ def carbon_from_clinker(
 # ============================================================================
 def inverse_plan_mix(
     target_strength_mpa: float,
-    target_carbon_kg: float,
-    max_cost: float
+    target_carbon_kg: float = None,
+    max_cost: float = None
 ) -> Dict[str, float]:
     """
     Given target properties, generate a plausible mix design.
-    
-    This is a simplified heuristic solver. A full implementation would use
-    constrained optimization or the BayesFlow amortizer.
-    
+
+    This now delegates to the GA-based `PopulationInverseDesigner` (see
+    src/generative_ga.py). It searches -- within the training-data envelope -- for
+    a mix whose model-predicted strength matches the target, optionally penalising
+    mixes above the carbon budget. This replaces the previous open-loop heuristic,
+    which did not track the target (a 25 MPa request produced a ~51 MPa mix) and
+    emitted out-of-distribution water below the dataset minimum.
+
+    Args:
+        target_strength_mpa: Desired compressive strength (MPa).
+        target_carbon_kg: Optional soft carbon budget (kg CO2/m³).
+        max_cost: Accepted for backward compatibility; not yet used as a hard
+            constraint (a cost-aware objective is future work).
+
     Returns:
-        A dictionary of mix components (kg/m³).
+        A dictionary of mix components (kg/m³) plus age (days).
     """
-    # Heuristic: Higher strength → more cement, lower carbon → more SCMs
-    base_cement = 300 + (target_strength_mpa - 30) * 8
-    base_cement = max(200, min(550, base_cement))
-    
-    # Carbon constraint: reduce cement if carbon is tight
-    if target_carbon_kg < base_cement * 0.9:
-        scm_fraction = (base_cement * 0.9 - target_carbon_kg) / (base_cement * 0.9)
-        slag = base_cement * min(0.5, scm_fraction)
-        cement = base_cement - slag
-    else:
-        cement = base_cement
-        slag = 0
-    
-    # Water based on w/c ratio
-    w_c = 0.45 if target_strength_mpa < 40 else 0.35
-    water = cement * w_c
-    
-    return {
-        "cement": cement,
-        "slag": slag,
-        "ash": 0,
-        "water": water,
-        "superplasticizer": 5 if w_c < 0.4 else 0,
-        "coarse_agg": 1000,
-        "fine_agg": 750,
-        "age": 28
-    }
+    # Imported lazily so `chemistry_advanced` stays importable without the model
+    # stack, and to avoid a module-load-time dependency cycle.
+    from .generative_ga import PopulationInverseDesigner
+
+    designer = PopulationInverseDesigner()
+    return designer.best_mix(target_strength_mpa, carbon_target=target_carbon_kg)
 
 # ============================================================================
 # ANALYSIS REPORT (Full Forward Pass)
