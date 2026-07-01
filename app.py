@@ -4,11 +4,13 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import json
+import re
 from src.models import StrengthPredictor
 from src.chemistry_simple import calculate_mix_cost, UNIT_COSTS
 from src.bayesian import BayesFlowExplorer
 from src.ga import GeneticOptimizer
 from src.annealing import SimulatedAnnealing
+from src.nsga import run_nsga, pymoo_available
 from src.data_fetcher import append_experimental_results, load_data
 from src.exotics import EXOTIC_ADMIXTURES, EXOTIC_STRENGTH_DISCLAIMER
 from src.ui_logic import (
@@ -111,10 +113,11 @@ with st.sidebar:
             "carbon, and cost side by side.\n\n"
             "**3. Inverse Design** — enter a target strength, pick a backend, and get a "
             "recommended recipe you can load into Mix A or B.\n\n"
-            "**4. Pareto Optimization** — run the GA or annealing search to explore the "
-            "strength / carbon / cost trade-off.\n\n"
+            "**4. Pareto Optimization** — GA/SA (weighted) or NSGA-II/III (true trade-off "
+            "front) across strength / carbon / cost.\n\n"
             "**5. Calibration** — upload your own lab results (CSV) to retrain the model "
-            "on your materials."
+            "on your materials.\n\n"
+            "See the **Workflow** tab for the full walkthrough and when to use which tool."
         )
     st.divider()
     with st.expander("Session save / restore", expanded=False):
@@ -142,9 +145,9 @@ with st.sidebar:
                 st.success("Session Imported!")
 
 # --- Main Layout ---
-tab1, tab2, tab3, tab4, tab_config, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab_config, tab_workflow, tab5, tab6 = st.tabs([
     "Compare Mixes", "Inverse Design", "Pareto Optimization",
-    "Calibration", "Config", "Technical Report", "References",
+    "Calibration", "Config", "Workflow", "Technical Report", "References",
 ])
 
 # The Config tab holds costing and carbon settings. Its `with` block runs FIRST
@@ -394,25 +397,44 @@ with tab2:
 with tab3:
     st.header("Multi-Objective Pareto Optimization")
     st.markdown("""
-    **How to use:** Select an optimization algorithm, configure parameters, and click Run. 
-    Watch the convergence plot and 3D Pareto frontier evolve in real-time.
+    **How to use:** Pick an algorithm and click Run. **GA / SA** search a *weighted* objective
+    (you set the weights) and stream live; **NSGA-II / NSGA-III** are true multi-objective methods
+    that map the whole **strength / carbon / cost** Pareto front in one run — no weights, and they
+    can warm-start from the inverse-design flow. See the Workflow tab for when to use which.
     """)
     
     col_cfg, col_algo = st.columns([1, 1])
     with col_cfg:
-        algorithm = st.selectbox("Optimization Algorithm", ["Genetic Algorithm (GA)", "Simulated Annealing (SA)"])
+        algo_options = ["Genetic Algorithm (GA)", "Simulated Annealing (SA)"]
+        if pymoo_available():
+            algo_options += ["NSGA-II (multi-objective)", "NSGA-III (multi-objective)"]
+        algorithm = st.selectbox("Optimization Algorithm", algo_options)
+        is_nsga = "NSGA" in algorithm
+
         if algorithm == "Genetic Algorithm (GA)":
             pop_size = st.number_input("Population Size", 20, 200, 50)
             n_gens = st.number_input("Generations", 10, 100, 30)
-        else:
+        elif algorithm == "Simulated Annealing (SA)":
             initial_temp = st.number_input("Initial Temperature", 100, 5000, 1000)
             cooling_rate = st.slider("Cooling Rate", 0.80, 0.99, 0.95)
             n_steps = st.number_input("Max Temperature Steps", 20, 200, 50)
-        
-        st.subheader("Objective Weights")
-        w_strength = st.slider("Strength Weight", 0.0, 2.0, 1.0, help="Weight for maximizing compressive strength.")
-        w_carbon = st.slider("Carbon Penalty Weight", 0.0, 1.0, 0.05, help="Weight for minimizing embodied carbon.")
-        w_cost = st.slider("Cost Penalty Weight", 0.0, 1.0, 0.5, help="Weight for minimizing material cost.")
+        else:  # NSGA-II / NSGA-III
+            nsga_pop = st.number_input("Population Size", 20, 200, 60, key="nsga_pop")
+            nsga_gen = st.number_input("Generations", 10, 120, 40, key="nsga_gen")
+            warm = st.checkbox(
+                "Warm-start from inverse design at a target", value=False,
+                help="Seed the initial population with realistic mixes from the flow/GA near a "
+                     "target strength, so NSGA converges faster and stays in-distribution.",
+            )
+            warm_target = st.number_input("Warm-start target (MPa)", 10, 100, 45) if warm else None
+
+        if is_nsga:
+            st.caption("NSGA maps the whole strength / carbon / cost trade-off surface — no scalar weights needed.")
+        else:
+            st.subheader("Objective Weights")
+            w_strength = st.slider("Strength Weight", 0.0, 2.0, 1.0, help="Weight for maximizing compressive strength.")
+            w_carbon = st.slider("Carbon Penalty Weight", 0.0, 1.0, 0.05, help="Weight for minimizing embodied carbon.")
+            w_cost = st.slider("Cost Penalty Weight", 0.0, 1.0, 0.5, help="Weight for minimizing material cost.")
     
     bounds = [(100, 550), (0, 360), (0, 200), (120, 250), (0, 30), (700, 1150), (550, 1000), (1, 365)]
     
@@ -421,8 +443,72 @@ with tab3:
             x, st.session_state.costs, predictor,
             w_strength, w_carbon, w_cost, advanced=use_advanced_chemistry,
         )
-    
-    if st.button("Run Live Optimization"):
+
+    # ---- NSGA-II / NSGA-III: true multi-objective Pareto front --------------
+    if is_nsga and st.button(f"Run {algorithm}"):
+        seed = None
+        if warm and warm_target:
+            with st.spinner("Warm-starting from inverse design…"):
+                seed = bayesian.sample_posterior(float(warm_target), n_samples=int(nsga_pop), method="auto")
+        algo_key = "nsga3" if "III" in algorithm else "nsga2"
+        with st.spinner(f"Running {algorithm} — mapping the trade-off surface…"):
+            st.session_state.nsga_out = run_nsga(
+                predictor, advanced=use_advanced_chemistry, costs=st.session_state.costs,
+                algorithm=algo_key, pop_size=int(nsga_pop), n_gen=int(nsga_gen),
+                seed_population=seed,
+            )
+
+    if is_nsga and st.session_state.get("nsga_out") is not None:
+        nsga_out = st.session_state.nsga_out
+        st.success(f"{nsga_out['algorithm']}: {nsga_out['front_size']} non-dominated mixes on the Pareto front.")
+
+        h = nsga_out["history"]
+        conv = go.Figure()
+        conv.add_trace(go.Scatter(y=h["best_strength"], name="Best Strength (MPa)", line=dict(color="#00E676")))
+        conv.add_trace(go.Scatter(y=h["min_carbon"], name="Min Carbon (kg/m³)", line=dict(color="#FFB300"), yaxis="y2"))
+        conv.add_trace(go.Scatter(y=h["min_cost"], name="Min Cost ($/m³)", line=dict(color="#E91E63"), yaxis="y3"))
+        conv.update_layout(
+            template="plotly_dark", title="Per-objective best over generations", xaxis_title="Generation",
+            yaxis=dict(title=dict(text="Strength", font=dict(color="#00E676")), tickfont=dict(color="#00E676")),
+            yaxis2=dict(title=dict(text="Carbon", font=dict(color="#FFB300")), tickfont=dict(color="#FFB300"), overlaying="y", side="right"),
+            yaxis3=dict(title=dict(text="Cost", font=dict(color="#E91E63")), tickfont=dict(color="#E91E63"), overlaying="y", side="right", anchor="free", autoshift=True),
+            height=340, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h", y=1.2))
+        st.plotly_chart(conv, use_container_width=True)
+
+        front_fig = go.Figure(go.Scatter3d(
+            x=nsga_out["strength"], y=nsga_out["carbon"], z=nsga_out["cost"], mode="markers",
+            marker=dict(size=5, color=nsga_out["strength"], colorscale="Viridis", opacity=0.9),
+            text=[" · ".join(f"{p}:{v:.0f}" for p, v in zip(param_names, m)) for m in nsga_out["mixes"]],
+            hoverinfo="text", name="Pareto front"))
+        front_fig.update_layout(
+            template="plotly_dark", height=600, margin=dict(l=0, r=0, t=10, b=0),
+            scene=dict(xaxis_title="Strength (MPa)", yaxis_title="Carbon (kg/m³)", zaxis_title="Cost ($/m³)"))
+        st.plotly_chart(front_fig, use_container_width=True)
+
+        st.markdown("**Pick a mix from the front → Mix A:**")
+        i_s = int(np.argmax(nsga_out["strength"]))
+        i_c = int(np.argmin(nsga_out["carbon"]))
+        i_m = int(np.argmin(nsga_out["cost"]))
+        pk1, pk2, pk3 = st.columns(3)
+        if pk1.button(f"Max strength · {nsga_out['strength'][i_s]:.0f} MPa"):
+            st.session_state.mix_a = np.array(nsga_out["mixes"][i_s]); st.success("Loaded into Mix A.")
+        if pk2.button(f"Min carbon · {nsga_out['carbon'][i_c]:.0f} kg CO₂"):
+            st.session_state.mix_a = np.array(nsga_out["mixes"][i_c]); st.success("Loaded into Mix A.")
+        if pk3.button(f"Min cost · ${nsga_out['cost'][i_m]:.0f}"):
+            st.session_state.mix_a = np.array(nsga_out["mixes"][i_m]); st.success("Loaded into Mix A.")
+
+        st.dataframe(
+            pd.DataFrame({"Strength": nsga_out["strength"], "Carbon": nsga_out["carbon"], "Cost": nsga_out["cost"]}).round(1),
+            use_container_width=True, height=240)
+
+        st.subheader("Pareto front heatmap")
+        fh = pd.DataFrame(nsga_out["mixes"], columns=param_names)
+        hm = px.imshow(fh.T, labels=dict(x="Front mix", y="Parameter", color="Value"),
+                       color_continuous_scale="Viridis", template="plotly_dark")
+        hm.update_layout(height=420)
+        st.plotly_chart(hm, use_container_width=True)
+
+    if (not is_nsga) and st.button("Run Live Optimization"):
         progress_bar = st.progress(0)
         col_plots_1, col_plots_2 = st.columns(2)
         with col_plots_1:
@@ -664,6 +750,17 @@ with tab4:
     your specific materials and processes.
     </div>
     """, unsafe_allow_html=True)
+
+with tab_workflow:
+    st.header("Workflow: from a question to a mix")
+    with open("docs/WORKFLOW.md", "r", encoding="utf-8") as f:
+        workflow_md = f.read()
+    # Streamlit's markdown doesn't render mermaid; drop the diagram block (it renders
+    # on GitHub) and keep the ordered step-by-step text.
+    workflow_md = re.sub(r"```mermaid.*?```",
+                         "_(flow diagram renders on GitHub — the ordered steps are below)_",
+                         workflow_md, flags=re.DOTALL)
+    st.markdown(workflow_md)
 
 with tab5:
     st.header("Technical Report: Generative Mix Design")

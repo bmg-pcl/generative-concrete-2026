@@ -53,9 +53,11 @@ tier (fast screening) and a clinker-chemistry tier (Bogue phases, hydration, cli
 loaded from `data/oxide_compositions.json`, e.g. OPC 0.95 vs LC3 0.50). The UI toggle changes
 fidelity, not scope.
 
-**Multi-objective optimization.** GA or simulated annealing search a weighted objective
-(strength vs. carbon vs. cost); the app then extracts and plots the true **non-dominated
-(Pareto-optimal)** subset of every evaluated mix.
+**Multi-objective optimization.** Two paths: GA / simulated annealing search a *weighted*
+objective (strength vs. carbon vs. cost), and **NSGA-II / NSGA-III** (via
+[pymoo](https://pymoo.org)) map the *true* Pareto front across all three objectives with no
+weights — and can **warm-start** from the inverse-design flow. See
+[`docs/WORKFLOW.md`](docs/WORKFLOW.md) for when to use which.
 
 **Calibration.** Upload lab results (CSV) to append to a local overlay and retrain on your
 own materials.
@@ -77,7 +79,8 @@ data/Concrete_Data.xls ── data_fetcher ──> load_data()
         │    aco  → generative_ga.AntColonyInverseDesigner (aco.py)         │
         └──────────────────────────────────────────────────────────────────┘
    chemistry_simple / chemistry_advanced  →  carbon & cost (two tiers)
-   ga.py / annealing.py                   →  Pareto search
+   ga.py / annealing.py                   →  weighted (scalarized) search
+   nsga.py (pymoo)                        →  NSGA-II / NSGA-III true Pareto front
    ui_logic.py                            →  pure, testable UI logic (metrics,
                                              fitness, recipe, Pareto front, validators)
    app.py                                 →  Streamlit UI (Compare / Inverse Design /
@@ -105,6 +108,7 @@ and pull request.
 
 ## Documentation
 
+- [`docs/WORKFLOW.md`](docs/WORKFLOW.md) — the end-to-end workflow: steps, decision points, and loops in order
 - [`docs/TECHNICAL_REPORT.md`](docs/TECHNICAL_REPORT.md) — the framework, decisions, and limitations
 - [`docs/AMORTIZED_INFERENCE.md`](docs/AMORTIZED_INFERENCE.md) — what amortized inference is and how it is trained/calibrated
 - [`docs/MODEL_CRITIQUE.md`](docs/MODEL_CRITIQUE.md) — the original point-in-time model critique
