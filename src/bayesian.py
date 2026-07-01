@@ -1,7 +1,15 @@
 import numpy as np
 import pandas as pd
 import os
-import tensorflow as tf
+
+# TensorFlow / BayesFlow are heavy, optional dependencies. The current explorer
+# does not require them at runtime (see Phase 3 in docs/FIX_PLAN.md), so we guard
+# the imports to keep `import src.bayesian` — and therefore the whole app — working
+# in environments without them installed.
+try:
+    import tensorflow as tf
+except ImportError:
+    tf = None
 try:
     import bayesflow as bf
 except ImportError:

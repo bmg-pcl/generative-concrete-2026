@@ -208,8 +208,15 @@ with tab1:
 
 with tab2:
     st.header("📊 Amortized Performance Estimates")
+    st.warning(
+        "⚠️ **Experimental — not yet target-conditioned.** The sampler behind this view currently "
+        "returns a heuristic spread that does not depend on the target strength. A transparent, "
+        "target-conditioned generator (GA-based inverse designer) is landing in Phase 3 — see "
+        "`docs/FIX_PLAN.md`. Treat this surface as illustrative only for now.",
+        icon="⚠️",
+    )
     st.markdown("""
-    **How to use:** Enter a target compressive strength. The 3D surface shows the probability 
+    **How to use:** Enter a target compressive strength. The 3D surface shows the probability
     distribution of mix designs that could achieve it. Peaks indicate likely parameter combinations.
     """)
     
