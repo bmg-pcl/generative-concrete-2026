@@ -11,12 +11,15 @@ from src.bayesian import BayesFlowExplorer
 from src.ga import GeneticOptimizer
 from src.annealing import SimulatedAnnealing
 from src.data_fetcher import append_experimental_results, load_data
-from src.exotics import (
-    EXOTIC_ADMIXTURES,
-    EXOTIC_STRENGTH_DISCLAIMER,
-    exotic_carbon,
-    exotic_cost,
-    exotic_strength_delta,
+from src.exotics import EXOTIC_ADMIXTURES, EXOTIC_STRENGTH_DISCLAIMER
+from src.ui_logic import (
+    compute_metrics,
+    batch_metrics,
+    scalarized_fitness,
+    recommend_recipe,
+    carbon_for_mode,
+    validate_lab_csv,
+    validate_session_state,
 )
 
 st.set_page_config(page_title="Generative Mix Design", layout="wide", initial_sidebar_state="expanded")
@@ -40,13 +43,12 @@ status_container.info("🔄 Initializing models...")
 @st.cache_data
 def get_preset_mixtures():
     df = load_data()
-    presets = {
-        "Custom": None,
-        "High Strength (Row 42)": df.iloc[42].values[:8],
-        "Low Carbon (Row 100)": df.iloc[100].values[:8],
-        "Balanced (Row 200)": df.iloc[200].values[:8],
-        "High SCM (Row 500)": df.iloc[500].values[:8],
-    }
+    presets = {"Custom": None}
+    # Label each sample with its ACTUAL measured strength from the dataset, rather
+    # than asserting an unverified qualitative property.
+    for row in (42, 100, 200, 500):
+        strength = df.iloc[row]["strength"]
+        presets[f"Dataset #{row} ({strength:.0f} MPa measured)"] = df.iloc[row].values[:8]
     return presets
 
 # --- Initialize models ---
@@ -105,14 +107,21 @@ st.sidebar.download_button(label="Export Session (JSON)", data=get_state_json(),
 
 uploaded_state = st.sidebar.file_uploader("Import Session", type="json")
 if uploaded_state:
-    data = json.load(uploaded_state)
-    st.session_state.mix_a = np.array(data["mix_a"])
-    st.session_state.mix_b = np.array(data["mix_b"])
-    st.session_state.costs = data["costs"]
-    if "exotic_a" in data:
-        st.session_state.exotic_a = data["exotic_a"]
-        st.session_state.exotic_b = data["exotic_b"]
-    st.sidebar.success("Session Imported!")
+    try:
+        data = json.load(uploaded_state)
+    except json.JSONDecodeError:
+        data = None
+    error = validate_session_state(data) if data is not None else "File is not valid JSON."
+    if error:
+        st.sidebar.error(f"Import failed: {error}")
+    else:
+        st.session_state.mix_a = np.array(data["mix_a"])
+        st.session_state.mix_b = np.array(data["mix_b"])
+        st.session_state.costs = data["costs"]
+        if "exotic_a" in data:
+            st.session_state.exotic_a = data["exotic_a"]
+            st.session_state.exotic_b = data["exotic_b"]
+        st.sidebar.success("Session Imported!")
 
 st.sidebar.divider()
 st.sidebar.header("💰 Material Costs")
@@ -146,7 +155,7 @@ if exotic_strength_enabled:
     st.sidebar.warning(EXOTIC_STRENGTH_DISCLAIMER, icon="⚠️")
 
 # --- Main Layout ---
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["⚡ Generative Mix Design", "📊 Amortized Performance", "🧬 Pareto Optimization", "🔧 Calibration", "📄 Technical Report", "📚 References"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["⚡ Compare Mixes", "🎯 Inverse Design", "🧬 Pareto Optimization", "🔧 Calibration", "📄 Technical Report", "📚 References"])
 
 with tab1:
     st.markdown("""
@@ -190,17 +199,12 @@ with tab1:
         st.session_state.mix_b, st.session_state.exotic_b = mix_input_ui("B", st.session_state.mix_b, st.session_state.exotic_b)
 
     def get_metrics(mix, exotic):
-        d = {k: v for k, v in zip(param_names, mix)}
-        base_strength = predictor.predict(mix)
-        exotic_strength = exotic_strength_delta(exotic, enabled=exotic_strength_enabled)
-        return {
-            "strength": base_strength + exotic_strength,
-            "exotic_strength": exotic_strength,
-            "carbon": calculate_embodied_carbon(d) + exotic_carbon(exotic),
-            "cost": calculate_mix_cost(d, st.session_state.costs) + exotic_cost(exotic),
-            "curing": estimate_curing_time(d),
-            "uncertainty": bayesian.evaluate_uncertainty(mix)
-        }
+        return compute_metrics(
+            mix, exotic, st.session_state.costs, predictor,
+            advanced=use_advanced_chemistry,
+            exotic_strength=exotic_strength_enabled,
+            uncertainty_fn=bayesian.evaluate_uncertainty,
+        )
 
     m_a = get_metrics(st.session_state.mix_a, st.session_state.exotic_a)
     m_b = get_metrics(st.session_state.mix_b, st.session_state.exotic_b)
@@ -220,12 +224,14 @@ with tab1:
         strength_caption(m_a)
         st.metric("Carbon", f"{m_a['carbon']:.1f} kg CO₂/m³")
         st.metric("Cost", f"${m_a['cost']:.2f}/m³")
+        st.caption(f"model uncertainty ±{m_a['uncertainty']:.1f} MPa (heuristic) · curing ~{m_a['curing']:.0f} d")
     with res_b:
         st.subheader("Mix B")
         st.metric("Strength", f"{m_b['strength']:.1f} MPa", delta=f"{m_b['strength']-m_a['strength']:.1f}")
         strength_caption(m_b)
         st.metric("Carbon", f"{m_b['carbon']:.1f} kg CO₂/m³", delta=f"{m_b['carbon']-m_a['carbon']:.1f}", delta_color="inverse")
         st.metric("Cost", f"${m_b['cost']:.2f}/m³", delta=f"${m_b['cost']-m_a['cost']:.2f}", delta_color="inverse")
+        st.caption(f"model uncertainty ±{m_b['uncertainty']:.1f} MPa (heuristic) · curing ~{m_b['curing']:.0f} d")
 
 with tab2:
     st.header("📊 Target-Conditioned Mix Explorer")
@@ -338,15 +344,10 @@ with tab3:
     bounds = [(100, 550), (0, 360), (0, 200), (120, 250), (0, 30), (700, 1150), (550, 1000), (1, 365)]
     
     def multi_objective(x):
-        d = {k: v for k, v in zip(param_names, x)}
-        strength = predictor.predict(x)
-        if use_advanced_chemistry:
-            carbon = embodied_carbon_advanced(d)
-        else:
-            carbon = calculate_embodied_carbon(d)
-        cost = calculate_mix_cost(d, st.session_state.costs)
-        # Scalarized fitness: Maximize Strength, Minimize Carbon and Cost
-        return w_strength * strength - w_carbon * carbon - w_cost * cost
+        return scalarized_fitness(
+            x, st.session_state.costs, predictor,
+            w_strength, w_carbon, w_cost, advanced=use_advanced_chemistry,
+        )
     
     if st.button("🚀 Run Live Optimization"):
         progress_bar = st.progress(0)
@@ -379,17 +380,14 @@ with tab3:
                 best_ind, _ = optimizer.get_best()
                 best_d = {k: v for k, v in zip(param_names, best_ind)}
                 history_metrics["strength"].append(predictor.predict(best_ind))
-                if use_advanced_chemistry:
-                    history_metrics["carbon"].append(embodied_carbon_advanced(best_d))
-                else:
-                    history_metrics["carbon"].append(calculate_embodied_carbon(best_d))
+                history_metrics["carbon"].append(carbon_for_mode(best_d, use_advanced_chemistry))
                 history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))
                 
                 for ind in optimizer.population:
                     d = {k: v for k, v in zip(param_names, ind)}
                     all_pareto_points.append({
                         "Strength": predictor.predict(ind),
-                        "Carbon": calculate_embodied_carbon(d),
+                        "Carbon": carbon_for_mode(d, use_advanced_chemistry),
                         "Cost": calculate_mix_cost(d, st.session_state.costs),
                         "Mix": "<br>".join([f"{param_names[i]}: {ind[i]:.1f}" for i in range(8)])
                     })
@@ -436,17 +434,14 @@ with tab3:
                 best_sol = sa.best
                 best_d = {k: v for k, v in zip(param_names, best_sol)}
                 history_metrics["strength"].append(predictor.predict(best_sol))
-                if use_advanced_chemistry:
-                    history_metrics["carbon"].append(embodied_carbon_advanced(best_d))
-                else:
-                    history_metrics["carbon"].append(calculate_embodied_carbon(best_d))
+                history_metrics["carbon"].append(carbon_for_mode(best_d, use_advanced_chemistry))
                 history_metrics["cost"].append(calculate_mix_cost(best_d, st.session_state.costs))
 
                 for sol in [sa.current, sa.best]:
                     d = {k: v for k, v in zip(param_names, sol)}
                     all_pareto_points.append({
                         "Strength": predictor.predict(sol),
-                        "Carbon": calculate_embodied_carbon(d),
+                        "Carbon": carbon_for_mode(d, use_advanced_chemistry),
                         "Cost": calculate_mix_cost(d, st.session_state.costs),
                         "Mix": "<br>".join([f"{param_names[i]}: {sol[i]:.1f}" for i in range(8)])
                     })
@@ -544,10 +539,14 @@ with tab4:
     if uploaded_data:
         new_df = pd.read_csv(uploaded_data)
         st.write("Preview of incoming data:", new_df.head())
-        if st.button("Merge & Retrain Digital Twin"):
+        error = validate_lab_csv(new_df)
+        if error:
+            st.error(f"Cannot merge this file: {error}")
+        elif st.button("Merge & Retrain Digital Twin"):
             with st.spinner("Incorporating new field data..."):
                 append_experimental_results(new_df)
                 predictor.train()
+                load_resources.clear()  # invalidate the cached predictor
                 st.success("Model calibrated with actual field results!")
                 st.balloons()
     
@@ -576,10 +575,10 @@ with tab6:
     st.markdown("""
     | Component | Library | Version | Link |
     |-----------|---------|---------|------|
-    | ML Prediction | XGBoost | 2.0+ | [xgboost.readthedocs.io](https://xgboost.readthedocs.io/) |
-    | Bayesian Inference | BayesFlow | 1.1+ | [github.com/stefanradev93/BayesFlow](https://github.com/stefanradev93/BayesFlow) |
-    | Deep Learning | TensorFlow | 2.15+ | [tensorflow.org](https://www.tensorflow.org/) |
-    | Probabilistic | TensorFlow Probability | 0.23+ | [tensorflow.org/probability](https://www.tensorflow.org/probability) |
+    | ML Prediction | XGBoost | 3.x | [xgboost.readthedocs.io](https://xgboost.readthedocs.io/) |
+    | Bayesian Inference | BayesFlow | 1.x | [github.com/stefanradev93/BayesFlow](https://github.com/stefanradev93/BayesFlow) |
+    | Deep Learning | TensorFlow | 2.14.* | [tensorflow.org](https://www.tensorflow.org/) |
+    | Probabilistic | TensorFlow Probability | 0.22.* | [tensorflow.org/probability](https://www.tensorflow.org/probability) |
     | Visualization | Plotly | 5.18+ | [plotly.com/python](https://plotly.com/python/) |
     | Web Framework | Streamlit | 1.30+ | [streamlit.io](https://streamlit.io/) |
     | Scientific | NumPy, SciPy, Pandas | — | [numpy.org](https://numpy.org/) |
