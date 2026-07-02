@@ -3,11 +3,14 @@
 `render_config()` renders the tab and returns the AppContext the other tabs consume;
 building the context here is what enforces "Config is read before the other tabs".
 """
+import json
 from datetime import datetime, timezone
 
 import streamlit as st
 
 from src.exotics import EXOTIC_STRENGTH_DISCLAIMER
+from src.materials import validate_epd_json, carbon_provenance
+from src.chemistry_advanced import FUEL_EF, GRID_EF, clinker_scope_split
 from ui.context import AppContext
 
 
@@ -23,6 +26,44 @@ def render_config(predictor, bayesian, presets) -> AppContext:
                 f"{mat.replace('_', ' ').title()} ($/kg)",
                 value=st.session_state.costs[mat], format="%.4f",
             )
+        # EPD upload sits ABOVE the factor editors and is processed first: attaching
+        # an EPD writes the cf_ widget keys, which is only legal before those widgets
+        # instantiate on this run (the R4.1 keyed-widget rule).
+        with st.expander("Supplier EPDs (plug in measured factors)"):
+            st.caption(
+                "Attach supplier-specific EPD values as JSON: "
+                '`{"epds": {"cement": {"value": 0.55, "reference": "EPD-XYZ-2025"}}}`. '
+                "An attached EPD replaces the database default below — measured beats "
+                "modeled. Editing a factor afterwards records it as a user override. "
+                "The mix ticket discloses which source produced each factor."
+            )
+            epd_file = st.file_uploader("EPD file (JSON)", type="json", key="epd_upload")
+            if epd_file is not None:
+                try:
+                    epd_data = json.load(epd_file)
+                except json.JSONDecodeError:
+                    epd_data = None
+                epd_err = validate_epd_json(epd_data) if epd_data is not None \
+                    else "File is not valid JSON."
+                if epd_err:
+                    st.error(f"EPD import failed: {epd_err}")
+                else:
+                    # Apply once per distinct upload, so later manual factor edits
+                    # are not clobbered on every rerun while the file stays attached.
+                    sig = json.dumps(epd_data["epds"], sort_keys=True)
+                    if st.session_state.get("epds_applied") != sig:
+                        st.session_state.epds = epd_data["epds"]
+                        for mat, rec in epd_data["epds"].items():
+                            if mat in st.session_state.carbon_factors:
+                                st.session_state.carbon_factors[mat] = float(rec["value"])
+                                st.session_state[f"cf_{mat}"] = float(rec["value"])
+                        st.session_state.epds_applied = sig
+                    st.success("EPDs attached for: " + ", ".join(epd_data["epds"]))
+            if st.session_state.get("epds"):
+                st.caption("EPD-backed factors: " + ", ".join(
+                    f"{m} ({r.get('reference', 'unreferenced')})"
+                    for m, r in st.session_state.epds.items()))
+
         with st.expander("Emission factors (kg CO₂ / kg material)"):
             st.caption("Regional/producer-specific — defaults from the ICE database & WBCSD/CSI protocol.")
             for mat in st.session_state.carbon_factors:
@@ -51,11 +92,47 @@ def render_config(predictor, bayesian, presets) -> AppContext:
             help="Advanced tier only: sets the clinker factor (OPC ≈ 0.95, LC3 ≈ 0.50).",
         )
         cement_type = "LC3" if cement_source.startswith("LC3") else "OPC"
+
+        with st.expander("Clinker source (advanced tier)"):
+            st.caption(
+                "Differentiate HOW the clinker was made: a carbon-captured plant, an "
+                "electrified kiln on hydro, or a standard gas/coal kiln produce very "
+                "different numbers from identical chemistry. Applies to the Advanced "
+                "carbon model's cement term; a supplier EPD (left) beats this model."
+            )
+            fuel_choice = st.selectbox(
+                "Kiln fuel", ["Default (unspecified mix)"] + sorted(FUEL_EF.keys()),
+                help="'electric' moves kiln heat to the electricity source below (Scope 2).",
+            )
+            if fuel_choice.startswith("Default"):
+                clinker_source = None
+            else:
+                electricity = st.selectbox(
+                    "Electricity source", sorted(GRID_EF.keys()),
+                    help="Powers an electrified kiln and/or the capture plant. "
+                         "Hydro or a clean PPA makes those terms nearly free.",
+                )
+                capture_rate = st.slider(
+                    "Carbon capture rate", 0.0, 0.95, 0.0, 0.05,
+                    help="Fraction of stack CO₂ (calcination + combustion) captured. "
+                         "Capture's energy penalty is charged to the electricity source.",
+                )
+                clinker_source = {"kiln_fuel": fuel_choice, "electricity": electricity}
+                if capture_rate > 0:
+                    clinker_source["capture"] = {"rate": float(capture_rate)}
+                split = clinker_scope_split(1.0, clinker_source)
+                st.caption(
+                    f"Clinker: {split['total']:.2f} kg CO₂/kg "
+                    f"(Scope 1 stack {split['scope1']:.2f} + Scope 2 electricity "
+                    f"{split['scope2']:.2f}) — legacy default is 0.88."
+                )
+
         # One carbon config threaded to every carbon computation across the tabs.
         carbon_kwargs = {
             "transport_km": float(transport_km),
             "cement_type": cement_type,
             "factors": st.session_state.carbon_factors,
+            "clinker_source": clinker_source,
         }
 
         st.divider()
@@ -96,6 +173,8 @@ def render_config(predictor, bayesian, presets) -> AppContext:
     ticket_config = {
         **carbon_kwargs, "advanced": use_advanced_chemistry, "costs": st.session_state.costs,
         "robust": robust_mode,
+        "carbon_provenance": carbon_provenance(st.session_state.carbon_factors,
+                                               st.session_state.get("epds")),
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     return AppContext(

@@ -89,13 +89,15 @@ def init_session_state():
         st.session_state.exotic_a = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
     if "exotic_b" not in st.session_state:
         st.session_state.exotic_b = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
+    if "epds" not in st.session_state:
+        st.session_state.epds = {}   # attached supplier EPDs {material: record} (R6.2)
 
 
 # Every field the session file carries (besides "version"). export_session writes
 # exactly these; apply_session consumes exactly these. Add a field HERE and both
 # sides pick it up — the round-trip tests enforce the symmetry.
-SESSION_FIELDS = ("mix_a", "mix_b", "costs", "carbon_factors", "exotic_a", "exotic_b")
-SESSION_VERSION = 2
+SESSION_FIELDS = ("mix_a", "mix_b", "costs", "carbon_factors", "exotic_a", "exotic_b", "epds")
+SESSION_VERSION = 3   # v3 adds epds; v2 (no epds) and v1 (no carbon_factors) accepted
 
 
 def export_session(state=None) -> dict:
@@ -109,6 +111,7 @@ def export_session(state=None) -> dict:
         "carbon_factors": dict(state["carbon_factors"]),   # was dropped in v1 (regression)
         "exotic_a": dict(state["exotic_a"]),
         "exotic_b": dict(state["exotic_b"]),
+        "epds": dict(state["epds"]) if "epds" in state else {},
     }
 
 
@@ -131,6 +134,8 @@ def apply_session(data: dict, state=None):
     if "exotic_a" in data:
         state["exotic_a"] = data["exotic_a"]
         state["exotic_b"] = data["exotic_b"]
+    if "epds" in data:   # v3; older files simply carry no EPD attachments
+        state["epds"] = data["epds"]
 
 
 def get_state_json() -> str:

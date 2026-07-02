@@ -28,9 +28,10 @@ import numpy as np
 from .generative_ga import PARAM_NAMES
 from .chemistry_simple import UNIT_COSTS, CARBON_FACTORS
 from .exotics import EXOTIC_ADMIXTURES
+from .materials import validate_epd_json, carbon_provenance
 
 DEFAULT_RUN_CONFIG = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
-                      "robust": True, "age": None}
+                      "robust": True, "age": None, "clinker_source": None}
 
 
 class CliError(Exception):
@@ -47,10 +48,23 @@ def _load_json(path: str, what: str) -> dict:
         raise CliError(f"{what} file {path} is not valid JSON: {e}")
 
 
-def load_project_config(path: str = None) -> dict:
-    """Costs, carbon factors, and run options from a session-export-schema file."""
+def load_project_config(path: str = None, epd_path: str = None) -> dict:
+    """Costs, carbon factors, and run options from a session-export-schema file.
+
+    Resolution order for the effective carbon factors (spec R6 §3): the registry
+    defaults, then attached supplier EPDs (--epd), then explicit `carbon_factors`
+    in the config file (a project override beats an EPD)."""
     cfg = {"costs": UNIT_COSTS.copy(), "carbon_factors": CARBON_FACTORS.copy(),
-           "run": DEFAULT_RUN_CONFIG.copy()}
+           "run": DEFAULT_RUN_CONFIG.copy(), "epds": {}}
+    if epd_path is not None:
+        epd_data = _load_json(epd_path, "EPD")
+        err = validate_epd_json(epd_data)
+        if err:
+            raise CliError(err)
+        cfg["epds"] = epd_data["epds"]
+        for mat, rec in cfg["epds"].items():
+            if mat in cfg["carbon_factors"]:
+                cfg["carbon_factors"][mat] = float(rec["value"])
     if path is None:
         return cfg
     data = _load_json(path, "config")
@@ -60,6 +74,8 @@ def load_project_config(path: str = None) -> dict:
         cfg["costs"].update(data["costs"])
     if "carbon_factors" in data:
         cfg["carbon_factors"].update(data["carbon_factors"])
+    if "epds" in data and not cfg["epds"]:   # session-export files may carry EPDs
+        cfg["epds"] = data["epds"]
     run = data.get("config", {})
     unknown = set(run) - set(DEFAULT_RUN_CONFIG)
     if unknown:
@@ -92,12 +108,14 @@ def load_mix(path: str):
 def _carbon_kwargs(cfg: dict) -> dict:
     return {"transport_km": float(cfg["run"]["transport_km"]),
             "cement_type": cfg["run"]["cement_type"],
-            "factors": cfg["carbon_factors"]}
+            "factors": cfg["carbon_factors"],
+            "clinker_source": cfg["run"]["clinker_source"]}
 
 
 def _ticket_config(cfg: dict) -> dict:
     return {**_carbon_kwargs(cfg), "advanced": bool(cfg["run"]["advanced"]),
             "costs": cfg["costs"], "robust": bool(cfg["run"]["robust"]),
+            "carbon_provenance": carbon_provenance(cfg["carbon_factors"], cfg["epds"]),
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 
@@ -123,7 +141,7 @@ def _write_ticket(path: str, mix_dict_named: dict, metrics: dict, cfg: dict):
 def cmd_predict(args) -> int:
     from .models import StrengthPredictor
     from .ui_logic import compute_metrics
-    cfg = load_project_config(args.config)
+    cfg = load_project_config(args.config, epd_path=args.epd)
     mix, exotic = load_mix(args.mix)
     predictor = StrengthPredictor()
     metrics = compute_metrics(mix, exotic, cfg["costs"], predictor,
@@ -140,7 +158,7 @@ def cmd_predict(args) -> int:
 def cmd_design(args) -> int:
     from .bayesian import BayesFlowExplorer
     from .ui_logic import recommend_recipe
-    cfg = load_project_config(args.config)
+    cfg = load_project_config(args.config, epd_path=args.epd)
     age = cfg["run"]["age"] if args.age is None else args.age
     explorer = BayesFlowExplorer()
     try:
@@ -204,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("predict", help="Evaluate one mix under a project config.")
     p.add_argument("--mix", required=True, help="Mix JSON (named params or 8-vector).")
     p.add_argument("--config", default=None, help="Project config JSON (session-export schema).")
+    p.add_argument("--epd", default=None, help='Supplier EPD JSON ({"epds": {"cement": {"value": ...}}}).')
     p.add_argument("--ticket", default=None, help="Also write a mix-ticket CSV here.")
     p.set_defaults(fn=cmd_predict)
 
@@ -212,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--backend", default="ga", choices=["auto", "flow", "ga", "aco"])
     d.add_argument("--age", type=float, default=None, help="Fixed design age (days); overrides config.")
     d.add_argument("--config", default=None)
+    d.add_argument("--epd", default=None, help="Supplier EPD JSON (see predict --epd).")
     d.add_argument("--ticket", default=None)
     d.set_defaults(fn=cmd_design)
 

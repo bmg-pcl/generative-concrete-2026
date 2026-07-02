@@ -44,6 +44,7 @@ def _fresh_state():
         state[f"cf_{mat}"] = float(val)
     state["exotic_a"] = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
     state["exotic_b"] = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
+    state["epds"] = {}
     return state
 
 
@@ -62,6 +63,7 @@ def test_pure_round_trip_every_field():
     src["cf_cement"] = 0.5
     src["exotic_a"]["silica_fume"] = 25
     src["exotic_b"]["nano_silica"] = 2
+    src["epds"] = {"cement": {"value": 0.55, "reference": "EPD-XYZ-2025"}}
 
     exported = export_session(src)
     dst = _fresh_state()
@@ -74,6 +76,7 @@ def test_pure_round_trip_every_field():
     assert dst["cf_cement"] == 0.5, "import must write the cf_ widget keys too"
     assert dst["exotic_a"]["silica_fume"] == 25
     assert dst["exotic_b"]["nano_silica"] == 2
+    assert dst["epds"]["cement"]["reference"] == "EPD-XYZ-2025"
     # And the whole export re-exports identically (idempotent round trip).
     assert export_session(dst) == exported
 

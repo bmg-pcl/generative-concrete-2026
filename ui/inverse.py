@@ -1,4 +1,6 @@
 """Inverse Design tab — recipes for a target strength, plus a design-space spread."""
+import json
+
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
@@ -73,15 +75,18 @@ def render_inverse(ctx: AppContext):
     # backend search, separate from cached_samples above).
     @st.cache_data(show_spinner=False)
     def cached_recipe(target, backend_key, advanced, cost_items, carbon_key, robust, age):
-        transport_km_, cement_type_, factor_items = carbon_key
-        ck = {"transport_km": transport_km_, "cement_type": cement_type_, "factors": dict(factor_items)}
+        transport_km_, cement_type_, factor_items, clinker_json = carbon_key
+        ck = {"transport_km": transport_km_, "cement_type": cement_type_,
+              "factors": dict(factor_items), "clinker_source": json.loads(clinker_json)}
         return recommend_recipe(bayesian, target, method=backend_key, advanced=advanced,
                                 costs=dict(cost_items), carbon_kwargs=ck, robust=robust, age=age)
 
     rec = cached_recipe(float(target_str), backend, use_advanced_chemistry,
                         tuple(sorted(st.session_state.costs.items())),
                         (carbon_kwargs["transport_km"], carbon_kwargs["cement_type"],
-                         tuple(sorted(carbon_kwargs["factors"].items()))), robust_mode, design_age)
+                         tuple(sorted(carbon_kwargs["factors"].items())),
+                         json.dumps(carbon_kwargs.get("clinker_source"), sort_keys=True)),
+                        robust_mode, design_age)
     st.subheader("Recommended recipe")
     r1, r2, r3 = st.columns(3)
     r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")

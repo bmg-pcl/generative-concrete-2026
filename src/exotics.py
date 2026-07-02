@@ -20,27 +20,18 @@ UI labels any exotic strength contribution as an unvalidated estimate.
 """
 from typing import Dict
 
-# Per-admixture properties.
+from .materials import exotics_view
+
+# Per-admixture properties (a VIEW over data/materials.json since R6.1 -- add a new
+# admixture by appending a registry record, not by editing code; see
+# docs/specs/R6-materials-platform.md section 2.2).
 #   default / max : slider bounds (kg/m3), dosage typical of each material's scale
 #   carbon_factor : kg CO2 per kg (valid mass factor)
 #   cost          : $ per kg
 #   category      : grouping for the UI
 #   strength_factor: MPa per kg -- PLACEHOLDER estimate, only used when the exotic
 #                    strength switch is ON. Replace with fitted values when data exists.
-EXOTIC_ADMIXTURES: Dict[str, Dict] = {
-    "silica_fume":         {"default": 0, "max": 50,  "carbon_factor": 0.02, "cost": 0.80,   "category": "Pozzolan", "strength_factor": 0.08},
-    "metakaolin":          {"default": 0, "max": 80,  "carbon_factor": 0.30, "cost": 0.45,   "category": "Pozzolan", "strength_factor": 0.06},
-    "rice_husk_ash":       {"default": 0, "max": 60,  "carbon_factor": 0.01, "cost": 0.15,   "category": "Pozzolan", "strength_factor": 0.04},
-    "limestone_filler":    {"default": 0, "max": 100, "carbon_factor": 0.01, "cost": 0.05,   "category": "Filler",   "strength_factor": -0.01},
-    "calcined_clay":       {"default": 0, "max": 150, "carbon_factor": 0.25, "cost": 0.12,   "category": "Filler",   "strength_factor": 0.03},
-    "steel_fiber":         {"default": 0, "max": 80,  "carbon_factor": 1.80, "cost": 1.50,   "category": "Fiber",    "strength_factor": 0.05},
-    "polypropylene_fiber": {"default": 0, "max": 10,  "carbon_factor": 3.50, "cost": 4.00,   "category": "Fiber",    "strength_factor": -0.02},
-    "basalt_fiber":        {"default": 0, "max": 20,  "carbon_factor": 0.60, "cost": 2.50,   "category": "Fiber",    "strength_factor": 0.02},
-    "nano_silica":         {"default": 0, "max": 5,   "carbon_factor": 5.00, "cost": 25.00,  "category": "Nano",     "strength_factor": 1.50},
-    "graphene_oxide":      {"default": 0, "max": 1,   "carbon_factor": 50.00,"cost": 500.00, "category": "Nano",     "strength_factor": 8.00},
-    "calcium_chloride":    {"default": 0, "max": 10,  "carbon_factor": 0.80, "cost": 0.30,   "category": "Chemical", "strength_factor": 0.10},
-    "shrink_reducer":      {"default": 0, "max": 8,   "carbon_factor": 2.00, "cost": 6.00,   "category": "Chemical", "strength_factor": 0.00},
-}
+EXOTIC_ADMIXTURES: Dict[str, Dict] = exotics_view()
 
 # Shown in the UI wherever an exotic strength estimate is applied.
 EXOTIC_STRENGTH_DISCLAIMER = (

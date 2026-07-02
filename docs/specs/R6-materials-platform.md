@@ -115,24 +115,26 @@ descriptor stored per cement material (and editable in Config):
 
 ```jsonc
 "clinker_source": {
-  "clinker_factor": 0.95,          // OPC 0.95, PLC ~0.85, LC3 ~0.50 (existing JSON)
   "kiln_fuel": "natural_gas",      // coal | petcoke | natural_gas | alt_waste | biomass | electric
   "electricity": "grid_EU",        // grid_<region> | hydro | nuclear | ppa_renewable
   "capture": {"rate": 0.0,          // fraction of stack CO2 captured (process + combustion)
-               "energy_kwh_per_tCO2": 0}   // capture energy demand, charged to `electricity`
+               "energy_kwh_per_tCO2": 150}  // capture electricity, charged to `electricity`
 }
+// clinker_factor stays where it lives today (oxide JSON per cement type: OPC 0.95, LC3 0.50)
 ```
 
-Per-kg-clinker carbon becomes:
+Per-kg-clinker carbon becomes (implemented in `chemistry_advanced.clinker_scope_split`):
 
 ```
-process      = 0.525                                   # calcination — chemistry, fuel-independent
-combustion   = FUEL_EF[kiln_fuel]                      # coal ~0.40, petcoke ~0.42, natgas ~0.28,
-                                                       # alt_waste ~0.15*, biomass ~0.05*, electric 0
-electric_kwh = KILN_KWH[kiln_fuel] + capture.rate>0 ? capture_energy : 0
+process      = 0.53                                    # calcination — chemistry, fuel-independent
+combustion   = FUEL_EF[kiln_fuel]                      # coal 0.40, petcoke 0.42, natgas 0.28,
+                                                       # alt_waste 0.15*, biomass 0.05*, electric 0
+captured     = capture.rate × (process + combustion)
+scope1       = (process + combustion) − captured       # residual stack
+electric_kwh = KILN_KWH[kiln_fuel] + captured/1000 × capture.energy_kwh_per_tCO2
 scope2       = electric_kwh × GRID_EF[electricity]     # hydro ≈ 0.004, EU grid ~0.25 kg/kWh, ...
-clinker_EC   = (process + combustion) × (1 − capture.rate) + scope2
-cement_EC    = clinker_EC × clinker_factor + grinding_electricity + minor_constituents
+clinker_EC   = scope1 + scope2
+cement_EC    = clinker_EC × clinker_factor + non-clinker terms (unchanged)
 ```
 
 (*accounting conventions for waste/biomass fuels differ by jurisdiction — the record's
@@ -140,14 +142,19 @@ cement_EC    = clinker_EC × clinker_factor + grinding_electricity + minor_const
 
 ### 4.2 What this expresses that today's model cannot
 
-| Scenario | kiln_fuel | electricity | capture | Approx. clinker EC (kg/kg) |
+| Scenario | kiln_fuel | electricity | capture | Clinker EC (kg/kg, computed) |
 |---|---|---|---|---|
 | Standard OPC, coal kiln | coal | grid | 0 | ~0.93 |
 | Standard OPC, natural gas | natural_gas | grid | 0 | ~0.81 |
-| Same plant + 90% CCUS, grid-powered capture | natural_gas | grid_EU | 0.90 | ~0.14 |
+| Same plant + 90% CCUS, grid-powered capture | natural_gas | grid_EU | 0.90 | ~0.11 |
 | Same + hydro-powered capture | natural_gas | hydro | 0.90 | **~0.08** |
 | Electrified kiln on hydro | electric | hydro | 0 | **~0.53 → mostly irreducible calcination** |
 | Electrified kiln on hydro + capture | electric | hydro | 0.90 | ~0.06 |
+
+(Values from the implementation with its default 150 kWh/tCO₂ capture-electricity
+demand — a heat-integrated plant; raise it in the descriptor for standalone amine
+capture and the grid-powered case worsens accordingly. `tests/test_clinker_source.py`
+pins this table at ±10%.)
 
 The table *is* the Scope discussion made mechanical: fuel switching moves emissions
 within Scope 1; electrification moves them from the producer's Scope 1 to Scope 2 —

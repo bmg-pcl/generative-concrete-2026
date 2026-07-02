@@ -28,9 +28,27 @@ python -m src.amortized              # (optional) train the BayesFlow flow + run
 streamlit run app.py                 # launch the app
 ```
 
+Headless (no browser) — run a particular configuration from the shell:
+
+```bash
+python -m src.cli predict --mix mix.json --config gmd_session.json --ticket out.csv
+python -m src.cli design  --target 45 --backend ga --age 28
+python -m src.cli pareto  --algorithm nsga2 --out front.csv
+python -m src.cli predict --mix mix.json --epd supplier_epds.json   # plug in EPD factors
+```
+
+The `--config` file is the app's session export (one schema everywhere); `--epd` attaches
+supplier EPD values that override the database defaults and are disclosed, per material,
+in the ticket's provenance rows.
+
 Training the amortized flow is optional: without it, inverse design uses the transparent
 GA/ACO backends. See [`docs/AMORTIZED_INFERENCE.md`](docs/AMORTIZED_INFERENCE.md) for a
 plain-language explanation of amortized inference.
+
+**Adding a material** (SCM, admixture, fiber) is a JSON edit, not a code change: append a
+record to `data/materials.json` — density, dosage bounds, cost, and at least one
+provenance-tagged carbon record — and it appears in the UI and every carbon/cost path.
+See [`docs/specs/R6-materials-platform.md`](docs/specs/R6-materials-platform.md) §2.2.
 
 ---
 

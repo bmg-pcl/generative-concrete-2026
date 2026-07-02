@@ -10,8 +10,8 @@ gates, and test plan. Implementation order and dependencies below.
 | [R2](R2-physical-validity.md) | Physical validity: fixed-age targets, volume balance, workability guard | ~1–2 d | **Done** |
 | [R3](R3-dormant-value.md) | Dormant value: active learning, tensile, mix-ticket export, session-export fix | ~1–2 d | **Done** |
 | [R4](R4-engineering.md) | Engineering: slider rebinding, app modularization, CI hardening, benchmarks | ~1 d | **Done** |
-| [R5](R5-operability.md) | Operability: session round-trip guarantee, headless CLI mode | ~0.5–1 d | Draft |
-| [R6](R6-materials-platform.md) | Materials platform: pluggable admixtures, carbon provenance, clinker sources | ~2–3 d | Draft |
+| [R5](R5-operability.md) | Operability: session round-trip guarantee, headless CLI mode | ~0.5–1 d | **Done** |
+| [R6](R6-materials-platform.md) | Materials platform: pluggable admixtures, carbon provenance, clinker sources | ~2–3 d | **Done** (R6.4 UI generation for core sliders deferred; registry, EPDs, provenance, clinker sources shipped) |
 
 ## Ordering & dependencies
 

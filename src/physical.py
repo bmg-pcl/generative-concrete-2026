@@ -8,16 +8,11 @@ workability heuristic (R2.3).
 """
 from typing import Dict, Optional
 
+from .materials import densities_view
+
 # Absolute densities (kg/m³) — standard values (ACI 211.1 / material data sheets).
-DENSITIES = {
-    "cement": 3150.0,
-    "slag": 2900.0,
-    "ash": 2300.0,
-    "water": 1000.0,
-    "superplasticizer": 1100.0,
-    "coarse_agg": 2700.0,
-    "fine_agg": 2650.0,
-}
+# Since R6.1 a view over the material registry (data/materials.json); values unchanged.
+DENSITIES = densities_view()
 AIR_FRACTION = 0.02  # entrained/entrapped air, ~2% by volume
 
 # Acceptable |volume − 1 m³|. Calibrated against the 1,030 UCI rows: their 95th

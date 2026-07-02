@@ -69,13 +69,28 @@ def test_predict_vector_mix_and_ticket(tmp_path, capsys):
     assert any(line.startswith("carbon_kgCO2,TOTAL,") for line in lines)
 
 
-def test_design_tracks_target(capsys):
+def test_design_tracks_target(tmp_path, capsys):
+    # Default config is ROBUST mode: the designer matches the conformal LOWER bound
+    # to the target (the mean overshoots by the interval width, by design).
     rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28"])
     assert rc == 0
     rec = json.loads(capsys.readouterr().out)
-    assert abs(rec["strength"] - 45.0) < 6.0
+    assert abs(rec["interval_lo"] - 45.0) < 6.0
+    # NOTE deliberately not asserted: strength >= interval_lo. The mean model and
+    # the quantile model are trained separately, so in sparse regions the mean can
+    # cross below the calibrated bound (observed in practice). The robust contract
+    # is about the bound, which is what the assertion above pins.
     assert rec["params"]["age"] == pytest.approx(28.0, abs=1.0)
     assert set(PARAM_NAMES) <= set(rec["params"])
+
+    # With robust off, the MEAN prediction tracks the target.
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"config": {"robust": False}}))
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28",
+               "--config", str(cfg)])
+    assert rc == 0
+    rec = json.loads(capsys.readouterr().out)
+    assert abs(rec["strength"] - 45.0) < 6.0
 
 
 def test_pareto_front_csv(tmp_path, capsys):
@@ -114,6 +129,30 @@ def test_cli_never_imports_streamlit():
     code = "import src.cli, sys; assert 'streamlit' not in sys.modules, 'CLI pulled in streamlit'"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_epd_plugs_into_cli(tmp_path, capsys):
+    """--epd attaches supplier factors: carbon drops accordingly and the ticket
+    discloses the EPD as the source of the cement factor."""
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    epdp = tmp_path / "epds.json"
+    epdp.write_text(json.dumps(
+        {"epds": {"cement": {"value": 0.55, "reference": "EPD-BREVIK-2025"}}}))
+    ticket = tmp_path / "ticket.csv"
+
+    assert main(["predict", "--mix", str(mixp)]) == 0
+    base = json.loads(capsys.readouterr().out)["carbon"]
+    assert main(["predict", "--mix", str(mixp), "--epd", str(epdp),
+                 "--ticket", str(ticket)]) == 0
+    with_epd = json.loads(capsys.readouterr().out)["carbon"]
+    assert with_epd == pytest.approx(base - MIX["cement"] * (0.912 - 0.55), rel=1e-6)
+    assert 'provenance,cement,"epd:EPD-BREVIK-2025"' in ticket.read_text()
+
+    # An EPD naming an unknown material is rejected (exit 1), not silently ignored.
+    bad = tmp_path / "bad_epd.json"
+    bad.write_text(json.dumps({"epds": {"unobtainium": {"value": 1.0}}}))
+    assert main(["predict", "--mix", str(mixp), "--epd", str(bad)]) == 1
 
 
 def test_config_uses_session_export_schema(tmp_path):

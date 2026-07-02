@@ -9,30 +9,16 @@ For molecular-level analysis, see chemistry_advanced.py.
 """
 from typing import Dict
 
-# Cradle-to-gate CO2 emission factors (kg CO2e / kg material). Order-of-magnitude
-# values consistent with the ICE database (Hammond & Jones, Inventory of Carbon &
-# Energy v3, Univ. of Bath) and the WBCSD/CSI Cement CO2 Protocol. They are regional
-# and producer-dependent — editable per region in the app's Config tab.
-CARBON_FACTORS = {
-    "cement": 0.912,         # Portland cement, ~95% clinker (ICE ~0.83–0.95)
-    "slag": 0.052,           # GGBS, allocation as a steel byproduct (ICE ~0.05–0.08)
-    "ash": 0.004,            # Fly ash, byproduct of coal combustion (near-zero)
-    "water": 0.0003,         # Potable/mixing water — minimal
-    "superplasticizer": 1.5, # PCE admixture, high per kg but tiny dosage
-    "coarse_agg": 0.008,     # Crushed stone: quarrying + crushing (ICE ~0.005–0.01)
-    "fine_agg": 0.005,       # Sand: extraction + processing
-}
+from .materials import carbon_factors_view, unit_costs_view
 
-# Approximate Unit Costs (Currency / kg)
-UNIT_COSTS = {
-    "cement": 0.15,
-    "slag": 0.08,
-    "ash": 0.05,
-    "water": 0.002,
-    "superplasticizer": 2.50,
-    "coarse_agg": 0.03,
-    "fine_agg": 0.04,
-}
+# Cradle-to-gate CO2 emission factors (kg CO2e / kg material) and unit costs ($/kg).
+# Since R6.1 these are VIEWS over the material registry (data/materials.json) — the
+# values are unchanged (ICE database / WBCSD-CSI protocol defaults), but the registry
+# record is the source of truth: it carries the provenance (boundary, region, vintage,
+# source, reference) a bare scalar cannot. Editable per region in the app's Config
+# tab; supplier EPDs plug in via src/materials.py (effective_carbon_factors).
+CARBON_FACTORS = carbon_factors_view()
+UNIT_COSTS = unit_costs_view()
 
 def calculate_mix_cost(mix: Dict[str, float], custom_costs: Dict[str, float] = None) -> float:
     """Calculates the total material cost per m³."""

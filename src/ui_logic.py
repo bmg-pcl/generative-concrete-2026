@@ -45,12 +45,17 @@ def tensile_estimate(fc: float) -> float:
 
 
 def carbon_for_mode(mix: Dict[str, float], advanced: bool, transport_km: float = 0.0,
-                    cement_type: str = "OPC", factors: Dict[str, float] = None) -> float:
+                    cement_type: str = "OPC", factors: Dict[str, float] = None,
+                    clinker_source: Optional[dict] = None) -> float:
     """The single carbon function the whole UI uses; respects the chemistry toggle,
-    the transport distance, the clinker/cement source, and any factor overrides."""
+    the transport distance, the clinker/cement source (incl. an R6.3 clinker-source
+    descriptor — kiln fuel / electricity / capture), and any factor overrides.
+    `clinker_source` only affects the advanced tier (the simple tier's cement factor
+    already bundles the production route into one number)."""
     if advanced:
         return embodied_carbon_advanced(mix, transport_km=transport_km,
-                                        cement_type=cement_type, factors=factors)
+                                        cement_type=cement_type, factors=factors,
+                                        clinker_source=clinker_source)
     return calculate_embodied_carbon(mix, transport_km=transport_km, factors=factors)
 
 
@@ -238,14 +243,16 @@ def pareto_front_mask(strength, carbon, cost) -> np.ndarray:
 
 
 def carbon_breakdown(mix: Dict[str, float], advanced: bool = False, transport_km: float = 0.0,
-                     cement_type: str = "OPC", factors: Dict[str, float] = None) -> Dict[str, float]:
+                     cement_type: str = "OPC", factors: Dict[str, float] = None,
+                     clinker_source: Optional[dict] = None) -> Dict[str, float]:
     """Per-source carbon contributions (kg CO₂/m³) that sum to carbon_for_mode(...)."""
     from .chemistry_advanced import carbon_from_clinker
     factors = factors or CARBON_FACTORS
     bd = {}
     for k, f in factors.items():
         if k == "cement" and advanced:
-            bd[k] = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type)
+            bd[k] = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type,
+                                        clinker_source=clinker_source)
         else:
             bd[k] = mix.get(k, 0.0) * f
     total_mass = sum(mix.get(k, 0.0) for k in factors)
@@ -255,9 +262,11 @@ def carbon_breakdown(mix: Dict[str, float], advanced: bool = False, transport_km
 
 def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict) -> str:
     """A CSV 'mix ticket' — the recipe + predictions (with interval), carbon and cost
-    breakdowns, the active config, and the standing disclaimer. The carbon breakdown
-    sums exactly to the displayed carbon."""
-    cfg_carbon = {k: config[k] for k in ("advanced", "transport_km", "cement_type", "factors")
+    breakdowns, per-material carbon provenance (which EPD/database/override produced
+    each factor), the active config, and the standing disclaimer. The carbon
+    breakdown sums exactly to the displayed carbon."""
+    cfg_carbon = {k: config[k] for k in ("advanced", "transport_km", "cement_type",
+                                         "factors", "clinker_source")
                   if k in config}
     costs = config.get("costs") or UNIT_COSTS
     bd = carbon_breakdown(mix, **cfg_carbon)
@@ -279,6 +288,23 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict) -> str:
     rows.append(f"carbon_kgCO2,TOTAL,{sum(bd.values()):.2f}")
     for k, c in costs.items():
         rows.append(f"cost_usd,{k},{mix.get(k, 0.0) * c:.2f}")
+    # Provenance: what each factor rests on (epd:REF / database:REF / user-override).
+    # A ticket that discloses "placeholder" is honest; one that hides it is a liability.
+    for k, src in (config.get("carbon_provenance") or {}).items():
+        rows.append(f'provenance,{k},"{src}"')
+    # Scope split for a differentiated clinker source (advanced tier, R6.3).
+    if config.get("advanced") and config.get("clinker_source"):
+        from .chemistry_advanced import clinker_scope_split, clinker_factor_for
+        cs = config["clinker_source"]
+        clinker_mass = mix.get("cement", 0.0) * clinker_factor_for(config.get("cement_type", "OPC"))
+        split = clinker_scope_split(clinker_mass, cs)
+        rows += [
+            f"clinker_scope,scope1_kgCO2,{split['scope1']:.2f}",
+            f"clinker_scope,scope2_kgCO2,{split['scope2']:.2f}",
+            f"clinker_scope,kiln_fuel,{cs.get('kiln_fuel', '')}",
+            f"clinker_scope,electricity,{cs.get('electricity', '')}",
+            f"clinker_scope,capture_rate,{(cs.get('capture') or {}).get('rate', 0.0)}",
+        ]
     for k in ("advanced", "cement_type", "transport_km", "robust"):
         if k in config:
             rows.append(f"config,{k},{config[k]}")
