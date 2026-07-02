@@ -127,6 +127,7 @@ gitignored — it is per-machine training history, not a shared artifact.
 ## Documentation
 
 - [`docs/WORKFLOW.md`](docs/WORKFLOW.md) — the end-to-end workflow: steps, decision points, and loops in order
+- [`docs/BUSINESS_REPORT.md`](docs/BUSINESS_REPORT.md) — economics of low-emission concrete, market fragmentation (spec regimes by jurisdiction), Scope 1/2/3, and where this tool fits
 - [`docs/TECHNICAL_REPORT.md`](docs/TECHNICAL_REPORT.md) — the framework, decisions, and limitations
 - [`docs/AMORTIZED_INFERENCE.md`](docs/AMORTIZED_INFERENCE.md) — what amortized inference is and how it is trained/calibrated
 - [`docs/MODEL_CRITIQUE.md`](docs/MODEL_CRITIQUE.md) — the original point-in-time model critique

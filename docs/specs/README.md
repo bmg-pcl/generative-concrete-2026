@@ -6,10 +6,12 @@ gates, and test plan. Implementation order and dependencies below.
 
 | Spec | Title | Effort | Status |
 |---|---|---|---|
-| [R1](R1-trustworthy-numbers.md) | Trustworthy numbers: conformal intervals, calibrated novelty, robust optimization | ~1–2 d | Draft |
-| [R2](R2-physical-validity.md) | Physical validity: fixed-age targets, volume balance, workability guard | ~1–2 d | Draft |
-| [R3](R3-dormant-value.md) | Dormant value: active learning, tensile, mix-ticket export, session-export fix | ~1–2 d | Draft |
-| [R4](R4-engineering.md) | Engineering: slider rebinding, app modularization, CI hardening, benchmarks | ~1 d | Draft |
+| [R1](R1-trustworthy-numbers.md) | Trustworthy numbers: conformal intervals, calibrated novelty, robust optimization | ~1–2 d | **Done** |
+| [R2](R2-physical-validity.md) | Physical validity: fixed-age targets, volume balance, workability guard | ~1–2 d | **Done** |
+| [R3](R3-dormant-value.md) | Dormant value: active learning, tensile, mix-ticket export, session-export fix | ~1–2 d | **Done** |
+| [R4](R4-engineering.md) | Engineering: slider rebinding, app modularization, CI hardening, benchmarks | ~1 d | **Done** |
+| [R5](R5-operability.md) | Operability: session round-trip guarantee, headless CLI mode | ~0.5–1 d | Draft |
+| [R6](R6-materials-platform.md) | Materials platform: pluggable admixtures, carbon provenance, clinker sources | ~2–3 d | Draft |
 
 ## Ordering & dependencies
 
@@ -19,7 +21,12 @@ R1.2 (novelty threshold)   ──► R1.3 (in-support constraint uses the thresh
 R1.3 ──► R2.NSGA constraint plumbing (shared pymoo constraint mechanism)
 R2.1 (fixed age) — independent, can start immediately
 R3, R4 — independent of each other; R3.1 (active learning) benefits from R1 intervals
+R5.2 (CLI) ──► builds on R4.2 (Streamlit-free src/) and outputs R3.3 tickets
+R6.1 (registry) ──► R6.2 (provenance) ──► R6.3 (clinker sources) ∥ R6.4 (pluggable UI)
 ```
+
+R1–R4 shipped (see git history); current queue is **R5 → R6**, motivated by
+`docs/BUSINESS_REPORT.md` (provenance-grade carbon as the procurement currency).
 
 **Recommended sequence: R1 → R2 → (R3 ∥ R4).** R1+R2 are the difference between a
 demo and a tool an engineer can lean on; the single most urgent item is R1.1's
@@ -31,12 +38,15 @@ coverage test, because the UI currently displays intervals whose central claim
 Each spec ends with an **Implementation notes (sonnet-ready)** section covering the traps.
 Summary of what to hand over cold vs. what needs care:
 
-- **Ready as-is:** R1.2, R2.2, R2.3, R3.1, **R3.2 (easiest — start here)**, R3.3, R4.3, R4.4.
+- **Ready as-is:** R1.2, R2.2, R2.3, R3.1, **R3.2 (easiest — start here)**, R3.3, R4.3, R4.4,
+  R5.2, R6.1 (mechanical migration — regression gate is bit-identical values).
 - **Do carefully, guidance in-spec:** R1.1 (CQR indexing — the coverage test is the net),
   R1.3 (keep function defaults `robust=False`), R4.2 (mechanical moves only).
-- **Streamlit keyed-widget trap — read R4's note first:** R4.1 and R3.4. This is the most
-  common failure (`StreamlitAPIException` on setting a widget key after instantiation); the
-  working callback pattern is written out in `R4-engineering.md`.
+- **Streamlit keyed-widget trap — read R4's note first:** R4.1, R3.4, and R5.1. This is the
+  most common failure (`StreamlitAPIException` on setting a widget key after instantiation);
+  the working callback pattern is written out in `R4-engineering.md`.
+- **Careful, guidance in-spec:** R6.2/R6.3 (the capture-vs-Scope-2 inversion trap and the
+  worked-example table gates are in `R6-materials-platform.md`).
 - **Escalate, do not attempt:** the R2.1 *flow retrain* (2-D age conditioning). Ship the
   interim (route to GA when age is fixed); leave the retrain as a senior task.
 
