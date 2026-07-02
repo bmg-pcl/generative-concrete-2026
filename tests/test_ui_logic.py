@@ -184,6 +184,32 @@ def test_carbon_breakdown_sums_to_carbon_for_mode():
     assert "transport" in bd
 
 
+def test_carbon_breakdown_reconciles_in_advanced_mode():
+    d = mix_dict(MIX)
+    # Advanced tier replaces the cement term with clinker chemistry; the breakdown
+    # must still sum to the displayed advanced-tier carbon, incl. an LC3 clinker
+    # source and a transport leg (the ticket's TOTAL row depends on this).
+    bd = carbon_breakdown(d, advanced=True, transport_km=50.0, cement_type="LC3")
+    assert sum(bd.values()) == pytest.approx(
+        carbon_for_mode(d, advanced=True, transport_km=50.0, cement_type="LC3")
+    )
+
+
+def test_mix_ticket_total_reconciles_in_advanced_mode(predictor):
+    d = mix_dict(MIX)
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor, advanced=True,
+                        carbon_kwargs={"transport_km": 50.0, "cement_type": "LC3"})
+    config = {"advanced": True, "transport_km": 50.0, "cement_type": "LC3",
+              "factors": None, "costs": COSTS, "robust": True,
+              "timestamp": "2026-07-01T00:00:00+00:00"}
+    csv = mix_ticket(d, m, config)
+    total_line = next(line for line in csv.splitlines() if line.startswith("carbon_kgCO2,TOTAL,"))
+    ticket_total = float(total_line.split(",")[2])
+    assert ticket_total == pytest.approx(
+        carbon_for_mode(d, advanced=True, transport_km=50.0, cement_type="LC3"), abs=0.05
+    )
+
+
 def test_mix_ticket_is_parseable_and_balanced(predictor):
     d = mix_dict(MIX)
     exotic = _no_exotics()
