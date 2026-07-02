@@ -263,7 +263,6 @@ def train_and_save(epochs: int = 30, iterations_per_epoch: int = 250, batch_size
     ranks = model.sbc_ranks()
     n_post = 250
     # Chi-square uniformity check on the rank histogram, per parameter.
-    from math import isnan
     summary = []
     for i, name in enumerate(model.param_names):
         r = ranks[:, i]

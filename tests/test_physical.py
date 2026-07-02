@@ -3,11 +3,10 @@ Tests for physical-validity checks (src/physical.py) and their enforcement in th
 generators (R2.2 / R2.3).
 """
 import numpy as np
-import pytest
 
 from src.physical import (
-    mix_volume, volume_error, repair_volume, enforce_volume, workability_flag,
-    VOLUME_TOLERANCE, DENSITIES,
+    volume_error, repair_volume, enforce_volume, workability_flag,
+    VOLUME_TOLERANCE,
 )
 from src.data_fetcher import load_data
 from src.generative_ga import PopulationInverseDesigner, PARAM_NAMES

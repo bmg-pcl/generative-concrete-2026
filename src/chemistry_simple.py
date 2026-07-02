@@ -7,7 +7,6 @@ concrete as a bag of inert components.
 
 For molecular-level analysis, see chemistry_advanced.py.
 """
-import numpy as np
 from typing import Dict
 
 # Cradle-to-gate CO2 emission factors (kg CO2e / kg material). Order-of-magnitude

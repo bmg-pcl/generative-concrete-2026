@@ -59,9 +59,9 @@ class AntColonyOptimizer(Optimizer):
         self.best_solution = self.archive[0].copy()
         self.best_fitness = float(self.archive_fit[0])
 
-        # Gaussian kernel weights over ranks l = 1..k (rank 1 = best).
-        l = np.arange(1, self.k + 1)
-        self.weights = np.exp(-((l - 1) ** 2) / (2.0 * (self.q * self.k) ** 2))
+        # Gaussian kernel weights over ranks 1..k (rank 1 = best).
+        ranks = np.arange(1, self.k + 1)
+        self.weights = np.exp(-((ranks - 1) ** 2) / (2.0 * (self.q * self.k) ** 2))
         self.weights /= self.weights.sum()
 
     # -- helpers -------------------------------------------------------------

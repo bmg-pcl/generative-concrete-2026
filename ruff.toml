@@ -1,0 +1,17 @@
+# Ruff config — defaults plus a slightly wider line length. We lint for real
+# problems (unused imports/vars, undefined names, obvious bugs) and deliberately do
+# NOT refactor working logic to satisfy stylistic rules.
+line-length = 100
+target-version = "py311"
+
+[lint]
+# Default rule set (Pyflakes F + a subset of pycodestyle E) is enough to catch the
+# findings we care about. E501 (line too long) is noisy on the long help/markdown
+# strings and docstrings here, so leave it off.
+extend-ignore = ["E501"]
+
+[lint.per-file-ignores]
+# Tests set sys.path / importorskip before importing project modules, so imports
+# legitimately follow statements (E402). Unused imports in __init__ re-exports are fine.
+"tests/*" = ["E402"]
+"**/__init__.py" = ["F401"]

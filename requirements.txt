@@ -13,6 +13,8 @@ streamlit
 pandas
 jupyterlab
 pytest
+pytest-cov
+ruff
 requests
 openpyxl
 xlrd

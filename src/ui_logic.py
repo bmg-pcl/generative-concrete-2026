@@ -6,7 +6,7 @@ so it can be unit-tested without a browser. Keeping it here also guarantees the 
 *coherent*: there is exactly ONE carbon path, ONE metrics path, and ONE fitness path,
 so the "Chemistry Mode" toggle and the exotics switch affect every tab identically.
 """
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Optional
 
 import numpy as np
 import pandas as pd

@@ -96,14 +96,29 @@ keeps a single carbon path, metrics path, and fitness path so every tab stays co
 ## Testing
 
 ```bash
-pytest        # config in pytest.ini (pythonpath=., testpaths=tests)
+pytest                       # config in pytest.ini (pythonpath=., testpaths=tests)
+ruff check .                 # lint (config in ruff.toml)
+pytest --cov=src --cov-fail-under=65   # coverage floor as run in CI
 ```
 
 The suite covers the chemistry tiers, the generative designers (target-tracking, in-envelope
 sampling), the exotic-admixture switch, the UI logic, and the amortized flow (SBC calibration,
-save/load). The heavy TensorFlow/BayesFlow tests auto-skip when that stack is absent, so the
-core suite runs anywhere. CI (`.github/workflows/tests.yml`) runs the core suite on every push
-and pull request.
+save/load). The `ui/` tab renderers and `app.py` are exercised end-to-end by an AppTest smoke
+test (`tests/test_app_smoke.py`), which also asserts slider→metric value propagation. The heavy
+TensorFlow/BayesFlow tests auto-skip when that stack is absent, so the core suite runs anywhere.
+CI (`.github/workflows/tests.yml`) runs ruff, then the core suite with a coverage floor (65%,
+below current ~69%; ratchet up over time), on every push and pull request.
+
+### Committed binary artifacts
+
+The trained model and its support data are committed so CI and a fresh clone need no download or
+training step: `models/strength_model.json`, `models/strength_quantiles.json`,
+`models/support.npz`, and (when trained) `models/amortizer/` (~5 MB total). Regenerate them with
+`python -m src.models` (mean/quantile/support) and `python -m src.amortized` (the flow), and
+commit them together so the forward model and the flow trained against it stay in sync. If the
+repo outgrows this, move the artifacts to git-lfs or release assets (decision deferred; policy
+stated here so it is a choice, not a drift). The runtime `models/metrics_history.json` is
+gitignored — it is per-machine training history, not a shared artifact.
 
 ---
 

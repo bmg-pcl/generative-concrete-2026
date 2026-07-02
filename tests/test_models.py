@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from src.models import StrengthPredictor
-from src.generative_ga import PARAM_NAMES
 
 # Near the dataset mean → in support; all-envelope-corners → far out of support.
 IN_DIST = np.array([281, 73, 54, 181, 6, 972, 773, 45], dtype=float)

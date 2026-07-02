@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import os
 
 # TensorFlow / BayesFlow are heavy, optional dependencies. The current explorer
 # does not require them at runtime (see Phase 3 in docs/FIX_PLAN.md), so we guard
@@ -15,7 +14,6 @@ try:
 except ImportError:
     bf = None
 
-from .data_fetcher import load_data
 from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
 from .generative_ga import PopulationInverseDesigner, AntColonyInverseDesigner, PARAM_NAMES

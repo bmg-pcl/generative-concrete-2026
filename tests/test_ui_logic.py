@@ -65,7 +65,8 @@ def test_metrics_respect_chemistry_mode(predictor):
 
 
 def test_metrics_exotic_strength_switch(predictor):
-    exotic = _no_exotics(); exotic["silica_fume"] = 50
+    exotic = _no_exotics()
+    exotic["silica_fume"] = 50
     off = compute_metrics(MIX, exotic, COSTS, predictor, exotic_strength=False)
     on = compute_metrics(MIX, exotic, COSTS, predictor, exotic_strength=True)
     assert off["exotic_strength"] == 0.0
@@ -131,7 +132,8 @@ def test_validate_lab_csv():
     good = pd.DataFrame([dict(zip(PARAM_NAMES + ["strength"], MIX + [40]))])
     assert validate_lab_csv(good) is None
     assert "Missing required" in validate_lab_csv(good.drop(columns=["strength"]))
-    bad = good.copy(); bad["cement"] = "oops"
+    bad = good.copy()
+    bad["cement"] = "oops"
     assert validate_lab_csv(bad) is not None
     assert "no rows" in validate_lab_csv(good.iloc[0:0])
     # An all-NaN required column must be rejected (would poison retraining).
@@ -195,9 +197,9 @@ def test_mix_ticket_is_parseable_and_balanced(predictor):
     for p in PARAM_NAMES:
         assert any(line.startswith(f"mix,{p},") for line in lines)
     # The carbon TOTAL row equals the displayed carbon (breakdown reconciles).
-    total_line = next(l for l in lines if l.startswith("carbon_kgCO2,TOTAL,"))
+    total_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL,"))
     ticket_total = float(total_line.split(",")[2])
     assert ticket_total == pytest.approx(
         carbon_for_mode(d, advanced=False, transport_km=0.0), abs=0.05
     )
-    assert any("disclaimer" in l for l in lines)
+    assert any("disclaimer" in line for line in lines)

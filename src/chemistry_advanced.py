@@ -7,7 +7,7 @@ Provides both FORWARD (analysis) and INVERSE (generative) modes.
 import os
 import json
 import numpy as np
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple
 from dataclasses import dataclass
 
 # Reuse the Tier-1 emission factors so the two tiers share the SAME non-cement

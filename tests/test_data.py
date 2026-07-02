@@ -1,5 +1,4 @@
 import os
-import pytest
 import pandas as pd
 from src.data_fetcher import load_data, LOCAL_FILE
 
