@@ -20,6 +20,10 @@ Concrete design asks three different questions. Match the tool to the question:
 The inverse tools condition on *one* target and return a spread of mixes. The multi-objective
 tools take *no* target and map the whole trade-off surface.
 
+For a head-to-head on how the backends actually behave — target accuracy, cloud diversity,
+share in-support, and speed — see [`docs/BENCHMARKS.md`](BENCHMARKS.md) (regenerate with
+`python -m scripts.benchmark_backends`).
+
 ---
 
 ## 2. The workflow, in order
