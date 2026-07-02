@@ -4,7 +4,7 @@ import json
 import streamlit as st
 
 from src.ui_logic import validate_session_state
-from ui.state import get_state_json, load_mix_into
+from ui.state import get_state_json, apply_session
 
 
 def render():
@@ -42,14 +42,7 @@ def render():
                 if error:
                     st.error(f"Import failed: {error}")
                 else:
-                    # Sidebar runs before the Compare tab instantiates the sliders, so
-                    # writing the keyed values here is safe (precedes widget instantiation).
-                    load_mix_into("A", data["mix_a"])
-                    load_mix_into("B", data["mix_b"])
-                    st.session_state.costs = data["costs"]
-                    if "carbon_factors" in data:   # v2; v1 files simply keep the defaults
-                        st.session_state.carbon_factors = data["carbon_factors"]
-                    if "exotic_a" in data:
-                        st.session_state.exotic_a = data["exotic_a"]
-                        st.session_state.exotic_b = data["exotic_b"]
+                    # Sidebar runs before the tabs instantiate their widgets, so writing
+                    # the keyed values here is safe (precedes widget instantiation).
+                    apply_session(data)
                     st.success("Session Imported!")

@@ -26,10 +26,12 @@ def render_config(predictor, bayesian, presets) -> AppContext:
         with st.expander("Emission factors (kg CO₂ / kg material)"):
             st.caption("Regional/producer-specific — defaults from the ICE database & WBCSD/CSI protocol.")
             for mat in st.session_state.carbon_factors:
+                # Keyed-only (no value=): the cf_ key IS the live value, initialised in
+                # init_session_state and written by session import — same single-source
+                # pattern as the mix sliders (see R4.1 / R5.1).
                 st.session_state.carbon_factors[mat] = st.number_input(
                     f"{mat.replace('_', ' ').title()} (kg CO₂/kg)",
-                    value=float(st.session_state.carbon_factors[mat]), format="%.4f",
-                    key=f"cf_{mat}",
+                    format="%.4f", key=f"cf_{mat}",
                 )
     with cfg_model:
         st.subheader("Carbon & Analysis Model")

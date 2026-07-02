@@ -31,18 +31,21 @@ DEFAULT_MIX_A = [300, 0, 0, 180, 0, 1000, 800, 28]
 DEFAULT_MIX_B = [300, 100, 50, 160, 5, 1000, 800, 28]
 
 
-def load_mix_into(slot: str, mix_vec):
+def load_mix_into(slot: str, mix_vec, state=None):
     """Write a mix vector into the keyed sliders for slot 'A'/'B', clamped to range.
 
     Must be called from a callback (on_click/on_change) or before the sliders
-    instantiate, so the write precedes widget instantiation on the next run."""
+    instantiate, so the write precedes widget instantiation on the next run.
+    `state` defaults to st.session_state; tests may pass any mutable mapping."""
+    state = st.session_state if state is None else state
     for (p, _, lo, hi), v in zip(SLIDER_SPECS, mix_vec):
-        st.session_state[f"{p}_{slot}"] = int(np.clip(round(float(v)), lo, hi))
+        state[f"{p}_{slot}"] = int(np.clip(round(float(v)), lo, hi))
 
 
-def current_mix(slot: str) -> np.ndarray:
+def current_mix(slot: str, state=None) -> np.ndarray:
     """Assemble the mix vector for slot 'A'/'B' from its keyed sliders."""
-    return np.array([st.session_state[f"{p}_{slot}"] for p, *_ in SLIDER_SPECS])
+    state = st.session_state if state is None else state
+    return np.array([state[f"{p}_{slot}"] for p, *_ in SLIDER_SPECS])
 
 
 @st.cache_data
@@ -77,20 +80,58 @@ def init_session_state():
         st.session_state.costs = UNIT_COSTS.copy()
     if "carbon_factors" not in st.session_state:
         st.session_state.carbon_factors = CARBON_FACTORS.copy()
+    # The emission-factor editors are keyed widgets (cf_<mat>); their keys are the
+    # live value and carbon_factors is re-derived from them each run (same pattern
+    # as the mix sliders — one source of truth, programmatic loads write the keys).
+    for mat, val in st.session_state.carbon_factors.items():
+        st.session_state.setdefault(f"cf_{mat}", float(val))
     if "exotic_a" not in st.session_state:
         st.session_state.exotic_a = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
     if "exotic_b" not in st.session_state:
         st.session_state.exotic_b = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
 
 
-def get_state_json() -> str:
-    state = {
-        "version": 2,
-        "mix_a": current_mix("A").tolist(),
-        "mix_b": current_mix("B").tolist(),
-        "costs": st.session_state.costs,
-        "carbon_factors": st.session_state.carbon_factors,   # was dropped in v1 (regression)
-        "exotic_a": st.session_state.exotic_a,
-        "exotic_b": st.session_state.exotic_b,
+# Every field the session file carries (besides "version"). export_session writes
+# exactly these; apply_session consumes exactly these. Add a field HERE and both
+# sides pick it up — the round-trip tests enforce the symmetry.
+SESSION_FIELDS = ("mix_a", "mix_b", "costs", "carbon_factors", "exotic_a", "exotic_b")
+SESSION_VERSION = 2
+
+
+def export_session(state=None) -> dict:
+    """The complete session as a plain dict (the export file's schema)."""
+    state = st.session_state if state is None else state
+    return {
+        "version": SESSION_VERSION,
+        "mix_a": current_mix("A", state).tolist(),
+        "mix_b": current_mix("B", state).tolist(),
+        "costs": dict(state["costs"]),
+        "carbon_factors": dict(state["carbon_factors"]),   # was dropped in v1 (regression)
+        "exotic_a": dict(state["exotic_a"]),
+        "exotic_b": dict(state["exotic_b"]),
     }
-    return json.dumps(state)
+
+
+def apply_session(data: dict, state=None):
+    """Write an imported session into state. Must run before widgets instantiate
+    (the sidebar runs first, so calling it there is safe).
+
+    Writes BOTH the plain dicts and the backing widget keys: the mix sliders
+    (cement_A, ...) and the emission-factor editors (cf_<mat>) are keyed widgets, so
+    an import that only replaced the dicts would be silently overwritten by the
+    widgets' retained state on the very next rerun."""
+    state = st.session_state if state is None else state
+    load_mix_into("A", data["mix_a"], state)
+    load_mix_into("B", data["mix_b"], state)
+    state["costs"] = data["costs"]
+    if "carbon_factors" in data:   # v2; v1 files simply keep the defaults
+        state["carbon_factors"] = data["carbon_factors"]
+        for mat, val in data["carbon_factors"].items():
+            state[f"cf_{mat}"] = float(val)
+    if "exotic_a" in data:
+        state["exotic_a"] = data["exotic_a"]
+        state["exotic_b"] = data["exotic_b"]
+
+
+def get_state_json() -> str:
+    return json.dumps(export_session())
