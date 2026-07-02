@@ -98,7 +98,7 @@ keeps a single carbon path, metrics path, and fitness path so every tab stays co
 ```bash
 pytest                       # config in pytest.ini (pythonpath=., testpaths=tests)
 ruff check .                 # lint (config in ruff.toml)
-pytest --cov=src --cov-fail-under=65   # coverage floor as run in CI
+pytest --cov=src --cov-fail-under=60   # coverage floor as run in CI
 ```
 
 The suite covers the chemistry tiers, the generative designers (target-tracking, in-envelope
@@ -106,8 +106,10 @@ sampling), the exotic-admixture switch, the UI logic, and the amortized flow (SB
 save/load). The `ui/` tab renderers and `app.py` are exercised end-to-end by an AppTest smoke
 test (`tests/test_app_smoke.py`), which also asserts slider→metric value propagation. The heavy
 TensorFlow/BayesFlow tests auto-skip when that stack is absent, so the core suite runs anywhere.
-CI (`.github/workflows/tests.yml`) runs ruff, then the core suite with a coverage floor (65%,
-below current ~69%; ratchet up over time), on every push and pull request.
+CI (`.github/workflows/tests.yml`) runs ruff, then the core suite with a coverage floor (60%),
+on every push and pull request. CI omits the heavy TF/BayesFlow stack, so the amortized-flow
+tests skip and CI coverage (~63%) runs below a full local run (~69%); the floor sits below CI's
+number and can be ratcheted up over time.
 
 ### Committed binary artifacts
 
