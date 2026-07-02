@@ -78,11 +78,43 @@ status_container.empty()  # Clear loading message
 
 param_names = list(PARAM_NAMES)  # single source in src/generative_ga.py
 
+# Mix slider specs: (param, label, min, max) in PARAM_NAMES order. Each mix slider is a
+# *keyed* widget (f"{param}_A"/f"{param}_B") whose value lives in session_state — the
+# single source of truth. The mix vector is derived from those keys each run (no parallel
+# st.session_state.mix_a copy), and every programmatic load writes the keys via an
+# on_click/on_change callback so the write lands before the widgets instantiate.
+SLIDER_SPECS = [
+    ("cement", "Cement", 100, 550),
+    ("slag", "Slag", 0, 360),
+    ("ash", "Fly Ash", 0, 200),
+    ("water", "Water", 120, 250),
+    ("superplasticizer", "Superplasticizer", 0, 30),
+    ("coarse_agg", "Coarse Agg", 700, 1150),
+    ("fine_agg", "Fine Agg", 550, 1000),
+    ("age", "Age (days)", 1, 365),
+]
+DEFAULT_MIX_A = [300, 0, 0, 180, 0, 1000, 800, 28]
+DEFAULT_MIX_B = [300, 100, 50, 160, 5, 1000, 800, 28]
+
+
+def load_mix_into(slot: str, mix_vec):
+    """Write a mix vector into the keyed sliders for slot 'A'/'B', clamped to range.
+
+    Must be called from a callback (on_click/on_change) or before the sliders
+    instantiate, so the write precedes widget instantiation on the next run."""
+    for (p, _, lo, hi), v in zip(SLIDER_SPECS, mix_vec):
+        st.session_state[f"{p}_{slot}"] = int(np.clip(round(float(v)), lo, hi))
+
+
+def current_mix(slot: str) -> np.ndarray:
+    """Assemble the mix vector for slot 'A'/'B' from its keyed sliders."""
+    return np.array([st.session_state[f"{p}_{slot}"] for p, *_ in SLIDER_SPECS])
+
+
 # --- State Management ---
-if 'mix_a' not in st.session_state:
-    st.session_state.mix_a = np.array([300, 0, 0, 180, 0, 1000, 800, 28])
-if 'mix_b' not in st.session_state:
-    st.session_state.mix_b = np.array([300, 100, 50, 160, 5, 1000, 800, 28])
+for _slot, _default in (("A", DEFAULT_MIX_A), ("B", DEFAULT_MIX_B)):
+    for (_p, _, _lo, _hi), _v in zip(SLIDER_SPECS, _default):
+        st.session_state.setdefault(f"{_p}_{_slot}", int(_v))
 if 'costs' not in st.session_state:
     st.session_state.costs = UNIT_COSTS.copy()
 if 'carbon_factors' not in st.session_state:
@@ -100,8 +132,8 @@ st.markdown("AI-powered concrete formulation: prediction, optimization, and inve
 def get_state_json():
     state = {
         "version": 2,
-        "mix_a": st.session_state.mix_a.tolist(),
-        "mix_b": st.session_state.mix_b.tolist(),
+        "mix_a": current_mix("A").tolist(),
+        "mix_b": current_mix("B").tolist(),
         "costs": st.session_state.costs,
         "carbon_factors": st.session_state.carbon_factors,   # was dropped in v1 (regression)
         "exotic_a": st.session_state.exotic_a,
@@ -143,8 +175,10 @@ with st.sidebar:
             if error:
                 st.error(f"Import failed: {error}")
             else:
-                st.session_state.mix_a = np.array(data["mix_a"])
-                st.session_state.mix_b = np.array(data["mix_b"])
+                # Sidebar runs before the Compare tab instantiates the sliders, so
+                # writing the keyed values here is safe (precedes widget instantiation).
+                load_mix_into("A", data["mix_a"])
+                load_mix_into("B", data["mix_b"])
                 st.session_state.costs = data["costs"]
                 if "carbon_factors" in data:   # v2; v1 files simply keep the defaults
                     st.session_state.carbon_factors = data["carbon_factors"]
@@ -255,40 +289,39 @@ with tab1:
     Use the preset dropdown to load known mixtures, or adjust sliders manually.
     """)
     col_a, col_b = st.columns(2)
-    
-    def mix_input_ui(key, default_mix, exotic_state):
-        preset_choice = st.selectbox(f"Load Preset ({key})", list(PRESET_MIXTURES.keys()), key=f"preset_{key}")
-        if preset_choice != "Custom" and PRESET_MIXTURES[preset_choice] is not None:
-            default_mix = PRESET_MIXTURES[preset_choice].copy()
-        
-        with st.expander(f"Standard Components ({key})", expanded=True):
+
+    def _apply_preset(slot):
+        """on_change for the preset selectbox: load the preset into the keyed sliders."""
+        mix = PRESET_MIXTURES.get(st.session_state[f"preset_{slot}"])
+        if mix is not None:
+            load_mix_into(slot, mix)
+
+    def mix_input_ui(slot, exotic_state):
+        st.selectbox(f"Load Preset ({slot})", list(PRESET_MIXTURES.keys()),
+                     key=f"preset_{slot}", on_change=_apply_preset, args=(slot,))
+
+        with st.expander(f"Standard Components ({slot})", expanded=True):
             col1, col2 = st.columns(2)
-            mix_vals = np.array(default_mix).copy()
-            with col1:
-                mix_vals[0] = st.slider(f"Cement ({key})", 100, 550, int(mix_vals[0]))
-                mix_vals[1] = st.slider(f"Slag ({key})", 0, 360, int(mix_vals[1]))
-                mix_vals[2] = st.slider(f"Fly Ash ({key})", 0, 200, int(mix_vals[2]))
-                mix_vals[3] = st.slider(f"Water ({key})", 120, 250, int(mix_vals[3]))
-            with col2:
-                mix_vals[4] = st.slider(f"Superplasticizer ({key})", 0, 30, int(mix_vals[4]))
-                mix_vals[5] = st.slider(f"Coarse Agg ({key})", 700, 1150, int(mix_vals[5]))
-                mix_vals[6] = st.slider(f"Fine Agg ({key})", 550, 1000, int(mix_vals[6]))
-                mix_vals[7] = st.slider(f"Age (days) ({key})", 1, 365, int(mix_vals[7]))
-        
-        with st.expander(f"Exotic Admixtures ({key})", expanded=False):
+            cols = [col1] * 4 + [col2] * 4
+            for (p, label, lo, hi), c in zip(SLIDER_SPECS, cols):
+                with c:
+                    # Keyed, no value= — Streamlit persists the value under the key.
+                    st.slider(f"{label} ({slot})", lo, hi, key=f"{p}_{slot}")
+
+        with st.expander(f"Exotic Admixtures ({slot})", expanded=False):
             if exotic_strength_enabled:
                 st.caption("Strength effect ON (experimental, unvalidated estimate).")
             else:
                 st.caption("Affect cost & carbon only. Enable the exotic strength model in the Config tab to include them in strength.")
             for adm, props in EXOTIC_ADMIXTURES.items():
-                exotic_state[adm] = st.slider(f"{adm.replace('_', ' ').title()} ({key})", 0, props["max"], exotic_state.get(adm, 0))
-        
-        return mix_vals, exotic_state
+                exotic_state[adm] = st.slider(f"{adm.replace('_', ' ').title()} ({slot})", 0, props["max"], exotic_state.get(adm, 0))
+
+        return current_mix(slot), exotic_state
 
     with col_a:
-        st.session_state.mix_a, st.session_state.exotic_a = mix_input_ui("A", st.session_state.mix_a, st.session_state.exotic_a)
+        mix_a, st.session_state.exotic_a = mix_input_ui("A", st.session_state.exotic_a)
     with col_b:
-        st.session_state.mix_b, st.session_state.exotic_b = mix_input_ui("B", st.session_state.mix_b, st.session_state.exotic_b)
+        mix_b, st.session_state.exotic_b = mix_input_ui("B", st.session_state.exotic_b)
 
     def get_metrics(mix, exotic):
         return compute_metrics(
@@ -299,8 +332,8 @@ with tab1:
             carbon_kwargs=carbon_kwargs,
         )
 
-    m_a = get_metrics(st.session_state.mix_a, st.session_state.exotic_a)
-    m_b = get_metrics(st.session_state.mix_b, st.session_state.exotic_b)
+    m_a = get_metrics(mix_a, st.session_state.exotic_a)
+    m_b = get_metrics(mix_b, st.session_state.exotic_b)
 
     def strength_caption(metrics):
         """Honest note on how exotics relate to the strength number shown."""
@@ -324,7 +357,7 @@ with tab1:
         if m_a["workability"]:
             st.caption(f"Workability: {m_a['workability']}")
         st.download_button("Download ticket (A)", key="ticket_a",
-                           data=mix_ticket(dict(zip(param_names, st.session_state.mix_a)), m_a, ticket_config),
+                           data=mix_ticket(dict(zip(param_names, mix_a)), m_a, ticket_config),
                            file_name="mix_A_ticket.csv", mime="text/csv")
     with res_b:
         st.subheader("Mix B")
@@ -339,7 +372,7 @@ with tab1:
         if m_b["workability"]:
             st.caption(f"Workability: {m_b['workability']}")
         st.download_button("Download ticket (B)", key="ticket_b",
-                           data=mix_ticket(dict(zip(param_names, st.session_state.mix_b)), m_b, ticket_config),
+                           data=mix_ticket(dict(zip(param_names, mix_b)), m_b, ticket_config),
                            file_name="mix_B_ticket.csv", mime="text/csv")
 
 with tab2:
@@ -420,13 +453,14 @@ with tab2:
     if rec.get("workability"):
         st.caption(f"Workability: {rec['workability']}")
     st.caption("  ·  ".join(f"{p}: {rec['params'][p]:.0f}" for p in param_names))
+    rec_vec = [rec["params"][p] for p in param_names]
     load_a, load_b = st.columns(2)
-    if load_a.button("Load into Mix A"):
-        st.session_state.mix_a = np.array([rec["params"][p] for p in param_names])
-        st.success("Loaded into Mix A — see the Compare Mixes tab.")
-    if load_b.button("Load into Mix B"):
-        st.session_state.mix_b = np.array([rec["params"][p] for p in param_names])
-        st.success("Loaded into Mix B — see the Compare Mixes tab.")
+    # on_click callbacks write the keyed sliders BEFORE the Compare tab reinstantiates
+    # them on the next run — the only clean way to set a keyed widget programmatically.
+    load_a.button("Load into Mix A", key="load_rec_a",
+                  on_click=load_mix_into, args=("A", rec_vec))
+    load_b.button("Load into Mix B", key="load_rec_b",
+                  on_click=load_mix_into, args=("B", rec_vec))
     st.download_button(
         "Download recipe ticket (CSV)", key="ticket_rec",
         data=mix_ticket(rec["params"], rec, ticket_config),
@@ -593,12 +627,12 @@ with tab3:
         i_c = int(np.argmin(nsga_out["carbon"]))
         i_m = int(np.argmin(nsga_out["cost"]))
         pk1, pk2, pk3 = st.columns(3)
-        if pk1.button(f"Max strength · {nsga_out['strength'][i_s]:.0f} MPa"):
-            st.session_state.mix_a = np.array(nsga_out["mixes"][i_s]); st.success("Loaded into Mix A.")
-        if pk2.button(f"Min carbon · {nsga_out['carbon'][i_c]:.0f} kg CO₂"):
-            st.session_state.mix_a = np.array(nsga_out["mixes"][i_c]); st.success("Loaded into Mix A.")
-        if pk3.button(f"Min cost · ${nsga_out['cost'][i_m]:.0f}"):
-            st.session_state.mix_a = np.array(nsga_out["mixes"][i_m]); st.success("Loaded into Mix A.")
+        pk1.button(f"Max strength · {nsga_out['strength'][i_s]:.0f} MPa", key="pick_str",
+                   on_click=load_mix_into, args=("A", list(nsga_out["mixes"][i_s])))
+        pk2.button(f"Min carbon · {nsga_out['carbon'][i_c]:.0f} kg CO₂", key="pick_carb",
+                   on_click=load_mix_into, args=("A", list(nsga_out["mixes"][i_c])))
+        pk3.button(f"Min cost · ${nsga_out['cost'][i_m]:.0f}", key="pick_cost",
+                   on_click=load_mix_into, args=("A", list(nsga_out["mixes"][i_m])))
 
         st.dataframe(
             pd.DataFrame({"Strength": nsga_out["strength"], "Carbon": nsga_out["carbon"], "Cost": nsga_out["cost"]}).round(1),
