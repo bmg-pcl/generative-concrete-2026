@@ -68,7 +68,7 @@ def render_inverse(ctx: AppContext):
                + (f" · age pinned to {design_age:.0f} d" if design_age is not None else ""))
     if design_age is not None and backend in ("auto", "flow") and flow_ready:
         st.caption("Age is pinned, so the trained flow is bypassed for the GA designer "
-                   "(the flow can't honor a fixed age — see roadmap R2.1).")
+                   "(the flow can't honor a fixed age — see roadmap R7.2).")
 
     # --- Recommended recipe for the target -------------------------------------
     # Cached so it isn't re-searched on every unrelated rerun (it runs its own

@@ -142,7 +142,7 @@ class BayesFlowExplorer:
             # The trained flow can't be re-conditioned on the robust objective; robust
             # handling for the flow happens in recommend_recipe (filter/lower-bound match).
             # TODO(flow-age-conditioning): retrain the flow with (strength, age) conditioning
-            # so a fixed age can use the flow; until then, pinning age routes to the GA.
+            # so a fixed age can use the flow (roadmap R7.2); until then, pinning age routes to the GA.
             return self.amortized.sample(target_strength, n_samples=n_samples)
         return self.designer.sample(
             target_strength,
