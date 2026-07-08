@@ -27,7 +27,7 @@ class BayesFlowExplorer:
 
       1. A trained **amortized BayesFlow posterior** (a normalizing flow in
          `src/amortized.py`) -- used automatically when trained weights exist and
-         no carbon target is given (the flow conditions on strength only).
+         no carbon target is given (the flow conditions on strength and design age).
       2. A transparent **GA inverse designer** (`PopulationInverseDesigner`) --
          the always-available fallback; it needs no TensorFlow and also handles the
          carbon objective.
@@ -119,8 +119,9 @@ class BayesFlowExplorer:
           * method="ga": force the GA designer.
           * method="aco": force the Ant Colony (ACO_R) designer.
 
-        The flow conditions on strength only, so carbon targets always route to a
-        metaheuristic designer (which bakes carbon into its objective).
+        The flow conditions on (strength, age) since R7.2, so a fixed design age uses
+        the flow directly; only carbon targets route to a metaheuristic designer
+        (which bakes carbon into its objective).
         """
         if method in ("amortized", "flow") and self.amortized is None:
             raise RuntimeError(
@@ -134,16 +135,15 @@ class BayesFlowExplorer:
             )
         use_amortized = (
             method in ("auto", "amortized", "flow")
-            and carbon_target is None
-            and age is None            # the trained flow can't honor a fixed design age
+            and carbon_target is None      # the flow conditions on strength+age, not carbon
             and self.amortized is not None
         )
         if use_amortized:
-            # The trained flow can't be re-conditioned on the robust objective; robust
-            # handling for the flow happens in recommend_recipe (filter/lower-bound match).
-            # TODO(flow-age-conditioning): retrain the flow with (strength, age) conditioning
-            # so a fixed age can use the flow (roadmap R7.2); until then, pinning age routes to the GA.
-            return self.amortized.sample(target_strength, n_samples=n_samples)
+            # The flow can't be re-conditioned on the robust objective; robust handling
+            # for the flow happens in recommend_recipe (filter/lower-bound match). Age
+            # is now a genuine condition (R7.2): a pinned age is honored by the flow,
+            # and age=None marginalises over age inside the flow.
+            return self.amortized.sample(target_strength, n_samples=n_samples, age=age)
         return self.designer.sample(
             target_strength,
             n_samples=n_samples,

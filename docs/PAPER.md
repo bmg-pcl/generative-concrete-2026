@@ -240,20 +240,26 @@ as the GA; it serves as an independent metaheuristic control.
 Simulation-based inference (BayesFlow; Radev et al., 2020): prior
 $\mathbf{x} \sim \mathcal{U}(\mathcal{B})$; simulator
 $s = \hat{f}(\mathbf{x}) + \varepsilon$, $\varepsilon \sim \mathcal{N}(0, 2^2)$ MPa;
-a conditional invertible network (5 coupling layers) trained online (30 epochs × 250
-iterations, batch 64) in a standardized $z$-space (uniform-prior moments for
-$\mathbf{x}$; simulated moments for $s$) to approximate
-$p(\mathbf{x} \mid s)$ for *any* $s$ in one forward pass — amortizing inference cost
-across all future queries. **Calibration:** simulation-based calibration (Talts et
-al., 2018) rank statistics are computed per parameter (300 prior datasets × 250
-posterior draws) and reported at train time; well-calibrated dimensions have uniform
-ranks (normalized mean ≈ 0.5). **Scope guards:** the flow conditions on strength
-only, so carbon-budget and fixed-age queries route automatically to the
-metaheuristics; a dataset fingerprint stored with the weights detects staleness after
-recalibration (the flow was trained against the *previous* forward model) and demotes
-it to the GA fallback rather than serving silently wrong posteriors. The trained flow
-inherits the simulator's view of the world — the *simulation gap*: its posterior is
-faithful to $\hat{f}$, not to the laboratory.
+a conditional invertible network (5 coupling layers) trained online (40 epochs × 250
+iterations, batch 64) in a standardized $z$-space to approximate
+$p(\mathbf{x}_{\setminus \text{age}} \mid s, \text{age})$ — the seven non-age
+parameters conditioned on strength **and design age** (§R7.2). Age is a design
+*condition*, not a sampled latent: it is drawn from the prior during training (so it
+is marginalized correctly) and supplied at inference, so a fixed design age — the
+tool's *default* setting — is served by the flow in one forward pass rather than
+routed to a metaheuristic. A query with age unspecified draws age from the prior per
+sample, recovering the marginal $p(\mathbf{x} \mid s)$. **Calibration:**
+simulation-based calibration (Talts et al., 2018) rank statistics over the seven
+sampled parameters (300 prior datasets × 250 posterior draws) span the whole
+(strength × age) grid by construction, since both conditions are prior-drawn;
+well-calibrated dimensions have uniform ranks (normalized mean ≈ 0.5). **Scope
+guards:** only carbon-budget queries route to the metaheuristics (the flow does not
+condition on carbon); two fingerprints stored with the weights — the dataset row
+count and a content hash of the forward model — plus a conditioning-schema tag detect
+staleness (recalibration, a changed forward model, or an incompatible schema) and
+demote the flow to the GA fallback rather than serving silently wrong posteriors. The
+trained flow inherits the simulator's view of the world — the *simulation gap*: its
+posterior is faithful to $\hat{f}$, not to the laboratory.
 
 ### 6.5 Multi-objective front (NSGA-II/III)
 
@@ -361,8 +367,8 @@ corner combinations never jointly observed; the novelty gate, not the box, carri
 that burden. (iii) Tier-2 hydration is a teaching-grade surrogate, not a
 thermodynamic model (no Parrot–Killoh phase-resolved kinetics, no GEMS-style
 speciation); it deliberately does not feed strength. (iv) The flow's simulation gap
-(§6.4) and its strength-only conditioning (age/carbon route to metaheuristics; 2-D
-conditioning is future work). (v) Derived tensile/curing/workability are correlations
+(§6.4): it now conditions on (strength, age) but still not on carbon, so carbon-budget
+queries route to the metaheuristics. (v) Derived tensile/curing/workability are correlations
 and heuristics, labeled as such. (vi) Emission factors are indicative defaults unless
 an EPD is attached; accounting conventions for waste/biomass kiln fuels vary by
 jurisdiction. (vii) Fixed-seed metaheuristic benchmarks are order-of-magnitude

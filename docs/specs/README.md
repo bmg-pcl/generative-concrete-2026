@@ -82,18 +82,25 @@ interesting model in the repo — serves almost nothing).
   calibration, not a regression to tune away; documented in §8.3. Recovering it needs
   cross-conformal (CV+), deferred as out-of-scope for the coherence fix.
 
-**R7.2 Flow v2 — (strength, age) conditioning** *(unlocks the default path)*
-- **What:** retrain the BayesFlow posterior conditioned on (target strength, design
-  age); update routing so pinned-age queries use the flow; SBC per dimension across
-  a (strength × age) grid. (This is the item R2.1 explicitly escalated.)
-- **Why now:** fixed age is the *default* configuration; under it the amortized
-  backend — 10× faster, genuinely posterior-diverse — is dead code. Highest
-  capability-per-day item on the board, and a prerequisite for H3's joint posterior.
-- **Value:** default-config users get instant, calibrated design clouds; the
-  benchmark's flow rows become representative instead of hypothetical.
-- **Gates:** SBC normalized ranks uniform (KS test not rejected at 0.05) across the
-  grid; age honored exactly in samples; benchmark row with age pinned; staleness
-  fingerprint extended to the conditioning schema.
+**R7.2 Flow v2 — (strength, age) conditioning** — ✅ **Shipped** *(unlocked the default path)*
+- **What:** retrained the BayesFlow posterior to output the 7 non-age parameters
+  conditioned on (strength, age); age is drawn from the prior during training
+  (marginalised correctly) and supplied at inference. Routing now sends pinned-age
+  queries to the flow; `age=None` marginalises over age inside the flow. (This was the
+  item R2.1 explicitly escalated as a senior task.)
+- **Why:** fixed age is the *default* configuration; under it the amortized backend —
+  ~10× faster per query, genuinely posterior-diverse — was dead code (served ~0% of
+  queries). Also the conditioning prerequisite for H3's joint posterior.
+- **Value delivered:** default-config users now get instant, calibrated,
+  age-conditioned design clouds from the flow; the benchmark's flow rows are
+  representative rather than hypothetical.
+- **Gates (met):** SBC normalized ranks for the 7 sampled params in [~0.47, ~0.53]
+  across the prior-spanned (strength × age) grid; age honored exactly in samples
+  (test-gated); staleness guard extended with a `cond_schema` tag so the old
+  strength-only checkpoint is rejected (falls back to GA) rather than mis-loaded.
+- **Estimate reconciliation:** est. senior/escalate; the clean formulation (age as a
+  condition, prior-marginalised) made it ~½ d — the escalation flag was warranted ex
+  ante (2-D SBC, network-shape change) but the design collapsed the risk.
 
 **R7.3 Evidence hardening for the flagship**
 - **What:** benchmark the *robust* mode (lower-bound MAE, in-support %, front

@@ -32,10 +32,29 @@ def test_sample_shape_and_envelope(tiny_model):
     assert (s <= tiny_model.bounds[:, 1] + 1e-6).all()
 
 
+def test_fixed_age_is_honored(tiny_model):
+    """R7.2: conditioning on a design age pins every sample's age exactly."""
+    age_idx = PARAM_NAMES.index("age")
+    s = tiny_model.sample(45.0, n_samples=64, age=28.0)
+    assert np.allclose(s[:, age_idx], 28.0)
+
+
+def test_age_none_marginalises(tiny_model):
+    """R7.2: age=None draws age from the prior per sample (recovers the marginal)."""
+    age_idx = PARAM_NAMES.index("age")
+    s = tiny_model.sample(45.0, n_samples=256, age=None)
+    ages = s[:, age_idx]
+    assert ages.std() > 1.0  # genuinely varying, not a single pinned value
+    assert (ages >= tiny_model.bounds[age_idx, 0] - 1e-6).all()
+    assert (ages <= tiny_model.bounds[age_idx, 1] + 1e-6).all()
+
+
 def test_sbc_ranks_shape_and_bounds(tiny_model):
+    """SBC covers the 7 SAMPLED params (age is a condition, not sampled)."""
     n_post = 80
     ranks = tiny_model.sbc_ranks(n_datasets=40, n_post=n_post)
-    assert ranks.shape == (40, len(PARAM_NAMES))
+    assert ranks.shape == (40, tiny_model.n_theta)
+    assert tiny_model.n_theta == len(PARAM_NAMES) - 1
     assert ranks.min() >= 0 and ranks.max() <= n_post
 
 
@@ -58,6 +77,29 @@ def test_load_detects_stale_dataset(tmp_path, tiny_model, monkeypatch):
     # Simulate calibration changing the dataset (more rows).
     monkeypatch.setattr(A, "dataset_fingerprint", lambda: 10_000_000)
     reloaded = A.AmortizedPosteriorModel(num_coupling_layers=3)
+    assert reloaded.load(prefix) is False
+
+
+def test_load_detects_stale_model(tmp_path, tiny_model, monkeypatch):
+    """R7.1 guard: a flow trained against a different forward model is refused."""
+    import src.amortized as A
+    prefix = str(tmp_path / "ckpt")
+    tiny_model.save(prefix)
+    monkeypatch.setattr(A, "model_fingerprint", lambda: "deadbeefdeadbeef")
+    reloaded = A.AmortizedPosteriorModel(num_coupling_layers=3)
+    assert reloaded.load(prefix) is False
+
+
+def test_load_detects_incompatible_schema(tmp_path, tiny_model):
+    """R7.2 guard: a checkpoint from an older conditioning schema (e.g. the
+    strength-only flow) must be rejected, not loaded into the wrong-shaped network."""
+    prefix = str(tmp_path / "ckpt")
+    tiny_model.save(prefix)
+    # Rewrite the norm file with a legacy schema tag, preserving every other field.
+    d = dict(np.load(prefix + "_norm.npz"))
+    d["cond_schema"] = "strength_only_v1"
+    np.savez(prefix + "_norm.npz", **d)
+    reloaded = AmortizedPosteriorModel(num_coupling_layers=3)
     assert reloaded.load(prefix) is False
 
 
@@ -87,3 +129,18 @@ def test_flow_method_routes_to_amortizer():
     explorer.designer.sample = lambda *a, **k: called.__setitem__("ga", called["ga"] + 1) or np.zeros((k.get("n_samples", 1), len(PARAM_NAMES)))
     explorer.sample_posterior(45.0, n_samples=40, method="flow")
     assert called["flow"] == 1 and called["ga"] == 0
+
+
+def test_pinned_age_uses_flow_and_honors_age():
+    """R7.2 gate: a fixed design age now routes to the flow (not the GA) and the
+    returned cloud is conditioned on that exact age."""
+    from src.bayesian import BayesFlowExplorer
+    explorer = BayesFlowExplorer()
+    if explorer.amortized is None:
+        pytest.skip("no trained amortizer weights available")
+    age_idx = PARAM_NAMES.index("age")
+    ga_called = {"n": 0}
+    explorer.designer.sample = lambda *a, **k: ga_called.__setitem__("n", ga_called["n"] + 1) or np.zeros((k.get("n_samples", 1), len(PARAM_NAMES)))
+    s = explorer.sample_posterior(45.0, n_samples=200, method="auto", age=28.0)
+    assert ga_called["n"] == 0, "pinned age should use the flow, not the GA"
+    assert np.allclose(s[:, age_idx], 28.0)

@@ -36,11 +36,12 @@ def _cloud_metrics(explorer, samples, target):
     }
 
 
-def run_backend_benchmarks(explorer, backends, targets, n_samples=1500, seed=0):
+def run_backend_benchmarks(explorer, backends, targets, n_samples=1500, seed=0, age=None):
     """Return a list of per-(backend, target) metric rows.
 
     Backends not currently available (e.g. 'flow' with no trained weights) are
-    skipped; the returned rows say which ran, so a caller can note the skip."""
+    skipped; the returned rows say which ran, so a caller can note the skip. `age`
+    pins the design age (R7.2: the flow now honors it instead of routing to the GA)."""
     rows = []
     for method in backends:
         if method == "flow" and explorer.amortized is None:
@@ -48,7 +49,8 @@ def run_backend_benchmarks(explorer, backends, targets, n_samples=1500, seed=0):
         for t in targets:
             np.random.seed(seed)  # best-effort determinism for the metaheuristics
             start = time.time()
-            samples = explorer.sample_posterior(float(t), n_samples=n_samples, method=method)
+            samples = explorer.sample_posterior(float(t), n_samples=n_samples,
+                                                method=method, age=age)
             elapsed = time.time() - start
             row = {"backend": method, "target_MPa": float(t), "time_s": round(elapsed, 2)}
             row.update(_cloud_metrics(explorer, samples, t))
@@ -86,7 +88,7 @@ def _md_table(columns, rows):
     return "\n".join([header, sep, *body])
 
 
-def render_markdown(rows, nsga_row, n_samples, flow_available):
+def render_markdown(rows, nsga_row, n_samples, flow_available, age_rows=None):
     lines = [
         "# Backend benchmarks",
         "",
@@ -104,6 +106,12 @@ def render_markdown(rows, nsga_row, n_samples, flow_available):
         lines += ["", "> The amortized **flow** backend is not benchmarked here: no trained "
                   "weights were found. Train it with `python -m src.amortized`, then re-run."]
     lines += ["", "## Inverse-design backends", "", _md_table(BENCH_COLUMNS, rows)]
+    if age_rows:
+        lines += ["", "## Age-conditioned flow (R7.2)", "",
+                  "The flow now conditions on **(strength, age)**, so a fixed design age is served "
+                  "by the flow directly (before R7.2 a pinned age routed to the GA). Rows below "
+                  "pin age = 28 d — the tool's default; the age column is held exactly.", "",
+                  _md_table(BENCH_COLUMNS, age_rows)]
     if nsga_row is not None:
         lines += ["", "## Multi-objective (NSGA-II)", "",
                   "NSGA maps a whole strength/carbon/cost front in one run, so it is reported "
@@ -134,9 +142,15 @@ def main(argv=None):
     n_samples = 100 if args.quick else 1500
     targets = [45.0] if args.quick else TARGETS
     rows = run_backend_benchmarks(explorer, DEFAULT_BACKENDS, targets, n_samples=n_samples)
+    # R7.2: age-conditioned flow at the default design age (28 d), if a flow is trained.
+    age_rows = None
+    if explorer.amortized is not None:
+        age_rows = run_backend_benchmarks(explorer, ["flow"], targets,
+                                          n_samples=n_samples, age=28.0)
     nsga_row = run_nsga_benchmark(explorer, pop_size=20 if args.quick else 60,
                                   n_gen=8 if args.quick else 30)
-    md = render_markdown(rows, nsga_row, n_samples, flow_available=explorer.amortized is not None)
+    md = render_markdown(rows, nsga_row, n_samples, flow_available=explorer.amortized is not None,
+                         age_rows=age_rows)
 
     if args.quick:
         print(md)

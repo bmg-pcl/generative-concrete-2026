@@ -60,15 +60,11 @@ def render_inverse(ctx: AppContext):
                                          robust=robust, age=age)
 
     samples = cached_samples(float(target_str), backend, 3000, robust_mode, design_age)
-    # A pinned design age routes away from the flow (it can't honor a fixed age).
-    flow_usable = flow_ready and (design_age is None)
-    used_backend = "trained flow" if (backend in ("auto", "flow") and flow_usable) else \
+    # R7.2: the flow conditions on (strength, age), so a pinned age uses the flow too.
+    used_backend = "trained flow" if (backend in ("auto", "flow") and flow_ready) else \
                    ("GA" if backend in ("auto", "ga") else "ACO")
     st.caption(f"Backend used: **{used_backend}** · {len(samples)} candidates sampled"
-               + (f" · age pinned to {design_age:.0f} d" if design_age is not None else ""))
-    if design_age is not None and backend in ("auto", "flow") and flow_ready:
-        st.caption("Age is pinned, so the trained flow is bypassed for the GA designer "
-                   "(the flow can't honor a fixed age — see roadmap R7.2).")
+               + (f" · age conditioned to {design_age:.0f} d" if design_age is not None else ""))
 
     # --- Recommended recipe for the target -------------------------------------
     # Cached so it isn't re-searched on every unrelated rerun (it runs its own
