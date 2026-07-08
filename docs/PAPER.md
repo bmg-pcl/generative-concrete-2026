@@ -14,17 +14,19 @@ family of interchangeable generative processes — a simulation-trained normaliz
 flow (amortized posterior), two population metaheuristics (GA, ACO_R), and
 evolutionary multi-objective optimization (NSGA-II/III) — all searching a common,
 data-derived design envelope under shared physical-validity constraints.
-Distinctively, uncertainty is *load-bearing* rather than decorative: prediction
-intervals are calibrated by split conformalized quantile regression (empirical
-coverage 0.903 at nominal 0.90), an out-of-support score with a data-calibrated
-threshold gates extrapolation, and a "robust" formulation optimizes the conformal
-lower bound subject to an in-support constraint, so every returned design carries a
-guaranteed-strength statement valid within the model's evidential reach. We report a
-controlled comparison of the generative backends (target tracking, design diversity,
-support retention, latency), simulation-based calibration of the flow, and an
-observed pathology — crossing between the independently trained mean and quantile
-models in sparse regions — that motivates future joint estimation. An active-learning
-criterion closes the loop by ranking the laboratory experiments that shrink the
+Distinctively, uncertainty is *load-bearing* rather than decorative: a single
+distributional model provides both the point prediction (its median) and a split
+conformalized 90% interval (its outer quantiles; empirical coverage 0.888 at nominal
+0.90) that cannot cross the point estimate by construction, an out-of-support score
+with a data-calibrated threshold gates extrapolation, and a "robust" formulation
+optimizes the conformal lower bound subject to an in-support constraint, so every
+returned design carries a guaranteed-strength statement valid within the model's
+evidential reach. We report a controlled comparison of the generative backends
+(target tracking, design diversity, support retention, latency), simulation-based
+calibration of the flow, and a coherence pathology of an earlier two-model
+architecture — a point estimate crossing its own interval in sparse regions — that we
+resolve by joint distributional estimation. An active-learning criterion closes the
+loop by ranking the laboratory experiments that shrink the
 model's blind spots fastest.
 
 ---
@@ -65,8 +67,11 @@ mixtures, features $\mathbf{x} = (\text{cement}, \text{slag}, \text{fly ash},
 A calibration mechanism appends user laboratory rows as an overlay and retrains,
 with per-retrain RMSE/R² logged to a metrics history.
 
-**Mean model.** XGBoost regression (500 trees, $\eta=0.05$, depth 6) on an 80/20
-split: test RMSE 4.65 MPa, $R^2 = 0.92$. We denote it $\hat{f}(\mathbf{x})$.
+**Forward model.** A single XGBoost multi-quantile model (800 trees, $\eta=0.05$,
+depth 6, pinball objective for $\{0.05, 0.5, 0.95\}$) on an 80/20 split; its median
+is the point predictor $\hat{f}(\mathbf{x})$ (test RMSE 4.97 MPa, $R^2 = 0.90$) and
+its outer quantiles are the interval (§3.1). Point estimate and interval are thus one
+distribution — the coherence property analyzed in §8.3.
 
 **Design envelope.** All generative processes search the axis-aligned box
 $\mathcal{B} = \prod_j [\min_i x_{ij}, \max_i x_{ij}]$ spanned by the training data
@@ -78,19 +83,21 @@ separately, §3.2).
 
 ### 3.1 Conformalized quantile regression (CQR)
 
-A second XGBoost model with the multi-quantile pinball objective estimates
-$(\hat{q}_{0.05}, \hat{q}_{0.5}, \hat{q}_{0.95})$. Following Romano, Patterson &
-Candès (2019), the training split is divided into a fit fold (75%) and a calibration
-fold; on the calibration fold we compute symmetric conformity scores
+The forward model's outer quantiles, rearrangement-sorted per row so
+$\hat{q}_{0.05} \le \hat{q}_{0.5} \le \hat{q}_{0.95}$, supply the raw interval.
+Following Romano, Patterson & Candès (2019), the 80% training split is divided into a
+fit fold (75%, on which the model is trained) and a disjoint calibration fold; on the
+calibration fold we compute symmetric conformity scores
 
 $$E_i = \max\big(\hat{q}_{0.05}(\mathbf{x}_i) - y_i,\; y_i - \hat{q}_{0.95}(\mathbf{x}_i)\big),$$
 
 and the correction $\hat{Q} = E_{(\lceil (n_{cal}+1)\,0.9 \rceil)}$ — the finite-sample
 90% empirical quantile. The reported interval is
 $[\hat{q}_{0.05} - \hat{Q},\; \hat{q}_{0.95} + \hat{Q}]$. With the committed
-artifacts, $\hat{Q} = 2.47$ MPa and **measured coverage on the held-out test fold is
-0.903** against the nominal 0.90 — the central claim the UI makes ("90% interval")
-is verified by a regression test, not asserted.
+artifacts, $\hat{Q} = 3.48$ MPa and **measured coverage on the held-out test fold is
+0.888** against the nominal 0.90 — the central claim the UI makes ("90% interval")
+is verified by a regression test, not asserted. Because the point prediction is the
+same model's median (§8.3), the interval contains it identically.
 
 ### 3.2 Out-of-support (novelty) score
 
@@ -271,9 +278,10 @@ $$\text{merit}(\mathbf{x}) = \frac{\tfrac{1}{2}\big(\text{UB}(\mathbf{x}) - \tex
 
 i.e. wide calibrated interval × (capped) novelty × proximity to the target — the
 tests that most reduce uncertainty *where the user is designing*. Executed tests
-re-enter through the calibration overlay; retraining refreshes the mean model,
-quantile model, conformal correction, and support set together, logs RMSE/R² to the
-metrics history, and (by fingerprint) invalidates the amortized flow until retrained.
+re-enter through the calibration overlay; retraining refreshes the joint
+distributional model, conformal correction, and support set together, logs RMSE/R² to
+the metrics history, and (by dataset-row and forward-model content-hash fingerprints)
+invalidates the amortized flow until retrained.
 
 ## 8. Empirical evaluation
 
@@ -285,47 +293,65 @@ mean per-parameter standard deviation (spread), fraction in-support, wall-clock
 
 | backend | target (MPa) | MAE (MPa) | spread | in-support % | time (s) |
 |---|---|---|---|---|---|
-| flow | 25 | 7.23 | 70.9 | 19.9 | 0.18 |
-| flow | 45 | 4.82 | 78.9 | 7.3 | 0.14 |
-| flow | 65 | 4.19 | 72.2 | 2.7 | 0.15 |
-| GA | 25 | 2.75 | 35.4 | 13.3 | 1.41 |
-| GA | 45 | 1.09 | 27.2 | 1.3 | 1.44 |
-| GA | 65 | 1.80 | 28.3 | 0.0 | 1.44 |
-| ACO_R | 25 | 7.69 | 5.2 | 0.0 | 0.85 |
-| ACO_R | 45 | 1.11 | 36.6 | 0.0 | 0.83 |
-| ACO_R | 65 | 1.63 | 57.1 | 0.0 | 0.75 |
+| flow | 25 | 5.98 | 71.6 | 16.7 | 0.22 |
+| flow | 45 | 3.99 | 77.7 | 5.1 | 0.15 |
+| flow | 65 | 3.96 | 70.0 | 2.2 | 0.15 |
+| GA | 25 | 3.99 | 28.3 | 1.7 | 3.85 |
+| GA | 45 | 1.08 | 41.5 | 0.0 | 4.18 |
+| GA | 65 | 0.98 | 38.5 | 0.0 | 3.86 |
+| ACO_R | 25 | 0.63 | 7.1 | 0.0 | 2.06 |
+| ACO_R | 45 | 1.36 | 19.5 | 0.0 | 2.01 |
+| ACO_R | 65 | 0.70 | 19.9 | 0.7 | 2.07 |
 
-The structure is the expected accuracy/diversity/latency triangle: the flow is an
-order of magnitude faster per query and the most diverse, at 2–4× the target error
-(its cloud is a genuine posterior spread under observation noise σ=2, not an
-optimizer's elite); the metaheuristics track the target tightly with moderated
+(Regenerated against the joint distributional model and the flow retrained against
+it; the flow's target error improved ~15–20% now that it inverts the median it is
+scored on.) The structure is the expected accuracy/diversity/latency triangle: the
+flow is an order of magnitude faster per query and the most diverse, at 3–6× the
+target error (its cloud is a genuine posterior spread under observation noise σ=2, not
+an optimizer's elite); the metaheuristics track the target tightly with moderated
 diversity. The uniformly low in-support fractions are informative: an unconstrained
 match-the-target search gravitates to sparse regions — which is precisely the
 argument for the robust formulation (§6.4 gates and §6.1 penalties), whose in-support
 guarantee is exercised by the test suite rather than this benchmark. NSGA-II maps a
-60-point front in 0.23 s at pop 60 × 30 generations.
+60-point front in 0.34 s at pop 60 × 30 generations.
 
 ### 8.2 Calibration results
 
-Conformal 90% interval: empirical coverage **0.903** (test fold), correction
-$\hat{Q}=2.47$ MPa. Novelty threshold $\tau = 1.96$ (95th percentile of held-out
-novelty). SBC normalized mean ranks reported per dimension at flow-training time
-(ideal 0.5). Clinker-source exemplars in §4.2 are pinned by tests at ±10%.
+Conformal 90% interval: empirical coverage **0.888** (test fold), correction
+$\hat{Q}=3.48$ MPa; zero point-in-interval violations over the test fold and a
+10⁴-point envelope sweep (§8.3). Novelty threshold $\tau = 1.96$ (95th percentile of
+held-out novelty). SBC normalized mean ranks for the retrained flow are 0.486–0.532
+across the eight dimensions (ideal 0.5). Clinker-source exemplars in §4.2 are pinned
+by tests at ±10%.
 
-### 8.3 An observed pathology: mean/quantile crossing
+### 8.3 A resolved pathology: mean/quantile crossing
 
-Because the mean model and the quantile model are trained separately, sparse regions
-admit $\hat{f}(\mathbf{x}) < \hat{q}_{0.05}(\mathbf{x}) - \hat{Q}$ — a mean below its
-own calibrated lower bound. We observed this live: a robust GA design at target 45
-MPa returned interval-lower-bound 45.1 with mean prediction 39.1. Coverage of the
-interval is unaffected (it is a property of the quantile model plus conformal
-correction), but the display is incoherent and the robust objective can be gamed by
-regions where the quantile model is optimistic relative to the mean. The test suite
-documents (deliberately does not assert away) the phenomenon. Remedies, in increasing
-order of principle: clip the reported mean into the interval (cosmetic); add a
-mean-vs-median consistency penalty to the robust objective; or estimate mean and
-quantiles jointly (monotone multi-quantile or distributional boosting) — we consider
-the last the correct fix and leave it to future work.
+An earlier two-model architecture trained the point predictor (squared-error XGBoost)
+and the interval (quantile XGBoost) *separately*, so sparse regions admitted
+$\hat{f}(\mathbf{x}) < \hat{q}_{0.05}(\mathbf{x}) - \hat{Q}$ — a point estimate below
+its own calibrated lower bound. We observed it live: a robust design at target 45 MPa
+reported lower bound 45.1 with point prediction 39.1. Interval coverage was unaffected
+(a property of the quantile model plus conformal correction), but the display was
+incoherent and a lower-bound objective could be optimized into regions where the two
+models disagreed.
+
+We resolved it structurally rather than cosmetically. The point predictor and the
+interval now come from **one** model: a single multi-quantile XGBoost whose median is
+the point prediction and whose $(0.05, 0.95)$ quantiles — after per-row rearrangement
+sorting (Chernozhukov, Fernández-Val & Galichon, 2010) and the same conformal
+correction — are the interval. Because the median is one of the sorted quantiles,
+$\hat{q}_{0.05} - \hat{Q} \le \hat{q}_{0.5} \le \hat{q}_{0.95} + \hat{Q}$ holds
+identically ($\hat{Q} \ge 0$): **crossing is impossible by construction**, verified by
+zero violations over the held-out test fold and a 10⁴-point uniform sweep of the design
+envelope (regression-gated). The cost is a modest point-accuracy trade — split-conformal
+validity requires the single deployed model to hold out a calibration fold, so its
+median is fit on 75% of the training split where the old mean model used 100%: test
+RMSE rises 4.65 → 4.97 MPa (+6.8%; median-MAE 3.4 MPa) and coverage holds at 0.888.
+We consider guaranteed coherence, and a single distribution every downstream property
+model can inherit, worth ~0.3 MPa of RMSE. The amortized flow, which conditions on the
+forward model's outputs, is retrained against the new median and its staleness guard
+now includes a content hash of the forward model so any future change demotes a stale
+flow to the metaheuristic fallback.
 
 ## 9. Limitations
 
@@ -348,7 +374,7 @@ All artifacts (models, conformal/support constants, flow weights + normalization
 dataset) are committed and regenerated together:
 
 ```bash
-python -m src.models                 # mean + quantile models, CQR, support set
+python -m src.models                 # joint quantile model, CQR, support set
 python -m src.amortized              # flow training + SBC report
 python -m scripts.benchmark_backends # §8.1 table -> docs/BENCHMARKS.md
 python -m pytest                     # all §3-§6 claims are test gates (100+ tests)

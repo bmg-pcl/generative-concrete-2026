@@ -76,14 +76,14 @@ def test_design_tracks_target(tmp_path, capsys):
     assert rc == 0
     rec = json.loads(capsys.readouterr().out)
     assert abs(rec["interval_lo"] - 45.0) < 6.0
-    # NOTE deliberately not asserted: strength >= interval_lo. The mean model and
-    # the quantile model are trained separately, so in sparse regions the mean can
-    # cross below the calibrated bound (observed in practice). The robust contract
-    # is about the bound, which is what the assertion above pins.
+    # R7.1: point prediction and interval come from one distribution, so the point
+    # can never cross its own bound — restored now that it is guaranteed (was
+    # unassertable under the old two-model architecture; see docs/PAPER.md §8.3).
+    assert rec["interval_lo"] <= rec["strength"] <= rec["interval_hi"]
     assert rec["params"]["age"] == pytest.approx(28.0, abs=1.0)
     assert set(PARAM_NAMES) <= set(rec["params"])
 
-    # With robust off, the MEAN prediction tracks the target.
+    # With robust off, the point (median) prediction tracks the target.
     cfg = tmp_path / "cfg.json"
     cfg.write_text(json.dumps({"config": {"robust": False}}))
     rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28",

@@ -76,7 +76,7 @@ We considered:
 - **SVR**: Requires careful kernel selection; less interpretable
 - **Deep Neural Networks**: Overfitting risk; requires extensive hyperparameter tuning
 
-XGBoost achieved the best cross-validated RMSE (4.65 MPa) with default hyperparameters. This is the hallmark of a well-suited algorithm: it works without heroic tuning.
+XGBoost achieved the best cross-validated RMSE (~4.7 MPa) with default hyperparameters — the hallmark of a well-suited algorithm. The deployed model is a single multi-quantile XGBoost whose median is the point estimate (RMSE ~4.97 MPa on the held-out fold, trained on the fit fold to keep the conformal calibration valid); see docs/PAPER.md §8.3.
 
 ### 2.2 Why Amortized Inference, Not MCMC?
 
@@ -277,7 +277,7 @@ The table below lists the primary models, their implementation locations, and th
 
 | Model / Artifact | Path | Technical Type |
 |---|---|---|
-| `Strength Predictor` (XGBoost regressor) | `src/models.py` / `models/strength_model.json` | ML / Supervised regression (Gradient Boosted Trees — XGBoost) |
+| `Strength Predictor` (XGBoost multi-quantile) | `src/models.py` / `models/strength_quantiles.json` | ML / Distributional regression (Gradient Boosted Trees — XGBoost, joint quantiles) |
 | `Predictive Mix Performance ` (Amortized inference) | `src/bayesian.py` | ML / Amortized Bayesian Inference (Normalizing Flows — generative/inference) |
 | `Genetic Mix Optimizer` | `src/ga.py` | Optimization / Metaheuristic (Genetic Algorithm — population-based search) |
 | `Simulated Annealing Optimizer` | `src/annealing.py` | Optimization / Metaheuristic (Simulated Annealing — thermodynamic-inspired search) |
@@ -286,7 +286,7 @@ The table below lists the primary models, their implementation locations, and th
 | `Amortized Posterior` (BayesFlow flow) | `src/amortized.py` | ML / Amortized Bayesian Inference (trained normalizing flow + SBC) |
 | `Simple Accrual Chemistry` | `src/chemistry_simple.py` | Chemical / Heuristic linear constitutive model (carbon & cost estimates) |
 | `Molecular Chemistry` | `src/chemistry_advanced.py` | Chemical / Molecular-level thermodynamic & kinetic model (Bogue, hydration, pozzolanic reactions) |
-| Strength model artifact | `models/strength_model.json` | ML artifact (serialized XGBoost model) |
+| Strength model artifact | `models/strength_quantiles.json` | ML artifact (serialized joint multi-quantile XGBoost) |
 | Oxide composition data | `data/oxide_compositions.json` | Chemical reference data (oxide compositions for common SCMs/clinkers) |
 
 Notes:

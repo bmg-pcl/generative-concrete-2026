@@ -53,6 +53,22 @@ def test_predict_interval_ordered_and_contains_signal(predictor):
     assert (hi - lo > 0).all()  # non-degenerate interval
 
 
+def test_point_prediction_never_crosses_interval(predictor):
+    """R7.1 gate: the joint distributional model guarantees lo <= point <= hi for
+    EVERY input — including sparse/extrapolated regions where the old two-model
+    architecture let the mean cross its own bound (docs/PAPER.md §8.3). Sweep a large
+    uniform grid over the full design envelope; zero crossings must occur."""
+    from src.generative_ga import data_envelope
+    env = data_envelope()
+    rng = np.random.default_rng(0)
+    grid = rng.uniform(env[:, 0], env[:, 1], size=(10000, 8))
+    lo, med, hi = predictor.predict_interval(grid)
+    # The point prediction must equal the reported median AND lie within the interval.
+    assert np.array_equal(med, predictor.predict_batch(grid))
+    assert (med >= lo).all(), f"{int(np.sum(med < lo))} points below their lower bound"
+    assert (med <= hi).all(), f"{int(np.sum(med > hi))} points above their upper bound"
+
+
 def test_predict_variance_is_half_interval(predictor):
     lo, _, hi = predictor.predict_interval(IN_DIST)
     v = predictor.predict_variance(IN_DIST)

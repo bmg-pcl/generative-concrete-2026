@@ -9,7 +9,6 @@ import json
 from datetime import datetime, timezone
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-STRENGTH_MODEL_PATH = os.path.join(MODEL_DIR, "strength_model.json")
 QUANTILE_MODEL_PATH = os.path.join(MODEL_DIR, "strength_quantiles.json")
 SUPPORT_PATH = os.path.join(MODEL_DIR, "support.npz")
 METRICS_HISTORY_PATH = os.path.join(MODEL_DIR, "metrics_history.json")
@@ -43,47 +42,63 @@ SUPPORT_K = 10
 
 
 class StrengthPredictor:
+    """One joint distributional strength model (roadmap R7.1).
+
+    A single XGBoost multi-quantile model estimates (q05, q50, q95). The MEDIAN is
+    the point prediction and the outer quantiles (conformalised — see
+    ``predict_interval``) are the 90% interval, so the point estimate and the
+    interval come from ONE distribution. Per-row rearrangement sorting
+    (Chernozhukov, Fernández-Val & Galichon, 2010) makes the three quantiles
+    monotone, so the point prediction can never fall outside its own interval —
+    the mean/quantile crossing pathology of the previous two-model architecture
+    (docs/PAPER.md §8.3) is impossible by construction.
+    """
+
     def __init__(self):
-        self.model = None
-        self._quantile = None      # XGBoost multi-quantile regressor (lazy)
+        self._quantile = None      # the joint multi-quantile model (lazy)
         self._support = None       # kNN support data (lazy)
         if not os.path.exists(MODEL_DIR):
             os.makedirs(MODEL_DIR)
 
     # -- training ------------------------------------------------------------
     def train(self):
-        """Train the mean model, a quantile model (prediction intervals), and the
-        out-of-support kNN reference, all on the current dataset."""
+        """Train the joint quantile model (point prediction + intervals) and the
+        out-of-support kNN reference on the current dataset.
+
+        Split-conformal validity requires the deployed model to be fit on a proper
+        training fold and calibrated on a disjoint fold, so the model is fit on 75%
+        of the 80% training split and the remaining 25% calibrates the interval."""
         df = load_data()
         X = df.drop("strength", axis=1)
         y = df["strength"]
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Mean model: trained on the FULL 80% training split (unchanged).
-        self.model = xgb.XGBRegressor(n_estimators=500, learning_rate=0.05, max_depth=6, random_state=42)
-        self.model.fit(X_train, y_train)
-        y_pred = self.model.predict(X_test)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        r2 = r2_score(y_test, y_pred)
-        print(f"Model Trained. RMSE: {rmse:.2f}, R2: {r2:.2f}")
-        self.model.save_model(STRENGTH_MODEL_PATH)
-
-        # Quantile model on a FIT fold, conformalised on a held-out CALIBRATION fold
+        # Joint model on a FIT fold, conformalised on a held-out CALIBRATION fold
         # (split conformal / CQR — Romano, Patterson & Candès 2019) so the 90% interval
         # has *measured* coverage rather than relying on the raw trained quantiles.
         X_fit, X_cal, y_fit, y_cal = train_test_split(X_train, y_train, test_size=0.25, random_state=42)
+        # 800 trees (vs the old mean model's 500): the pinball objective fits three
+        # quantiles jointly and on the 75% fit fold, so it wants a little more
+        # capacity to match the old point accuracy.
         quantile = xgb.XGBRegressor(
             objective="reg:quantileerror", quantile_alpha=QUANTILES,
-            n_estimators=400, learning_rate=0.05, max_depth=4, random_state=42,
+            n_estimators=800, learning_rate=0.05, max_depth=6, random_state=42,
         )
         quantile.fit(X_fit, y_fit)
         quantile.save_model(QUANTILE_MODEL_PATH)
         self._quantile = quantile
 
-        # CQR correction: symmetric conformity score on the calibration fold.
-        qp = np.atleast_2d(quantile.predict(X_cal))
-        q_lo, q_hi = np.minimum(qp[:, 0], qp[:, 2]), np.maximum(qp[:, 0], qp[:, 2])
+        # Point-prediction accuracy: the MEDIAN of the joint model on the test fold.
+        y_pred = self.predict_batch(np.asarray(X_test, dtype=float))
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        r2 = r2_score(y_test, y_pred)
+        print(f"Model Trained (joint quantile). RMSE: {rmse:.2f}, R2: {r2:.2f}")
+
+        # CQR correction: symmetric conformity score on the calibration fold, using
+        # the SAME monotone (sorted) quantiles the interval will report.
+        qp = np.sort(np.atleast_2d(quantile.predict(X_cal)), axis=1)
+        q_lo, q_hi = qp[:, 0], qp[:, 2]
         yc = np.asarray(y_cal, dtype=float)
         scores = np.maximum(q_lo - yc, yc - q_hi)
         n_cal = len(scores)
@@ -123,20 +138,20 @@ class StrengthPredictor:
                 "conformal_q": conformal_q, "novelty_threshold": novelty_threshold}
 
     # -- lazy loaders --------------------------------------------------------
-    def _ensure_model(self):
-        if self.model is None:
-            if os.path.exists(STRENGTH_MODEL_PATH):
-                self.model = xgb.XGBRegressor()
-                self.model.load_model(STRENGTH_MODEL_PATH)
+    def _load_quantile(self):
+        if self._quantile is None:
+            if os.path.exists(QUANTILE_MODEL_PATH):
+                self._quantile = xgb.XGBRegressor()
+                self._quantile.load_model(QUANTILE_MODEL_PATH)
             else:
                 raise ValueError("Model not trained. Run train() first.")
-        return self.model
-
-    def _load_quantile(self):
-        if self._quantile is None and os.path.exists(QUANTILE_MODEL_PATH):
-            self._quantile = xgb.XGBRegressor()
-            self._quantile.load_model(QUANTILE_MODEL_PATH)
         return self._quantile
+
+    def _predict_quantiles(self, X: np.ndarray) -> np.ndarray:
+        """(N, 3) monotone quantile predictions (lo, med, hi) via rearrangement."""
+        X = np.atleast_2d(np.asarray(X, dtype=float))
+        p = np.atleast_2d(self._load_quantile().predict(X))
+        return np.sort(p, axis=1)
 
     def _load_support(self):
         if self._support is None and os.path.exists(SUPPORT_PATH):
@@ -154,61 +169,34 @@ class StrengthPredictor:
 
     # -- point prediction ----------------------------------------------------
     def predict(self, mix_design: np.ndarray) -> float:
-        """Predict strength for a single mix design."""
-        model = self._ensure_model()
+        """Predict strength for a single mix design (the model's median)."""
+        mix_design = np.asarray(mix_design, dtype=float)
         if mix_design.ndim == 1:
             mix_design = mix_design.reshape(1, -1)
-        return float(model.predict(mix_design)[0])
+        return float(self._predict_quantiles(mix_design)[0, 1])
 
     def predict_batch(self, X: np.ndarray) -> np.ndarray:
         """Predict strength for a batch of mixes; returns a 1D array (len N)."""
-        model = self._ensure_model()
-        X = np.atleast_2d(np.asarray(X, dtype=float))
-        return np.asarray(model.predict(X), dtype=float).ravel()
+        return self._predict_quantiles(X)[:, 1]
 
     # -- uncertainty ---------------------------------------------------------
     def predict_interval(self, X: np.ndarray):
         """Return (lo, med, hi) arrays for a conformalised 90% prediction interval.
 
-        Applies the split-conformal correction q̂ (from calibration) to the quantile
-        bounds so coverage is calibrated. Falls back to a flat ±4 MPa band when no
-        quantile model is available.
+        Applies the split-conformal correction q̂ (from calibration) to the monotone
+        quantile bounds so coverage is calibrated. Because the point prediction IS
+        the median of the same sorted quantiles, ``lo − q̂ ≤ med ≤ hi + q̂`` always
+        holds (q̂ ≥ 0) — the point prediction can never cross its own interval.
         """
-        X = np.atleast_2d(np.asarray(X, dtype=float))
-        qm = self._load_quantile()
-        if qm is None:
-            med = self.predict_batch(X)
-            return med - 4.0, med, med + 4.0
-        p = np.atleast_2d(qm.predict(X))
-        lo = np.minimum(p[:, 0], p[:, 2])
-        hi = np.maximum(p[:, 0], p[:, 2])
+        q = self._predict_quantiles(X)
         sup = self._load_support()
-        q = sup["conformal_q"] if sup else 0.0
-        return lo - q, p[:, 1], hi + q
+        c = sup["conformal_q"] if sup else 0.0
+        return q[:, 0] - c, q[:, 1], q[:, 2] + c
 
     def predict_variance(self, mix_design: np.ndarray) -> float:
-        """Uncertainty proxy: half the 90% prediction-interval width (MPa).
-
-        Falls back to a heuristic when no quantile model is available.
-        """
-        if self._load_quantile() is None:
-            return self._heuristic_variance(mix_design)
+        """Uncertainty proxy: half the 90% prediction-interval width (MPa)."""
         lo, _, hi = self.predict_interval(np.atleast_2d(mix_design))
         return float((hi[0] - lo[0]) / 2.0)
-
-    def _heuristic_variance(self, mix_design: np.ndarray) -> float:
-        cement = mix_design[0] if mix_design.ndim == 1 else mix_design[0, 0]
-        water = mix_design[3] if mix_design.ndim == 1 else mix_design[0, 3]
-        slag = mix_design[1] if mix_design.ndim == 1 else mix_design[0, 1]
-        ash = mix_design[2] if mix_design.ndim == 1 else mix_design[0, 2]
-        w_c = water / max(cement, 1)
-        scm_ratio = (slag + ash) / max(cement, 1)
-        variance = 2.0
-        if w_c < 0.3 or w_c > 0.6:
-            variance += 2.0
-        if scm_ratio > 0.4:
-            variance += 1.5
-        return variance
 
     # -- out-of-support (extrapolation) detection ----------------------------
     def novelty(self, X: np.ndarray) -> np.ndarray:

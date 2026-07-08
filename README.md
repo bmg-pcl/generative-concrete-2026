@@ -54,8 +54,10 @@ See [`docs/specs/R6-materials-platform.md`](docs/specs/R6-materials-platform.md)
 
 ## What it does
 
-**Forward prediction.** An XGBoost regressor trained on the UCI concrete dataset (1,030 samples,
-8 features) predicts 28-day-style compressive strength (RMSE ~4.65 MPa, R² ~0.92).
+**Forward prediction.** A single XGBoost multi-quantile model trained on the UCI concrete dataset
+(1,030 samples, 8 features) predicts 28-day-style compressive strength: its median is the point
+estimate (RMSE ~4.97 MPa, R² ~0.90) and its outer quantiles give a conformalised 90% interval the
+point can never cross (see [`docs/PAPER.md`](docs/PAPER.md) §8.3).
 
 **Inverse design (generative).** Given a target strength, produce a spread of realistic mixes
 that achieve it, all clamped to the training-data envelope. Three backends behind one interface:
@@ -132,8 +134,8 @@ number and can be ratcheted up over time.
 ### Committed binary artifacts
 
 The trained model and its support data are committed so CI and a fresh clone need no download or
-training step: `models/strength_model.json`, `models/strength_quantiles.json`,
-`models/support.npz`, and (when trained) `models/amortizer/` (~5 MB total). Regenerate them with
+training step: `models/strength_quantiles.json` (the joint distributional model),
+`models/support.npz`, and (when trained) `models/amortizer/` (~7 MB total). Regenerate them with
 `python -m src.models` (mean/quantile/support) and `python -m src.amortized` (the flow), and
 commit them together so the forward model and the flow trained against it stay in sync. If the
 repo outgrows this, move the artifacts to git-lfs or release assets (decision deferred; policy

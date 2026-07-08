@@ -49,6 +49,21 @@ def dataset_fingerprint() -> int:
     except Exception:
         return -1
 
+
+def model_fingerprint() -> str:
+    """Content hash of the current forward strength model. The flow is trained
+    against the forward model's outputs (SBI), so if the model changes — a new
+    architecture (R7.1) or a Calibration retrain that leaves the row count the same
+    — the flow no longer matches reality and must be treated as stale. Row count
+    alone misses same-size retrains; this hash does not. Empty string if unreadable."""
+    import hashlib
+    from .models import QUANTILE_MODEL_PATH
+    try:
+        with open(QUANTILE_MODEL_PATH, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+    except OSError:
+        return ""
+
 # BayesFlow / TensorFlow are optional heavy deps; import lazily-guarded so the rest
 # of the package keeps working without them.
 try:
@@ -182,7 +197,8 @@ class AmortizedPosteriorModel:
             prefix + "_norm.npz",
             theta_mean=self._theta_mean, theta_std=self._theta_std,
             x_mean=self._x_mean, x_std=self._x_std, bounds=self.bounds,
-            n_train=dataset_fingerprint(),  # to detect staleness after calibration
+            n_train=dataset_fingerprint(),   # detect staleness after calibration
+            model_hash=model_fingerprint(),  # detect a changed forward model (R7.1)
         )
 
     def load(self, prefix: str = WEIGHTS_PREFIX) -> bool:
@@ -201,6 +217,12 @@ class AmortizedPosteriorModel:
             if saved_n != current_n:
                 print(f"Amortized flow is STALE: trained on {saved_n} rows, dataset now has "
                       f"{current_n}. Retrain with `python -m src.amortized`; using the GA designer.")
+                return False
+        if "model_hash" in norm:
+            saved_h, current_h = str(norm["model_hash"]), model_fingerprint()
+            if current_h and saved_h != current_h:
+                print("Amortized flow is STALE: the forward strength model changed since the "
+                      "flow was trained. Retrain with `python -m src.amortized`; using the GA designer.")
                 return False
         self._theta_mean, self._theta_std = norm["theta_mean"], norm["theta_std"]
         self._x_mean, self._x_std = float(norm["x_mean"]), float(norm["x_std"])

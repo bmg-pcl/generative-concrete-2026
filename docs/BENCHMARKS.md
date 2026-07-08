@@ -10,15 +10,15 @@ Sampled clouds of **1500** mixes per (backend, target).
 
 | backend | target_MPa | mae_MPa | cloud_spread | in_support_pct | time_s |
 | --- | --- | --- | --- | --- | --- |
-| flow | 25.0 | 7.23 | 70.91 | 19.9 | 0.18 |
-| flow | 45.0 | 4.82 | 78.93 | 7.3 | 0.14 |
-| flow | 65.0 | 4.19 | 72.24 | 2.7 | 0.15 |
-| ga | 25.0 | 2.75 | 35.36 | 13.3 | 1.41 |
-| ga | 45.0 | 1.09 | 27.22 | 1.3 | 1.44 |
-| ga | 65.0 | 1.8 | 28.33 | 0.0 | 1.44 |
-| aco | 25.0 | 7.69 | 5.17 | 0.0 | 0.85 |
-| aco | 45.0 | 1.11 | 36.61 | 0.0 | 0.83 |
-| aco | 65.0 | 1.63 | 57.07 | 0.0 | 0.75 |
+| flow | 25.0 | 5.98 | 71.6 | 16.7 | 0.22 |
+| flow | 45.0 | 3.99 | 77.73 | 5.1 | 0.15 |
+| flow | 65.0 | 3.96 | 70.04 | 2.2 | 0.15 |
+| ga | 25.0 | 3.99 | 28.27 | 1.7 | 3.85 |
+| ga | 45.0 | 1.08 | 41.51 | 0.0 | 4.18 |
+| ga | 65.0 | 0.98 | 38.5 | 0.0 | 3.86 |
+| aco | 25.0 | 0.63 | 7.05 | 0.0 | 2.06 |
+| aco | 45.0 | 1.36 | 19.54 | 0.0 | 2.01 |
+| aco | 65.0 | 0.7 | 19.94 | 0.7 | 2.07 |
 
 ## Multi-objective (NSGA-II)
 
@@ -26,7 +26,7 @@ NSGA maps a whole strength/carbon/cost front in one run, so it is reported separ
 
 | algorithm | front_size | mean_strength_MPa | in_support_pct | time_s |
 | --- | --- | --- | --- | --- |
-| NSGA-II | 60 | 66.1 | 0.0 | 0.23 |
+| NSGA-II | 60 | 62.6 | 5.0 | 0.34 |
 
 ## Reproduce
 
