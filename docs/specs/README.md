@@ -50,6 +50,31 @@ live-session carbon-factor import overwrite, the `viz.py` NameError).
 | [R5](R5-operability.md) | Session round-trip guarantee, headless CLI | Batch/procurement use unlocked; a real import-overwrite bug caught by the new tests |
 | [R6](R6-materials-platform.md) | Material registry, EPD plug-in + provenance, clinker-source Scope 1/2 model | Carbon became procurement-grade: measured beats modeled, disclosed per material; capture/hydro/gas plants distinguishable |
 
+### Effort log (R7.3c)
+
+Estimate vs actual per spec, so the estimates get better over time instead of staying
+guesses. R1–R6 were estimated and delivered as a block (~7–10 d total, in roughly that
+span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at close.
+
+| Spec | Estimate | Actual | Note |
+|---|---|---|---|
+| R1 | ~1–2 d | ~1–2 d (block) | Within estimate; the coverage-test finding (R1.1) was the forcing function for the rest |
+| R2 | ~1–2 d | ~1–2 d (block) | Within estimate |
+| R3 | ~1–2 d | ~1–2 d (block) | Within estimate |
+| R4 | ~1 d | ~1 d (block) | Within estimate; slider-rebinding bug found and fixed inside the window |
+| R5 | ~0.5–1 d | ~0.5–1 d (block) | Within estimate; live-session carbon-factor overwrite bug found and fixed inside the window |
+| R6 | ~2–3 d | ~2–3 d (block) | Within estimate |
+| R7.1 | ~3–4 d | **~0.5 d** | Est. assumed architecture uncertainty; the fix (rearrangement-sorted joint quantile model) was mechanically clear once chosen. RMSE gate consciously revised (+6.8%, documented in PAPER §8.3) rather than tuned away |
+| R7.2 | senior/escalate (no d-estimate) | **~0.5 d** | Flagged for escalation ex ante (2-D SBC, network-shape change); the age-as-prior-marginalised-condition formulation collapsed the risk. Escalation flag was the right call to make beforehand even though the outcome was fast |
+| R7.3 | (this spec) | — | in progress |
+| R7.4 | (this spec) | — | in progress |
+
+**Reading the log so far:** the block estimates (R1–R6) were accurate at block
+granularity but say nothing about per-item variance. The two data points since
+per-spec tracking started (R7.1, R7.2) both landed well under a wide estimate range —
+too small a sample to conclude "estimates run high," but worth watching as more items
+close.
+
 ---
 
 ## Forward roadmap
