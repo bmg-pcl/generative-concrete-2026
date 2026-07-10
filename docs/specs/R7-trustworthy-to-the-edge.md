@@ -1,6 +1,6 @@
 # R7 — Trustworthy to the Edge
 
-**Status:** R7.1 ✅ · R7.2 ✅ · **R7.3 / R7.4 drafted here** · **Effort (remaining):** ~1–1.5 d
+**Status:** R7.1 ✅ · R7.2 ✅ · R7.3 ✅ · R7.4 ✅ — all shipped. **Effort (remaining):** none.
 **Depends on:** R7.1 (joint model) and R7.2 (age-conditioned flow) — both shipped.
 
 Horizon 1's theme: the robust mode is the flagship, so its foundations must be beyond
@@ -127,11 +127,35 @@ features and their order are fixed (the model expects PARAM_NAMES order) — a t
 the registry-derived order against `PARAM_NAMES`. Note in the record schema that the
 slider range is a *display* range, distinct from the data envelope the optimizers use.
 
+**Ordering deviation from the original design (found during implementation):**
+`materials.slider_specs_view()` returns `{material: {label, min, max}}` **unordered**
+(dict order = registry file order, `age` absent), not a `PARAM_NAMES`-ordered list.
+`src/materials.py` sits *below* `src/generative_ga.py` in the import graph
+(`chemistry_simple.py`/`physical.py`/`exotics.py` already import FROM `materials.py`,
+and `generative_ga.py` imports `chemistry_simple.py`) — importing `PARAM_NAMES` into
+`materials.py` to order the output would be circular. `PARAM_NAMES` is also 8 names
+but the registry only has 7 core materials (`age` is a design condition, not a
+material — no density/cost/carbon, no registry record). `ui/state.py` — which can
+safely import both `src.generative_ga.PARAM_NAMES` and
+`src.materials.slider_specs_view` — does the ordering: it iterates `PARAM_NAMES`,
+looks each material up in `slider_specs_view()`, and special-cases `age` with a
+hardcoded `("age", "Age (days)", 1, 365)` tuple. The acceptance gate (`[p for p,*_ in
+SLIDER_SPECS] == PARAM_NAMES`) is unchanged; only the layer that produces the
+ordering moved from `materials.py` to `ui/state.py`.
+
 **R7.4c — git-lfs decision.** Measure (`git count-objects -vH`; `du -sh models
 docs/images`). If the packed repo is under a stated ceiling (proposal: 50 MB), record
 "plain git; revisit at 50 MB" in the README artifact note with the current number;
 otherwise migrate `models/` + `docs/images/` to git-lfs and document the `.gitattributes`.
 Decision + one doc paragraph; no code beyond possibly `.gitattributes`.
+
+**Measured 2026-07-10:** `git count-objects -vH` → 13.4 MiB total; `models/` 6.8 MiB,
+`docs/images/` 3.6 MiB; largest single tracked file `models/strength_quantiles.json`
+at 5.3 MiB. Well under the proposed 50 MB ceiling (and GitHub's own 50/100 MB
+per-file guidance). **Decision: stay on plain git — no migration.** Documented in
+`README.md` under "Committed binary artifacts" with the measured numbers and a
+revisit threshold (~50 MiB for a single artifact, ~250 MiB for the repo). No
+`.gitattributes` change.
 
 ### Acceptance gates
 - Round-trip test: exporting after changing a carbon factor **and** a Config control

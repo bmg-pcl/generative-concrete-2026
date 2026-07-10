@@ -67,7 +67,7 @@ span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at clo
 | R7.1 | ~3–4 d | **~0.5 d** | Est. assumed architecture uncertainty; the fix (rearrangement-sorted joint quantile model) was mechanically clear once chosen. RMSE gate consciously revised (+6.8%, documented in PAPER §8.3) rather than tuned away |
 | R7.2 | senior/escalate (no d-estimate) | **~0.5 d** | Flagged for escalation ex ante (2-D SBC, network-shape change); the age-as-prior-marginalised-condition formulation collapsed the risk. Escalation flag was the right call to make beforehand even though the outcome was fast |
 | R7.3 | ~1–1.5 d (a+b+c combined) | **~0.3 d** | Straightforward given the R7.1/R7.2 groundwork (predict_interval, run_nsga's existing robust= arg); the only real judgment call was excluding a "robust flow" row rather than fudging one — see spec's sonnet-ready note |
-| R7.4 | (this spec) | — | in progress |
+| R7.4 | ~1–1.5 d (a+b+c combined) | **~0.4 d** | R7.4a (session restore) was the largest item but followed the established keyed-widget pattern exactly; the one real find was the `"config"`/`"ui_config"` naming collision with the CLI, caught before it shipped. R7.4b's only deviation from the spec text was where the PARAM_NAMES ordering lives (ui/state.py, not materials.py — avoids a circular import). R7.4c was a five-minute measurement (13.4 MiB) confirming the "stay on plain git" default |
 
 **Reading the log so far:** the block estimates (R1–R6) were accurate at block
 granularity but say nothing about per-item variance. The two data points since
@@ -143,15 +143,26 @@ interesting model in the repo — serves almost nothing).
 - **Gates (met):** `BENCHMARKS.md` Robust-mode + combined-NSGA sections regenerated
   from a live run; CI green at the ratcheted floor; 11 benchmark-plumbing tests.
 
-**R7.4 Debt sweep (small, bounded)** — full sonnet-ready spec:
+**R7.4 Debt sweep (small, bounded)** — ✅ **Shipped** — full spec:
 [`R7-trustworthy-to-the-edge.md`](R7-trustworthy-to-the-edge.md)
-- Full session restore for the remaining Config widgets (transport, cement/clinker
-  source, chemistry toggle, robust/age toggles — the R3.4 deferral) via the
-  established keyed-widget pattern; core sliders generated from the registry (the
-  R6.4 deferral), making `materials.json` the single authority including UI; decide
-  git-lfs before `docs/images/` + models outgrow plain git.
-- **Gates:** round-trip test extended to every Config field; a registry slider-bound
-  edit changes a slider with no code change.
+- **What shipped:** full session restore for the ten remaining Config widgets
+  (transport, cement/clinker source, chemistry toggle, robust/age toggles — the R3.4
+  deferral) as keyed `cfg_*` widgets under a new `ui_config` session block (`"config"`
+  was rejected — it collides with the CLI's own, differently-schemed `"config"` key);
+  core mix sliders now generated from `data/materials.json`'s new `slider` blocks via
+  `materials.slider_specs_view()`, with `ui/state.py` doing the PARAM_NAMES ordering
+  and the `age` special case (materials.py can't import PARAM_NAMES without a
+  circular import); git-lfs measured and declined (13.4 MiB total, ~4× under the
+  50 MB ceiling).
+- **Value delivered:** a session export/import now round-trips the *entire* app
+  state, not just mixes and costs; `data/materials.json` is the single UI authority
+  for both material properties and their slider ranges — editing the JSON changes
+  the Compare tab with no code change (R6.4's remaining deferral, closed).
+- **Gates (met):** round-trip + key-symmetry tests cover all ten `ui_config` fields
+  (pure-dict, AppTest widget-level, and a CLI-compatibility regression test guarding
+  the naming collision); a registry `slider.max` edit changes `slider_specs_view()`
+  with no code change; slider order pinned to `PARAM_NAMES`; existing bit-identical
+  core views unchanged; 125 tests green at the 65% floor.
 
 ### Horizon 2 — R8: From strength tool to specification tool (~1–2 wk)
 
@@ -249,12 +260,15 @@ laboratory testing (the goal is to make each test worth more, never to skip it).
 
 ## Delegation readiness
 
-The per-spec **Implementation notes (sonnet-ready)** convention continues. For H1:
-- **Ready with care (full spec written):** R7.3, R7.4 —
+The per-spec **Implementation notes (sonnet-ready)** convention continues. For H1,
+all of R7 (R7.1–R7.4) has now shipped:
+- **Shipped (sonnet-ready spec, delegated as written):** R7.3, R7.4 —
   [`R7-trustworthy-to-the-edge.md`](R7-trustworthy-to-the-edge.md). The keyed-widget
-  trap notes from R4/R5 apply verbatim; the registry→slider generation must keep the
-  8 model features fixed in PARAM_NAMES order; the coverage floor must be *measured*
-  in the no-TF (CI) environment before it is set, not guessed.
+  trap notes from R4/R5 applied verbatim; the registry→slider generation kept the 8
+  model features fixed in PARAM_NAMES order (with one documented deviation — the
+  ordering logic itself lives in `ui/state.py`, not `materials.py`, to avoid a
+  circular import); the coverage floor was *measured* in the no-TF (CI) environment
+  (69.98%) before being set, not guessed.
 - **Shipped (senior/escalate at the time):** R7.1 (joint model — coverage and
   no-crossing gates were the net) and R7.2 (age-conditioned flow retrain, escalated
   once from R2.1; SBC-across-a-grid acceptance).

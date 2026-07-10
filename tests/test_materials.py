@@ -20,6 +20,7 @@ from src.materials import (
     unit_costs_view,
     densities_view,
     exotics_view,
+    slider_specs_view,
 )
 
 # --- R6.1: pinned pre-registry values (the migration must not move a digit) -----
@@ -29,6 +30,17 @@ EXPECTED_COSTS = {"cement": 0.15, "slag": 0.08, "ash": 0.05, "water": 0.002,
                   "superplasticizer": 2.50, "coarse_agg": 0.03, "fine_agg": 0.04}
 EXPECTED_DENSITIES = {"cement": 3150.0, "slag": 2900.0, "ash": 2300.0, "water": 1000.0,
                       "superplasticizer": 1100.0, "coarse_agg": 2700.0, "fine_agg": 2650.0}
+# R7.4b: the mix-slider bounds, pinned to the pre-registry hardcoded literals in
+# ui/state.py (the values SLIDER_SPECS carried before it became registry-driven).
+EXPECTED_SLIDER_SPECS = {
+    "cement": {"label": "Cement", "min": 100, "max": 550},
+    "slag": {"label": "Slag", "min": 0, "max": 360},
+    "ash": {"label": "Fly Ash", "min": 0, "max": 200},
+    "water": {"label": "Water", "min": 120, "max": 250},
+    "superplasticizer": {"label": "Superplasticizer", "min": 0, "max": 30},
+    "coarse_agg": {"label": "Coarse Agg", "min": 700, "max": 1150},
+    "fine_agg": {"label": "Fine Agg", "min": 550, "max": 1000},
+}
 EXPECTED_EXOTICS = {
     "silica_fume":         {"default": 0, "max": 50,  "carbon_factor": 0.02, "cost": 0.80,   "category": "Pozzolan", "strength_factor": 0.08},
     "metakaolin":          {"default": 0, "max": 80,  "carbon_factor": 0.30, "cost": 0.45,   "category": "Pozzolan", "strength_factor": 0.06},
@@ -50,6 +62,7 @@ def test_views_are_bit_identical_to_pre_registry_literals():
     assert unit_costs_view() == EXPECTED_COSTS
     assert densities_view() == EXPECTED_DENSITIES
     assert exotics_view() == EXPECTED_EXOTICS
+    assert slider_specs_view() == EXPECTED_SLIDER_SPECS
     # Iteration ORDER matters too (the UI editors iterate these dicts).
     assert list(carbon_factors_view()) == list(EXPECTED_CARBON)
     assert list(exotics_view()) == list(EXPECTED_EXOTICS)
@@ -63,6 +76,23 @@ def test_legacy_module_dicts_are_the_views():
     assert UNIT_COSTS == EXPECTED_COSTS
     assert DENSITIES == EXPECTED_DENSITIES
     assert EXOTIC_ADMIXTURES == EXPECTED_EXOTICS
+
+
+def test_ui_slider_specs_are_registry_driven_in_param_order():
+    """R7.4b: ui/state.py must no longer hardcode slider bounds -- it derives
+    SLIDER_SPECS from slider_specs_view(), ordered by PARAM_NAMES ('age' is the one
+    non-material entry, special-cased since it has no registry record)."""
+    pytest.importorskip("streamlit")
+    from src.generative_ga import PARAM_NAMES
+    from ui.state import SLIDER_SPECS
+
+    assert [p for p, *_ in SLIDER_SPECS] == list(PARAM_NAMES)
+    for p, label, lo, hi in SLIDER_SPECS:
+        if p == "age":
+            assert (label, lo, hi) == ("Age (days)", 1, 365)
+        else:
+            spec = EXPECTED_SLIDER_SPECS[p]
+            assert (label, lo, hi) == (spec["label"], spec["min"], spec["max"])
 
 
 def test_every_material_validates_and_carries_carbon():
@@ -141,5 +171,22 @@ def test_new_material_via_registry_json(tmp_path):
         dose["volcanic_ash"] = 100
         carbon = sum(dose[k] * ex[k]["carbon_factor"] for k in ex)
         assert carbon == pytest.approx(0.6)
+    finally:
+        set_materials_path(None)
+
+
+def test_slider_bound_edit_via_registry_json(tmp_path):
+    """R7.4b pluggability: editing a core material's slider block in the JSON (no
+    code change) changes the value slider_specs_view() reports -- the registry is
+    the single UI authority for these bounds now, not a hardcoded ui/state.py list."""
+    registry = json.loads(open("data/materials.json", encoding="utf-8").read())
+    registry["materials"]["cement"]["slider"]["max"] = 600
+    p = tmp_path / "materials.json"
+    p.write_text(json.dumps(registry))
+    try:
+        set_materials_path(str(p))
+        assert slider_specs_view()["cement"]["max"] == 600
+        # Everything else is untouched.
+        assert slider_specs_view()["slag"] == EXPECTED_SLIDER_SPECS["slag"]
     finally:
         set_materials_path(None)

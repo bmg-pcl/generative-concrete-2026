@@ -11,7 +11,8 @@
          "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.15}
       ],
       "chemistry": {"oxides_key": "OPC"},
-      "strength_treatment": "trained_feature"
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Cement", "min": 100, "max": 550}
     },
     "slag": {
       "name": "GGBS (blast-furnace slag)",
@@ -23,7 +24,8 @@
          "vintage": 2019, "source": "database", "reference": "ICE v3 (byproduct allocation)", "uncertainty": 0.3}
       ],
       "chemistry": {"oxides_key": "SLAG", "reactivity_class": "latent-hydraulic"},
-      "strength_treatment": "trained_feature"
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Slag", "min": 0, "max": 360}
     },
     "ash": {
       "name": "Fly ash (Class F)",
@@ -35,7 +37,8 @@
          "vintage": 2019, "source": "database", "reference": "ICE v3 (byproduct allocation)", "uncertainty": 0.5}
       ],
       "chemistry": {"oxides_key": "FLY_ASH_F", "reactivity_class": "pozzolanic"},
-      "strength_treatment": "trained_feature"
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Fly Ash", "min": 0, "max": 200}
     },
     "water": {
       "name": "Mixing water",
@@ -46,7 +49,8 @@
         {"value": 0.0003, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
          "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.5}
       ],
-      "strength_treatment": "trained_feature"
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Water", "min": 120, "max": 250}
     },
     "superplasticizer": {
       "name": "Superplasticizer (PCE)",
@@ -57,7 +61,8 @@
         {"value": 1.5, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
          "vintage": 2019, "source": "database", "reference": "EFCA EPD (generic PCE)", "uncertainty": 0.3}
       ],
-      "strength_treatment": "trained_feature"
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Superplasticizer", "min": 0, "max": 30}
     },
     "coarse_agg": {
       "name": "Coarse aggregate (crushed stone)",
@@ -68,7 +73,8 @@
         {"value": 0.008, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
          "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.3}
       ],
-      "strength_treatment": "trained_feature"
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Coarse Agg", "min": 700, "max": 1150}
     },
     "fine_agg": {
       "name": "Fine aggregate (sand)",
@@ -79,7 +85,8 @@
         {"value": 0.005, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
          "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.3}
       ],
-      "strength_treatment": "trained_feature"
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Fine Agg", "min": 550, "max": 1000}
     },
 
     "silica_fume": {

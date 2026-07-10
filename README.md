@@ -139,10 +139,19 @@ The trained model and its support data are committed so CI and a fresh clone nee
 training step: `models/strength_quantiles.json` (the joint distributional model),
 `models/support.npz`, and (when trained) `models/amortizer/` (~7 MB total). Regenerate them with
 `python -m src.models` (mean/quantile/support) and `python -m src.amortized` (the flow), and
-commit them together so the forward model and the flow trained against it stay in sync. If the
-repo outgrows this, move the artifacts to git-lfs or release assets (decision deferred; policy
-stated here so it is a choice, not a drift). The runtime `models/metrics_history.json` is
-gitignored — it is per-machine training history, not a shared artifact.
+commit them together so the forward model and the flow trained against it stay in sync. The
+runtime `models/metrics_history.json` is gitignored — it is per-machine training history, not a
+shared artifact.
+
+**git-lfs decision (R7.4c):** plain git, not LFS, measured 2026-07-10 —
+`git count-objects -vH` reports the whole history at **13.4 MiB**; `models/` is 6.8 MiB and
+`docs/images/` 3.6 MiB, and the single largest tracked file (`models/strength_quantiles.json`) is
+5.3 MiB. That is far under GitHub's own guidance (warns per-file above 50 MiB, hard-blocks above
+100 MiB; LFS earns its complexity — a separate storage quota, `.gitattributes` filters, and a
+smudge/clean step every clone and CI checkout pays for — once a repo is pushing into the hundreds
+of MiB or a single artifact nears that 50–100 MiB band). Revisit this decision if either the
+retrained flow checkpoint or the strength model crosses roughly 50 MiB, or the repo's total object
+size approaches 250 MiB; until then LFS would add operational cost with no measured benefit.
 
 ---
 

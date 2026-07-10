@@ -13,20 +13,22 @@ import streamlit as st
 from src.models import StrengthPredictor
 from src.bayesian import BayesFlowExplorer
 from src.data_fetcher import load_data
+from src.generative_ga import PARAM_NAMES
 from src.chemistry_simple import UNIT_COSTS, CARBON_FACTORS
 from src.chemistry_advanced import GRID_EF
 from src.exotics import EXOTIC_ADMIXTURES
+from src.materials import slider_specs_view
 
-# Mix slider specs: (param, label, min, max) in PARAM_NAMES order.
+# Mix slider specs: (param, label, min, max) in PARAM_NAMES order. R7.4b: the seven
+# core materials' bounds live in data/materials.json (single UI authority — edit the
+# registry, not this file); "age" is a design condition, not a material, so it has no
+# registry record and is special-cased here.
+_AGE_SLIDER = ("age", "Age (days)", 1, 365)
+_slider_fields = slider_specs_view()
 SLIDER_SPECS = [
-    ("cement", "Cement", 100, 550),
-    ("slag", "Slag", 0, 360),
-    ("ash", "Fly Ash", 0, 200),
-    ("water", "Water", 120, 250),
-    ("superplasticizer", "Superplasticizer", 0, 30),
-    ("coarse_agg", "Coarse Agg", 700, 1150),
-    ("fine_agg", "Fine Agg", 550, 1000),
-    ("age", "Age (days)", 1, 365),
+    (p, _slider_fields[p]["label"], _slider_fields[p]["min"], _slider_fields[p]["max"])
+    if p in _slider_fields else _AGE_SLIDER
+    for p in PARAM_NAMES
 ]
 DEFAULT_MIX_A = [300, 0, 0, 180, 0, 1000, 800, 28]
 DEFAULT_MIX_B = [300, 100, 50, 160, 5, 1000, 800, 28]

@@ -71,6 +71,8 @@ def validate_material(key: str, rec: dict) -> Optional[str]:
             return f"'{key}' is a trained feature and must declare density_kg_m3"
         if "unit_cost" not in rec:
             return f"'{key}' is a trained feature and must declare unit_cost"
+        if "slider" not in rec or not {"label", "min", "max"} <= set(rec["slider"]):
+            return f"'{key}' is a trained feature and must declare slider {{label, min, max}}"
     if rec["strength_treatment"] == "delta_estimate":
         if "dosage" not in rec or "strength_factor" not in rec:
             return f"'{key}' is a delta_estimate material and must declare dosage and strength_factor"
@@ -105,6 +107,16 @@ def unit_costs_view() -> Dict[str, float]:
 
 def densities_view() -> Dict[str, float]:
     return {k: float(v["density_kg_m3"]) for k, v in _core_items()}
+
+
+def slider_specs_view() -> Dict[str, dict]:
+    """{material: {"label": ..., "min": ..., "max": ...}} for the core mix sliders.
+
+    Deliberately does not know PARAM_NAMES or slider ORDER — src/generative_ga.py
+    (which owns PARAM_NAMES) sits above chemistry_simple.py, which imports from this
+    module, so importing PARAM_NAMES here would be circular. Callers that need a
+    specific order (ui/state.py) look each material up by key instead."""
+    return {k: dict(v["slider"]) for k, v in _core_items()}
 
 
 def exotics_view() -> Dict[str, dict]:
