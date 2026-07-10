@@ -102,22 +102,24 @@ interesting model in the repo — serves almost nothing).
   condition, prior-marginalised) made it ~½ d — the escalation flag was warranted ex
   ante (2-D SBC, network-shape change) but the design collapsed the risk.
 
-**R7.3 Evidence hardening for the flagship**
-- **What:** benchmark the *robust* mode (lower-bound MAE, in-support %, front
-  hypervolume for NSGA) alongside the current non-robust table; ratchet the CI
-  coverage floor 60 → 68; record actual-vs-estimate effort per spec from now on.
+**R7.3 Evidence hardening for the flagship** — full sonnet-ready spec:
+[`R7-trustworthy-to-the-edge.md`](R7-trustworthy-to-the-edge.md)
+- **What:** benchmark the *robust* mode (lower-bound MAE, in-support %, NSGA front)
+  alongside the current non-robust table; ratchet the CI coverage floor (measure the
+  no-TF number first, then set it below); record actual-vs-estimate effort per spec.
 - **Why now:** §8.1's table currently evidences the mode nobody should default to.
 - **Value:** the recommended configuration is the measured one; estimates start
   teaching us something.
-- **Gates:** BENCHMARKS.md gains the robust section; CI green at 68%.
+- **Gates:** BENCHMARKS.md gains the robust section; CI green at the ratcheted floor.
 
-**R7.4 Debt sweep (small, bounded)**
-- Full session restore for the remaining Config widgets (transport, cement source,
-  chemistry toggle — the R3.4 deferral) via the established keyed-widget pattern;
-  core sliders generated from the registry (the R6.4 deferral), making
-  `materials.json` the single authority including UI; decide git-lfs before
-  `docs/images/` + models outgrow plain git.
-- **Gates:** round-trip test extended to every Config field; a registry dosage-bound
+**R7.4 Debt sweep (small, bounded)** — full sonnet-ready spec:
+[`R7-trustworthy-to-the-edge.md`](R7-trustworthy-to-the-edge.md)
+- Full session restore for the remaining Config widgets (transport, cement/clinker
+  source, chemistry toggle, robust/age toggles — the R3.4 deferral) via the
+  established keyed-widget pattern; core sliders generated from the registry (the
+  R6.4 deferral), making `materials.json` the single authority including UI; decide
+  git-lfs before `docs/images/` + models outgrow plain git.
+- **Gates:** round-trip test extended to every Config field; a registry slider-bound
   edit changes a slider with no code change.
 
 ### Horizon 2 — R8: From strength tool to specification tool (~1–2 wk)
@@ -217,11 +219,14 @@ laboratory testing (the goal is to make each test worth more, never to skip it).
 ## Delegation readiness
 
 The per-spec **Implementation notes (sonnet-ready)** convention continues. For H1:
-- **Ready with care:** R7.3, R7.4 (the keyed-widget trap notes in R4/R5 apply
-  verbatim; the registry→slider generation must keep the 8 model features fixed).
-- **Senior / escalate:** R7.1 (model replacement — the coverage and no-crossing
-  gates are the net, but architecture choice needs judgment) and R7.2 (flow retrain
-  was already escalated once from R2.1; SBC-across-a-grid acceptance needs care).
+- **Ready with care (full spec written):** R7.3, R7.4 —
+  [`R7-trustworthy-to-the-edge.md`](R7-trustworthy-to-the-edge.md). The keyed-widget
+  trap notes from R4/R5 apply verbatim; the registry→slider generation must keep the
+  8 model features fixed in PARAM_NAMES order; the coverage floor must be *measured*
+  in the no-TF (CI) environment before it is set, not guessed.
+- **Shipped (senior/escalate at the time):** R7.1 (joint model — coverage and
+  no-crossing gates were the net) and R7.2 (age-conditioned flow retrain, escalated
+  once from R2.1; SBC-across-a-grid acceptance).
 - H2/H3 items get full specs (motivation / current state / design / gates / traps)
   before implementation, same as R1–R6 — an entry here is a direction, not yet a
   spec.
