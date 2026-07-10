@@ -37,6 +37,15 @@ def test_designer_hits_target(designer):
         assert abs(achieved - target) < 3.0, f"target {target}: got {achieved:.1f} MPa"
 
 
+def test_fixed_age_is_respected(designer):
+    """R2.1 gate: a fixed design age must be held exactly, not exploited by the search."""
+    mixes, _ = designer.design(45.0, age=28.0, generations=30)
+    age_idx = PARAM_NAMES.index("age")
+    assert np.allclose(mixes[:, age_idx], 28.0)
+    samples = designer.sample(45.0, n_samples=200, age=28.0)
+    assert np.allclose(samples[:, age_idx], 28.0)
+
+
 def test_samples_stay_in_envelope(designer):
     """No generated sample may fall outside the per-parameter data envelope."""
     env = data_envelope()

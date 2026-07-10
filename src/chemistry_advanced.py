@@ -7,7 +7,7 @@ Provides both FORWARD (analysis) and INVERSE (generative) modes.
 import os
 import json
 import numpy as np
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple
 from dataclasses import dataclass
 
 # Reuse the Tier-1 emission factors so the two tiers share the SAME non-cement
@@ -162,11 +162,69 @@ def pozzolanic_reaction(
 # ============================================================================
 # CARBON FROM CLINKER (More Accurate than Linear Model)
 # ============================================================================
+# R6.3 — clinker source differentiation. Two clinkers with identical chemistry can
+# differ several-fold in carbon depending on HOW they were made: kiln fuel, the
+# electricity powering an electrified kiln or a capture plant, and the capture rate.
+# The tables below parameterize that; a supplier EPD, when attached, beats all of it
+# (measured > modeled — see the resolution order in src/materials.py).
+
+CALCINATION_EF = 0.53   # kg CO2 / kg clinker — process chemistry, fuel-independent
+
+# Kiln combustion emission factor (kg CO2 / kg clinker) by fuel. "electric" moves the
+# heat demand to electricity (Scope 2) — see KILN_KWH_PER_KG. Waste/biomass factors
+# follow common accounting conventions; jurisdictions differ (an EPD's reference
+# field should say which convention it uses).
+FUEL_EF = {
+    "coal": 0.40, "petcoke": 0.42, "natural_gas": 0.28,
+    "alt_waste": 0.15, "biomass": 0.05, "electric": 0.0,
+}
+# Electricity demand (kWh / kg clinker) that the fuel choice moves onto the grid:
+# ~3.4 GJ/t clinker of kiln heat ≈ 0.95 kWh/kg for a fully electrified kiln.
+KILN_KWH_PER_KG = {"electric": 0.95}
+
+# Electricity emission factors (kg CO2 / kWh) — indicative regional values.
+GRID_EF = {
+    "grid_EU": 0.25, "grid_US": 0.35, "grid_CN": 0.55,
+    "hydro": 0.004, "nuclear": 0.012, "ppa_renewable": 0.02,
+}
+
+# Capture electricity demand (kWh per tonne CO2 captured): compression + auxiliaries
+# for a heat-integrated capture plant. Site-specific — override in the descriptor.
+DEFAULT_CAPTURE_KWH_PER_T_CO2 = 150.0
+
+
+def clinker_scope_split(clinker_mass: float, source: Dict) -> Dict[str, float]:
+    """Scope-split clinker carbon (kg CO2) for a clinker source descriptor.
+
+        source = {"kiln_fuel": "natural_gas", "electricity": "hydro",
+                  "capture": {"rate": 0.9, "energy_kwh_per_tCO2": 150}}
+
+    scope1 = (calcination + combustion) × (1 − capture_rate)   — the residual stack.
+    scope2 = (kiln electricity + capture energy) × grid EF     — the capture energy
+             penalty SURVIVES capture: it is charged to the chosen electricity, so
+             hydro-powered capture is nearly free while grid-powered capture is not.
+    """
+    fuel = source.get("kiln_fuel", "coal")
+    elec = source.get("electricity", "grid_EU")
+    cap = source.get("capture") or {}
+    rate = float(cap.get("rate", 0.0))
+    cap_kwh_per_t = float(cap.get("energy_kwh_per_tCO2", DEFAULT_CAPTURE_KWH_PER_T_CO2))
+
+    gross_stack = (CALCINATION_EF + FUEL_EF[fuel]) * clinker_mass
+    captured = rate * gross_stack
+    scope1 = gross_stack - captured
+    kiln_kwh = KILN_KWH_PER_KG.get(fuel, 0.0) * clinker_mass
+    capture_kwh = (captured / 1000.0) * cap_kwh_per_t
+    scope2 = (kiln_kwh + capture_kwh) * GRID_EF[elec]
+    return {"scope1": scope1, "scope2": scope2, "total": scope1 + scope2}
+
+
 def carbon_from_clinker(
     cement_mass: float,
     clinker_factor: float = None,
     kiln_fuel_carbon: float = 0.35,
     cement_type: str = "OPC",
+    clinker_source: Dict = None,
 ) -> float:
     """
     Calculates CO2 emissions from the CEMENT term based on clinker chemistry.
@@ -175,6 +233,10 @@ def carbon_from_clinker(
     1. Calcination of limestone: CaCO3 → CaO + CO2 (~0.53 kg CO2/kg clinker)
     2. Fuel combustion in the kiln (~0.35 kg CO2/kg clinker, varies by fuel)
 
+    With a `clinker_source` descriptor (R6.3) the fuel/electricity/capture terms are
+    computed per source via `clinker_scope_split`; without one, the legacy default
+    (0.53 + kiln_fuel_carbon) is byte-for-byte unchanged.
+
     Note: this is the cement-only contribution. For a full mix carbon figure on the
     same system boundary as the Tier-1 model, use `embodied_carbon_advanced`.
 
@@ -182,13 +244,16 @@ def carbon_from_clinker(
         cement_mass: Mass of cement (kg/m³)
         clinker_factor: Fraction of cement that is clinker. If None, it is read from
             data/oxide_compositions.json for `cement_type` (e.g., 0.95 OPC, 0.50 LC3).
-        kiln_fuel_carbon: Carbon intensity of kiln fuel
+        kiln_fuel_carbon: Carbon intensity of kiln fuel (legacy path only)
         cement_type: Key into the oxide JSON used when clinker_factor is None.
+        clinker_source: Optional source descriptor (kiln_fuel / electricity / capture).
     """
     if clinker_factor is None:
         clinker_factor = clinker_factor_for(cement_type)
     clinker_mass = cement_mass * clinker_factor
-    calcination_co2 = clinker_mass * 0.53
+    if clinker_source is not None:
+        return clinker_scope_split(clinker_mass, clinker_source)["total"]
+    calcination_co2 = clinker_mass * CALCINATION_EF
     fuel_co2 = clinker_mass * kiln_fuel_carbon
     return calcination_co2 + fuel_co2
 
@@ -197,6 +262,8 @@ def embodied_carbon_advanced(
     mix: Dict[str, float],
     transport_km: float = 0.0,
     cement_type: str = "OPC",
+    factors: Dict[str, float] = None,
+    clinker_source: Dict = None,
 ) -> float:
     """
     Full-mix embodied carbon (kg CO2/m³) on the SAME system boundary as the Tier-1
@@ -211,16 +278,19 @@ def embodied_carbon_advanced(
     only refines how the cement contribution is computed, so the two tiers are
     directly comparable.
     """
-    carbon = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type)
+    factors = factors or SIMPLE_CARBON_FACTORS
+    carbon = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type,
+                                 clinker_source=clinker_source)
 
-    # Non-cement constituents, using the identical Tier-1 factors.
-    for component, factor in SIMPLE_CARBON_FACTORS.items():
+    # Non-cement constituents, using the same (editable) Tier-1 factors.
+    for component, factor in factors.items():
         if component == "cement":
             continue
         carbon += mix.get(component, 0.0) * factor
 
-    # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km).
-    total_mass = sum(mix.values())
+    # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km). Only material
+    # masses count -- 'age' is a curing time, not a mass.
+    total_mass = sum(mix.get(k, 0.0) for k in factors)
     carbon += (total_mass / 1000.0) * transport_km * 0.1
 
     return carbon

@@ -1,0 +1,8 @@
+# Dark theme via Streamlit's supported theming API, rather than injected CSS that
+# targets internal `data-baseweb`/`.stApp` selectors (which change between releases).
+[theme]
+base = "dark"
+primaryColor = "#00E676"
+backgroundColor = "#121212"
+secondaryBackgroundColor = "#1E1E1E"
+textColor = "#E0E0E0"

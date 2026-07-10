@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 def plot_ga_progress(history: List[Dict[str, Any]]):
     """Plots best and average fitness over generations with a dark theme."""

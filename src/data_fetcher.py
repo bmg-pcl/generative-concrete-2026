@@ -1,7 +1,6 @@
 import os
 import requests
 import pandas as pd
-from typing import Optional
 import argparse
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
@@ -113,7 +112,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        path = download_dataset(force=args.force)
+        download_dataset(force=args.force)
         if args.check:
             df = load_data()
             print("\nDataset loaded successfully!")

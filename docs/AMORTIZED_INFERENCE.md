@@ -153,9 +153,10 @@ mixes = explorer.sample_posterior(target_strength=45, n_samples=2000)   # (2000,
 
 `sample_posterior` picks its backend automatically:
 
-- **trained amortized flow** when weights exist and no carbon target is given;
-- **GA inverse designer** otherwise (also whenever a carbon target is set, since the flow
-  conditions on strength only).
+- **trained amortized flow** when weights exist and no carbon target is given (since R7.2 the
+  flow conditions on **strength and design age**, so a pinned age uses the flow too);
+- **GA inverse designer** otherwise (in particular whenever a carbon target is set, since the
+  flow does not condition on carbon).
 
 Force one with `method="amortized"` or `method="ga"`.
 

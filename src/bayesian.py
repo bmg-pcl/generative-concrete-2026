@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import os
 
 # TensorFlow / BayesFlow are heavy, optional dependencies. The current explorer
 # does not require them at runtime (see Phase 3 in docs/FIX_PLAN.md), so we guard
@@ -15,10 +14,9 @@ try:
 except ImportError:
     bf = None
 
-from .data_fetcher import load_data
 from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
-from .generative_ga import PopulationInverseDesigner, AntColonyInverseDesigner
+from .generative_ga import PopulationInverseDesigner, AntColonyInverseDesigner, PARAM_NAMES
 
 class BayesFlowExplorer:
     """
@@ -29,7 +27,7 @@ class BayesFlowExplorer:
 
       1. A trained **amortized BayesFlow posterior** (a normalizing flow in
          `src/amortized.py`) -- used automatically when trained weights exist and
-         no carbon target is given (the flow conditions on strength only).
+         no carbon target is given (the flow conditions on strength and design age).
       2. A transparent **GA inverse designer** (`PopulationInverseDesigner`) --
          the always-available fallback; it needs no TensorFlow and also handles the
          carbon objective.
@@ -42,10 +40,7 @@ class BayesFlowExplorer:
         self.predictor = StrengthPredictor()
         self.amortizer = None
         self.is_trained = False
-        self.param_names = ["cement", "slag", "ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age"]
-        self.bounds = np.array([
-            (100, 550), (0, 360), (0, 200), (120, 250), (0, 30), (700, 1150), (550, 1000), (1, 365)
-        ])
+        self.param_names = list(PARAM_NAMES)
         # Lazily-built backends (built on first use, sharing our predictor).
         self._designer = None
         self._aco_designer = None
@@ -112,77 +107,81 @@ class BayesFlowExplorer:
         return model
 
     def sample_posterior(self, target_strength: float, carbon_target: float = None,
-                         n_samples: int = 2000, method: str = "auto") -> np.ndarray:
+                         n_samples: int = 2000, method: str = "auto",
+                         robust: bool = False, age: float = None) -> np.ndarray:
         """
         Draw mix designs conditioned on the target strength (and optional carbon target).
 
         Backend selection:
           * method="auto" (default): use the trained amortized flow when it exists
             AND no carbon target is given; otherwise the GA inverse designer.
-          * method="amortized": force the flow (errors if none is trained).
+          * method="amortized" / "flow": force the flow (errors if none is trained).
           * method="ga": force the GA designer.
           * method="aco": force the Ant Colony (ACO_R) designer.
 
-        The flow conditions on strength only, so carbon targets always route to a
-        metaheuristic designer (which bakes carbon into its objective).
+        The flow conditions on (strength, age) since R7.2, so a fixed design age uses
+        the flow directly; only carbon targets route to a metaheuristic designer
+        (which bakes carbon into its objective).
         """
-        if method == "amortized" and self.amortized is None:
+        if method in ("amortized", "flow") and self.amortized is None:
             raise RuntimeError(
                 "No trained amortized posterior available. Train it first via "
                 "BayesFlowExplorer.train() / `python -m src.amortized`, or use method='ga'."
             )
         if method == "aco":
             return self.aco_designer.sample(
-                target_strength, n_samples=n_samples, carbon_target=carbon_target
+                target_strength, n_samples=n_samples, carbon_target=carbon_target,
+                robust=robust, age=age,
             )
         use_amortized = (
-            method in ("auto", "amortized")
-            and carbon_target is None
+            method in ("auto", "amortized", "flow")
+            and carbon_target is None      # the flow conditions on strength+age, not carbon
             and self.amortized is not None
         )
         if use_amortized:
-            return self.amortized.sample(target_strength, n_samples=n_samples)
+            # The flow can't be re-conditioned on the robust objective; robust handling
+            # for the flow happens in recommend_recipe (filter/lower-bound match). Age
+            # is now a genuine condition (R7.2): a pinned age is honored by the flow,
+            # and age=None marginalises over age inside the flow.
+            return self.amortized.sample(target_strength, n_samples=n_samples, age=age)
         return self.designer.sample(
             target_strength,
             n_samples=n_samples,
             carbon_target=carbon_target,
+            robust=robust,
+            age=age,
         )
 
     def suggest_tests(self, target_strength: float, carbon_target: float = None, n_tests: int = 5) -> pd.DataFrame:
         """
-        Suggests the top-N tests to run based on a combination of target match and high uncertainty.
-        This guides the user toward 'empty spaces' in the design manifold.
+        Active experimental design: suggest the top-N most *informative* lab tests to run
+        next — mixes that are near the target, uncertain (wide interval), and in
+        under-sampled regions (high novelty). Running these shrinks the model's blind
+        spots fastest.
+
+            merit = interval_halfwidth · min(novelty, 3) / (1 + |strength − target|)
         """
-        # 1. Broadly sample the posterior
         samples = self.sample_posterior(target_strength, carbon_target, n_samples=min(2000, 500 * n_tests))
-        
-        # 2. Score each sample based on uncertainty (predict_variance)
+        lo, _, hi = self.predictor.predict_interval(samples)
+        strength = self.predictor.predict_batch(samples)
+        novelty = self.predictor.novelty(samples)
+        halfwidth = (hi - lo) / 2.0
+        merit = halfwidth * np.minimum(novelty, 3.0) / (1.0 + np.abs(strength - target_strength))
+
         results = []
-        for s in samples:
-            mix_dict = dict(zip(self.param_names, s))
-            strength = self.predictor.predict(s)
-            carbon = calculate_embodied_carbon(mix_dict)
-            uncertainty = self.predictor.predict_variance(s)
-            
-            # Merit score: blends proximity to target with high uncertainty (exploration)
-            strength_error = abs(strength - target_strength)
-            # We want LOW strength error but HIGH uncertainty
-            merit_score = uncertainty / (1.0 + strength_error)
-            
+        for i, s in enumerate(samples):
+            mix = dict(zip(self.param_names, s))
             results.append({
-                **mix_dict,
-                "predicted_strength": strength,
-                "embodied_carbon": carbon,
-                "uncertainty_score": uncertainty,
-                "merit_score": merit_score
+                **{k: round(float(v), 1) for k, v in mix.items()},
+                "predicted_strength": round(float(strength[i]), 1),
+                "interval_lo": round(float(lo[i]), 1),
+                "interval_hi": round(float(hi[i]), 1),
+                "novelty": round(float(novelty[i]), 2),
+                "embodied_carbon": round(float(calculate_embodied_carbon(mix)), 1),
+                "merit_score": round(float(merit[i]), 3),
             })
-            
         df = pd.DataFrame(results)
-        # Select the top-N diverse tests
-        # Sorting by merit score but we could also use a diversity filter (e.g. K-Means)
-        top_tests = df.sort_values("merit_score", ascending=False).head(n_tests)
-        
-        return top_tests
+        return df.sort_values("merit_score", ascending=False).head(n_tests).reset_index(drop=True)
 
     def evaluate_uncertainty(self, mix_design: np.ndarray) -> float:
         """

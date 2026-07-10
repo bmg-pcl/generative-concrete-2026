@@ -13,11 +13,14 @@ streamlit
 pandas
 jupyterlab
 pytest
+pytest-cov
+ruff
 requests
 openpyxl
 xlrd
 xgboost
 scikit-learn
+pymoo
 bayesflow<2
 tensorflow==2.14.*
 tensorflow-probability==0.22.*

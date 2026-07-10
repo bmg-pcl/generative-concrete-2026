@@ -27,12 +27,18 @@ from .ga import GeneticOptimizer
 from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
 from .data_fetcher import load_data
+from .physical import volume_error, enforce_volume, VOLUME_TOLERANCE
 
 # Canonical parameter order (matches the UCI columns and StrengthPredictor inputs).
 PARAM_NAMES: List[str] = [
     "cement", "slag", "ash", "water",
     "superplasticizer", "coarse_agg", "fine_agg", "age",
 ]
+
+# Robust-mode out-of-support penalty weight (MPa-scale). See docs/specs/R1.
+OOS_PENALTY_WEIGHT = 10.0
+# Volume-balance penalty weight (MPa-scale per m³ of imbalance). See docs/specs/R2.
+VOLUME_PENALTY_WEIGHT = 200.0
 
 
 def data_envelope(param_names: List[str] = PARAM_NAMES) -> np.ndarray:
@@ -68,32 +74,55 @@ class _InverseDesignerBase:
         self.param_names = param_names
         self.bounds = data_envelope(param_names) if bounds is None else np.asarray(bounds, dtype=float)
         self.n_dims = len(self.bounds)
+        self._age_idx = param_names.index("age")
         # Jitter used when expanding the elite set into a sample cloud, as a
         # fraction of each parameter's range.
         self._jitter = jitter_frac * (self.bounds[:, 1] - self.bounds[:, 0])
 
     # -- objective -----------------------------------------------------------
-    def _make_objective(self, target_strength: float, carbon_target: Optional[float]):
+    def _make_objective(self, target_strength: float, carbon_target: Optional[float],
+                        robust: bool = False):
         """
         Returns a scalar error to MINIMISE:
 
-            error = |predict(mix) - target_strength|            (always)
-                  + max(0, carbon(mix) - carbon_target)         (only if carbon_target given)
+            error = |strength(mix) - target_strength|            (always)
+                  + max(0, carbon(mix) - carbon_target)          (only if carbon_target given)
+                  + OOS_PENALTY_WEIGHT·max(0, novelty - thresh)  (robust only)
 
-        The carbon term is a one-sided penalty: it only pushes back when a mix
-        exceeds the carbon budget, so it never fights the strength objective for
-        already-clean mixes.
+        With `robust=True`, `strength` is the conformal lower bound (the guaranteed
+        strength) rather than the mean, and an out-of-support penalty pulls the search
+        away from extrapolated regions the prediction can't be trusted in.
         """
+        threshold = self.predictor.support_threshold() if robust else None
+
         def objective(theta: np.ndarray) -> float:
-            strength = self.predictor.predict(theta)
+            if robust:
+                lo, _, _ = self.predictor.predict_interval(theta)
+                strength = float(lo[0])
+            else:
+                strength = self.predictor.predict(theta)
             error = abs(strength - target_strength)
+            mix = dict(zip(self.param_names, theta))
             if carbon_target is not None:
-                mix = dict(zip(self.param_names, theta))
-                carbon = calculate_embodied_carbon(mix)
-                error += max(0.0, carbon - carbon_target)
+                error += max(0.0, calculate_embodied_carbon(mix) - carbon_target)
+            # Physical validity: penalise mixes that don't fill ~1 m³ (always on).
+            error += VOLUME_PENALTY_WEIGHT * max(0.0, volume_error(mix) - VOLUME_TOLERANCE)
+            if robust:
+                nov = float(self.predictor.novelty(theta)[0])
+                error += OOS_PENALTY_WEIGHT * max(0.0, nov - threshold)
             return float(error)
 
         return objective
+
+    def _effective_bounds(self, age: Optional[float]) -> np.ndarray:
+        """Search bounds with the age dimension pinned to `age` (degenerate bound) when
+        a fixed design age is requested, so the optimizer treats age as a condition, not
+        a free variable it can exploit (e.g. prescribing a 365-day cure)."""
+        if age is None:
+            return self.bounds
+        b = self.bounds.copy()
+        b[self._age_idx] = (float(age), float(age))
+        return b
 
     def _rank(self, optimizer, objective) -> Tuple[np.ndarray, np.ndarray]:
         """Collect an optimizer's final population + global best, ranked best-first."""
@@ -114,6 +143,8 @@ class _InverseDesignerBase:
         target_strength: float,
         n_samples: int = 2000,
         carbon_target: Optional[float] = None,
+        robust: bool = False,
+        age: Optional[float] = None,
     ) -> np.ndarray:
         """
         Produce an (n_samples, n_dims) cloud of target-conditioned mixes.
@@ -123,19 +154,29 @@ class _InverseDesignerBase:
         of good solutions into a smooth spread suitable for the dashboard surface,
         while keeping every sample tied to the requested target.
         """
-        ranked, _ = self.design(target_strength, carbon_target)
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age)
         n_elite = max(10, len(ranked) // 4)
         elite = ranked[:n_elite]
 
+        eb = self._effective_bounds(age)
         idx = np.random.randint(0, len(elite), n_samples)
         jitter = np.random.normal(0.0, 1.0, (n_samples, self.n_dims)) * self._jitter
         samples = elite[idx] + jitter
-        return np.clip(samples, self.bounds[:, 0], self.bounds[:, 1])
+        samples = np.clip(samples, eb[:, 0], eb[:, 1])
+        # Physical validity: repair any sample that violates the volume balance.
+        samples = np.array([[enforce_volume(dict(zip(self.param_names, s)))[p]
+                             for p in self.param_names] for s in samples])
+        samples = np.clip(samples, eb[:, 0], eb[:, 1])
+        if age is not None:
+            samples[:, self._age_idx] = float(age)  # jitter/repair must not un-pin age
+        return samples
 
-    def best_mix(self, target_strength: float, carbon_target: Optional[float] = None) -> Dict[str, float]:
-        """Single best mix as a dict -- for one-shot callers like inverse_plan_mix."""
-        ranked, _ = self.design(target_strength, carbon_target)
-        return dict(zip(self.param_names, ranked[0]))
+    def best_mix(self, target_strength: float, carbon_target: Optional[float] = None,
+                 robust: bool = False, age: Optional[float] = None) -> Dict[str, float]:
+        """Single best mix as a dict -- for one-shot callers like inverse_plan_mix.
+        Repaired to satisfy the volume balance if the search left it slightly off."""
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age)
+        return enforce_volume(dict(zip(self.param_names, ranked[0])))
 
 
 class PopulationInverseDesigner(_InverseDesignerBase):
@@ -150,12 +191,14 @@ class PopulationInverseDesigner(_InverseDesignerBase):
         carbon_target: Optional[float] = None,
         pop_size: int = 80,
         generations: int = 40,
+        robust: bool = False,
+        age: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run the GA and return the final population sorted best-first."""
-        objective = self._make_objective(target_strength, carbon_target)
+        objective = self._make_objective(target_strength, carbon_target, robust=robust)
         optimizer = GeneticOptimizer(
             objective_fn=objective,
-            bounds=self.bounds.tolist(),
+            bounds=self._effective_bounds(age).tolist(),
             pop_size=pop_size,
             maximize=False,  # we are minimising the target-match error
         )
@@ -177,15 +220,17 @@ class AntColonyInverseDesigner(_InverseDesignerBase):
         n_ants: int = 40,
         archive_size: int = 20,
         generations: int = 40,
+        robust: bool = False,
+        age: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run ACO_R and return the final solution archive sorted best-first."""
         # Imported lazily so importing this module doesn't require the ACO engine.
         from .aco import AntColonyOptimizer
 
-        objective = self._make_objective(target_strength, carbon_target)
+        objective = self._make_objective(target_strength, carbon_target, robust=robust)
         optimizer = AntColonyOptimizer(
             objective_fn=objective,
-            bounds=self.bounds.tolist(),
+            bounds=self._effective_bounds(age).tolist(),
             n_ants=n_ants,
             archive_size=archive_size,
             maximize=False,

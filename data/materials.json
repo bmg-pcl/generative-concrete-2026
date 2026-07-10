@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "materials": {
+    "cement": {
+      "name": "Portland cement (OPC)",
+      "category": "binder",
+      "density_kg_m3": 3150,
+      "unit_cost": {"value": 0.15, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [
+        {"value": 0.912, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+         "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.15}
+      ],
+      "chemistry": {"oxides_key": "OPC"},
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Cement", "min": 100, "max": 550}
+    },
+    "slag": {
+      "name": "GGBS (blast-furnace slag)",
+      "category": "scm",
+      "density_kg_m3": 2900,
+      "unit_cost": {"value": 0.08, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [
+        {"value": 0.052, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+         "vintage": 2019, "source": "database", "reference": "ICE v3 (byproduct allocation)", "uncertainty": 0.3}
+      ],
+      "chemistry": {"oxides_key": "SLAG", "reactivity_class": "latent-hydraulic"},
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Slag", "min": 0, "max": 360}
+    },
+    "ash": {
+      "name": "Fly ash (Class F)",
+      "category": "scm",
+      "density_kg_m3": 2300,
+      "unit_cost": {"value": 0.05, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [
+        {"value": 0.004, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+         "vintage": 2019, "source": "database", "reference": "ICE v3 (byproduct allocation)", "uncertainty": 0.5}
+      ],
+      "chemistry": {"oxides_key": "FLY_ASH_F", "reactivity_class": "pozzolanic"},
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Fly Ash", "min": 0, "max": 200}
+    },
+    "water": {
+      "name": "Mixing water",
+      "category": "water",
+      "density_kg_m3": 1000,
+      "unit_cost": {"value": 0.002, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [
+        {"value": 0.0003, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+         "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.5}
+      ],
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Water", "min": 120, "max": 250}
+    },
+    "superplasticizer": {
+      "name": "Superplasticizer (PCE)",
+      "category": "admixture",
+      "density_kg_m3": 1100,
+      "unit_cost": {"value": 2.5, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [
+        {"value": 1.5, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+         "vintage": 2019, "source": "database", "reference": "EFCA EPD (generic PCE)", "uncertainty": 0.3}
+      ],
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Superplasticizer", "min": 0, "max": 30}
+    },
+    "coarse_agg": {
+      "name": "Coarse aggregate (crushed stone)",
+      "category": "aggregate",
+      "density_kg_m3": 2700,
+      "unit_cost": {"value": 0.03, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [
+        {"value": 0.008, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+         "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.3}
+      ],
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Coarse Agg", "min": 700, "max": 1150}
+    },
+    "fine_agg": {
+      "name": "Fine aggregate (sand)",
+      "category": "aggregate",
+      "density_kg_m3": 2650,
+      "unit_cost": {"value": 0.04, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [
+        {"value": 0.005, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+         "vintage": 2019, "source": "database", "reference": "ICE v3", "uncertainty": 0.3}
+      ],
+      "strength_treatment": "trained_feature",
+      "slider": {"label": "Fine Agg", "min": 550, "max": 1000}
+    },
+
+    "silica_fume": {
+      "name": "Silica fume", "category": "Pozzolan",
+      "dosage": {"default": 0, "max": 50, "unit": "kg/m3"},
+      "unit_cost": {"value": 0.8, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 0.02, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "byproduct allocation", "uncertainty": 0.5}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.08
+    },
+    "metakaolin": {
+      "name": "Metakaolin", "category": "Pozzolan",
+      "dosage": {"default": 0, "max": 80, "unit": "kg/m3"},
+      "unit_cost": {"value": 0.45, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 0.3, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "calcination energy", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.06
+    },
+    "rice_husk_ash": {
+      "name": "Rice husk ash", "category": "Pozzolan",
+      "dosage": {"default": 0, "max": 60, "unit": "kg/m3"},
+      "unit_cost": {"value": 0.15, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 0.01, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "byproduct allocation", "uncertainty": 0.5}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.04
+    },
+    "limestone_filler": {
+      "name": "Limestone filler", "category": "Filler",
+      "dosage": {"default": 0, "max": 100, "unit": "kg/m3"},
+      "unit_cost": {"value": 0.05, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 0.01, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "grinding only", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": -0.01
+    },
+    "calcined_clay": {
+      "name": "Calcined clay", "category": "Filler",
+      "dosage": {"default": 0, "max": 150, "unit": "kg/m3"},
+      "unit_cost": {"value": 0.12, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 0.25, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "calcination energy", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.03
+    },
+    "steel_fiber": {
+      "name": "Steel fiber", "category": "Fiber",
+      "dosage": {"default": 0, "max": 80, "unit": "kg/m3"},
+      "unit_cost": {"value": 1.5, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 1.8, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "steel wire", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.05
+    },
+    "polypropylene_fiber": {
+      "name": "Polypropylene fiber", "category": "Fiber",
+      "dosage": {"default": 0, "max": 10, "unit": "kg/m3"},
+      "unit_cost": {"value": 4.0, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 3.5, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "PP polymer", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": -0.02
+    },
+    "basalt_fiber": {
+      "name": "Basalt fiber", "category": "Fiber",
+      "dosage": {"default": 0, "max": 20, "unit": "kg/m3"},
+      "unit_cost": {"value": 2.5, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 0.6, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "melt spinning", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.02
+    },
+    "nano_silica": {
+      "name": "Nano-silica", "category": "Nano",
+      "dosage": {"default": 0, "max": 5, "unit": "kg/m3"},
+      "unit_cost": {"value": 25.0, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 5.0, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "synthesis energy", "uncertainty": 0.5}],
+      "strength_treatment": "delta_estimate", "strength_factor": 1.5
+    },
+    "graphene_oxide": {
+      "name": "Graphene oxide", "category": "Nano",
+      "dosage": {"default": 0, "max": 1, "unit": "kg/m3"},
+      "unit_cost": {"value": 500.0, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 50.0, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "synthesis energy", "uncertainty": 0.5}],
+      "strength_treatment": "delta_estimate", "strength_factor": 8.0
+    },
+    "calcium_chloride": {
+      "name": "Calcium chloride (accelerator)", "category": "Chemical",
+      "dosage": {"default": 0, "max": 10, "unit": "kg/m3"},
+      "unit_cost": {"value": 0.3, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 0.8, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "Solvay byproduct", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.1
+    },
+    "shrink_reducer": {
+      "name": "Shrinkage reducer", "category": "Chemical",
+      "dosage": {"default": 0, "max": 8, "unit": "kg/m3"},
+      "unit_cost": {"value": 6.0, "currency": "USD/kg", "source": "regional default"},
+      "carbon": [{"value": 2.0, "unit": "kgCO2e/kg", "boundary": "A1-A3", "region": "global",
+                  "vintage": 2019, "source": "database", "reference": "glycol ether", "uncertainty": 0.3}],
+      "strength_treatment": "delta_estimate", "strength_factor": 0.0
+    }
+  }
+}

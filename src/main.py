@@ -1,5 +1,4 @@
 from src.ga import GeneticOptimizer
-from src.viz import plot_ga_progress, plot_parameter_heatmap
 import numpy as np
 
 def sphere_fn(x):
@@ -8,8 +7,7 @@ def sphere_fn(x):
 
 def test_optimizer_flow():
     bounds = [(-5.0, 5.0)] * 8
-    param_names = [f"Param_{i}" for i in range(8)]
-    
+
     optimizer = GeneticOptimizer(
         objective_fn=sphere_fn, 
         bounds=bounds, 
