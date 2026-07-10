@@ -66,7 +66,7 @@ span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at clo
 | R6 | ~2–3 d | ~2–3 d (block) | Within estimate |
 | R7.1 | ~3–4 d | **~0.5 d** | Est. assumed architecture uncertainty; the fix (rearrangement-sorted joint quantile model) was mechanically clear once chosen. RMSE gate consciously revised (+6.8%, documented in PAPER §8.3) rather than tuned away |
 | R7.2 | senior/escalate (no d-estimate) | **~0.5 d** | Flagged for escalation ex ante (2-D SBC, network-shape change); the age-as-prior-marginalised-condition formulation collapsed the risk. Escalation flag was the right call to make beforehand even though the outcome was fast |
-| R7.3 | (this spec) | — | in progress |
+| R7.3 | ~1–1.5 d (a+b+c combined) | **~0.3 d** | Straightforward given the R7.1/R7.2 groundwork (predict_interval, run_nsga's existing robust= arg); the only real judgment call was excluding a "robust flow" row rather than fudging one — see spec's sonnet-ready note |
 | R7.4 | (this spec) | — | in progress |
 
 **Reading the log so far:** the block estimates (R1–R6) were accurate at block
@@ -127,15 +127,21 @@ interesting model in the repo — serves almost nothing).
   condition, prior-marginalised) made it ~½ d — the escalation flag was warranted ex
   ante (2-D SBC, network-shape change) but the design collapsed the risk.
 
-**R7.3 Evidence hardening for the flagship** — full sonnet-ready spec:
+**R7.3 Evidence hardening for the flagship** — ✅ **Shipped** — full spec:
 [`R7-trustworthy-to-the-edge.md`](R7-trustworthy-to-the-edge.md)
-- **What:** benchmark the *robust* mode (lower-bound MAE, in-support %, NSGA front)
-  alongside the current non-robust table; ratchet the CI coverage floor (measure the
-  no-TF number first, then set it below); record actual-vs-estimate effort per spec.
-- **Why now:** §8.1's table currently evidences the mode nobody should default to.
-- **Value:** the recommended configuration is the measured one; estimates start
-  teaching us something.
-- **Gates:** BENCHMARKS.md gains the robust section; CI green at the ratcheted floor.
+- **What shipped:** a `robust=True` benchmark section (lower-bound MAE — not median
+  MAE, the metric robust mode is actually scored on — plus in-support % for GA/ACO;
+  the flow is deliberately excluded since it doesn't recondition on `robust=` inside
+  `sample_posterior`); a robust NSGA row with hypervolume compared against the
+  non-robust front on one shared reference point; the CI coverage floor measured
+  (69.98% no-TF, not the stale "~63%" comment) and ratcheted 60 → 65; an effort log.
+- **Value delivered:** the mode users actually run by default is now evidenced, not
+  just the non-robust baseline. Measured trade: GA/ACO in-support jumps from
+  0–1.7% (non-robust) to 64–100% (robust); NSGA in-support 5% → 100%; NSGA
+  hypervolume 1,082,794 → 820,613 (the front's real, quantified size cost for that
+  guarantee) — see `docs/BENCHMARKS.md`.
+- **Gates (met):** `BENCHMARKS.md` Robust-mode + combined-NSGA sections regenerated
+  from a live run; CI green at the ratcheted floor; 11 benchmark-plumbing tests.
 
 **R7.4 Debt sweep (small, bounded)** — full sonnet-ready spec:
 [`R7-trustworthy-to-the-edge.md`](R7-trustworthy-to-the-edge.md)
