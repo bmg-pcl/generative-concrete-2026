@@ -166,3 +166,31 @@ def test_config_uses_session_export_schema(tmp_path):
     assert cfg["costs"]["cement"] == 0.33
     assert cfg["carbon_factors"]["cement"] == 0.7
     assert np.isclose(cfg["run"]["transport_km"], 0.0)
+
+
+def test_config_accepts_real_ui_session_export(tmp_path):
+    """R7.4a regression guard: the UI's session export gained a nested "ui_config"
+    block (the Config-tab widget state). The CLI's OWN "config" block is a distinct,
+    semantic schema (advanced/robust/age/...) that rejects unknown keys -- if the two
+    had collided on the same field name, feeding a real UI export to --config would
+    raise CliError("Unknown config option(s): cfg_..."). It must not."""
+    pytest.importorskip("streamlit")
+    import ui.state as state_mod
+
+    state = {}
+    for slot, default in (("A", state_mod.DEFAULT_MIX_A), ("B", state_mod.DEFAULT_MIX_B)):
+        for (p, *_), v in zip(state_mod.SLIDER_SPECS, default):
+            state[f"{p}_{slot}"] = int(v)
+    state["costs"] = state_mod.UNIT_COSTS.copy()
+    state["carbon_factors"] = state_mod.CARBON_FACTORS.copy()
+    state["exotic_a"], state["exotic_b"], state["epds"] = {}, {}, {}
+    state.update(state_mod.CONFIG_DEFAULTS)
+
+    exported = state_mod.export_session(state)
+    assert "ui_config" in exported  # sanity: this is the field under test
+    p = tmp_path / "gmd_session.json"
+    p.write_text(json.dumps(exported))
+
+    cfg = load_project_config(str(p))  # must not raise CliError
+    assert cfg["run"] == {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
+                          "robust": True, "age": None, "clinker_source": None}

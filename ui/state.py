@@ -14,6 +14,7 @@ from src.models import StrengthPredictor
 from src.bayesian import BayesFlowExplorer
 from src.data_fetcher import load_data
 from src.chemistry_simple import UNIT_COSTS, CARBON_FACTORS
+from src.chemistry_advanced import GRID_EF
 from src.exotics import EXOTIC_ADMIXTURES
 
 # Mix slider specs: (param, label, min, max) in PARAM_NAMES order.
@@ -29,6 +30,25 @@ SLIDER_SPECS = [
 ]
 DEFAULT_MIX_A = [300, 0, 0, 180, 0, 1000, 800, 28]
 DEFAULT_MIX_B = [300, 100, 50, 160, 5, 1000, 800, 28]
+
+# R7.4a: the Config tab's own controls, persisted in the session file. Same keyed-
+# widget pattern as the mix sliders and cf_<mat> factors: the widget key IS the live
+# value (no `value=` passed alongside `key=`), init_session_state() seeds the
+# default via setdefault, and apply_session() writes the keys directly — legal
+# because session import runs from the sidebar, which renders before the Config tab
+# instantiates these widgets (see R4.1/R5.1 for the underlying Streamlit rule).
+CONFIG_DEFAULTS = {
+    "cfg_chemistry_mode": "Simple (Linear)",
+    "cfg_transport_km": 0,
+    "cfg_cement_source": "OPC (Portland)",
+    "cfg_kiln_fuel": "Default (unspecified mix)",
+    "cfg_electricity": sorted(GRID_EF.keys())[0],
+    "cfg_capture_rate": 0.0,
+    "cfg_robust": True,
+    "cfg_fix_age": True,
+    "cfg_design_age": 28,
+    "cfg_exotic_strength": False,
+}
 
 
 def load_mix_into(slot: str, mix_vec, state=None):
@@ -91,13 +111,15 @@ def init_session_state():
         st.session_state.exotic_b = {k: v["default"] for k, v in EXOTIC_ADMIXTURES.items()}
     if "epds" not in st.session_state:
         st.session_state.epds = {}   # attached supplier EPDs {material: record} (R6.2)
+    for key, default in CONFIG_DEFAULTS.items():
+        st.session_state.setdefault(key, default)
 
 
 # Every field the session file carries (besides "version"). export_session writes
 # exactly these; apply_session consumes exactly these. Add a field HERE and both
 # sides pick it up — the round-trip tests enforce the symmetry.
-SESSION_FIELDS = ("mix_a", "mix_b", "costs", "carbon_factors", "exotic_a", "exotic_b", "epds")
-SESSION_VERSION = 3   # v3 adds epds; v2 (no epds) and v1 (no carbon_factors) accepted
+SESSION_FIELDS = ("mix_a", "mix_b", "costs", "carbon_factors", "exotic_a", "exotic_b", "epds", "ui_config")
+SESSION_VERSION = 4   # v4 adds ui_config (the Config-tab controls); v1-v3 files simply keep Config defaults
 
 
 def export_session(state=None) -> dict:
@@ -112,6 +134,13 @@ def export_session(state=None) -> dict:
         "exotic_a": dict(state["exotic_a"]),
         "exotic_b": dict(state["exotic_b"]),
         "epds": dict(state["epds"]) if "epds" in state else {},
+        # R7.4a: the Config tab's own controls (transport, clinker source, robust/age
+        # toggles, ...) — previously lost on every export (the R3.4 deferral). Named
+        # "ui_config", NOT "config": the CLI (src/cli.py) already uses a top-level
+        # "config" key with a DIFFERENT, semantic schema (advanced/robust/age/...)
+        # and rejects unknown keys there — colliding names would break
+        # `python -m src.cli ... --config <exported-session.json>`.
+        "ui_config": {k: state[k] for k in CONFIG_DEFAULTS if k in state},
     }
 
 
@@ -120,9 +149,10 @@ def apply_session(data: dict, state=None):
     (the sidebar runs first, so calling it there is safe).
 
     Writes BOTH the plain dicts and the backing widget keys: the mix sliders
-    (cement_A, ...) and the emission-factor editors (cf_<mat>) are keyed widgets, so
-    an import that only replaced the dicts would be silently overwritten by the
-    widgets' retained state on the very next rerun."""
+    (cement_A, ...), the emission-factor editors (cf_<mat>), and the Config-tab
+    controls (cfg_<...>) are all keyed widgets, so an import that only replaced the
+    dicts would be silently overwritten by the widgets' retained state on the very
+    next rerun."""
     state = st.session_state if state is None else state
     load_mix_into("A", data["mix_a"], state)
     load_mix_into("B", data["mix_b"], state)
@@ -136,6 +166,9 @@ def apply_session(data: dict, state=None):
         state["exotic_b"] = data["exotic_b"]
     if "epds" in data:   # v3; older files simply carry no EPD attachments
         state["epds"] = data["epds"]
+    if "ui_config" in data:   # v4; v1-v3 files simply keep the Config-tab defaults
+        for k, v in data["ui_config"].items():
+            state[k] = v
 
 
 def get_state_json() -> str:

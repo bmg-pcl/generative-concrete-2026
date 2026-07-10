@@ -76,19 +76,25 @@ def render_config(predictor, bayesian, presets) -> AppContext:
                 )
     with cfg_model:
         st.subheader("Carbon & Analysis Model")
+        # Keyed-only (no value=): the cfg_ key IS the live value, initialised in
+        # init_session_state() and written by session import (R7.4a) — same
+        # single-source pattern as the mix sliders and cf_<mat> factors (R4.1/R5.1).
         chemistry_mode = st.radio(
             "Carbon model",
             ["Simple (Linear)", "Advanced (Molecular)"],
+            key="cfg_chemistry_mode",
             help="Simple uses mass x factor. Advanced uses Bogue calculations and clinker chemistry.",
         )
         use_advanced_chemistry = (chemistry_mode == "Advanced (Molecular)")
 
         transport_km = st.number_input(
-            "Transport distance (km)", 0, 2000, 0,
+            "Transport distance (km)", 0, 2000,
+            key="cfg_transport_km",
             help="Round-trip haul from plant to site. Adds ~0.1 kg CO₂ per tonne per km.",
         )
         cement_source = st.selectbox(
             "Clinker / cement source", ["OPC (Portland)", "LC3 (limestone calcined clay)"],
+            key="cfg_cement_source",
             help="Advanced tier only: sets the clinker factor (OPC ≈ 0.95, LC3 ≈ 0.50).",
         )
         cement_type = "LC3" if cement_source.startswith("LC3") else "OPC"
@@ -102,6 +108,7 @@ def render_config(predictor, bayesian, presets) -> AppContext:
             )
             fuel_choice = st.selectbox(
                 "Kiln fuel", ["Default (unspecified mix)"] + sorted(FUEL_EF.keys()),
+                key="cfg_kiln_fuel",
                 help="'electric' moves kiln heat to the electricity source below (Scope 2).",
             )
             if fuel_choice.startswith("Default"):
@@ -109,11 +116,13 @@ def render_config(predictor, bayesian, presets) -> AppContext:
             else:
                 electricity = st.selectbox(
                     "Electricity source", sorted(GRID_EF.keys()),
+                    key="cfg_electricity",
                     help="Powers an electrified kiln and/or the capture plant. "
                          "Hydro or a clean PPA makes those terms nearly free.",
                 )
                 capture_rate = st.slider(
-                    "Carbon capture rate", 0.0, 0.95, 0.0, 0.05,
+                    "Carbon capture rate", 0.0, 0.95, step=0.05,
+                    key="cfg_capture_rate",
                     help="Fraction of stack CO₂ (calcination + combustion) captured. "
                          "Capture's energy penalty is charged to the electricity source.",
                 )
@@ -139,26 +148,27 @@ def render_config(predictor, bayesian, presets) -> AppContext:
         st.subheader("Optimization")
         robust_mode = st.toggle(
             "Robust mode (optimize the guaranteed-strength bound, stay in-data)",
-            value=True,
+            key="cfg_robust",
             help="ON: inverse design and Pareto optimize the conformal LOWER bound of "
                  "strength and keep candidates inside the trusted data region "
                  "(NSGA enforces it as a constraint). OFF: optimize the mean prediction, "
                  "which can chase confident-but-unsupported optima.",
         )
         fix_age = st.checkbox(
-            "Fix design age (inverse design & Pareto)", value=True,
+            "Fix design age (inverse design & Pareto)", key="cfg_fix_age",
             help="ON: hold age fixed so the optimizer can't hit a strength target by "
                  "prescribing a long cure (age is a condition, not a design variable). "
-                 "The trained flow can't honor a fixed age, so pinning routes to the "
-                 "GA/ACO designers. OFF: age is free.",
+                 "The trained flow conditions on (strength, age) since R7.2, so a "
+                 "pinned age is honored by the flow directly. OFF: age is free.",
         )
-        design_age = st.number_input("Design age (days)", 1, 365, 28) if fix_age else None
+        design_age = st.number_input("Design age (days)", 1, 365, key="cfg_design_age") \
+            if fix_age else None
 
         st.divider()
         st.subheader("Exotic Strength Model")
         exotic_strength_enabled = st.toggle(
             "Include exotics in predicted strength (experimental)",
-            value=False,
+            key="cfg_exotic_strength",
             help=(
                 "OFF (default): exotic admixtures affect only cost and carbon. The strength "
                 "model is trained on the UCI dataset, which contains none of these materials, "

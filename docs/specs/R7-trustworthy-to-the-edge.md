@@ -96,15 +96,28 @@ deferred" footnotes and make `materials.json` and the session file complete.
 
 ### Design
 
-**R7.4a — Full session restore.** Make the eight Config controls keyed widgets
+**R7.4a — Full session restore.** Make the ten Config controls keyed widgets
 (`key="cfg_chemistry_mode"`, `"cfg_transport_km"`, `"cfg_cement_source"`,
 `"cfg_kiln_fuel"`, `"cfg_electricity"`, `"cfg_capture_rate"`, `"cfg_robust"`,
 `"cfg_fix_age"`, `"cfg_design_age"`, `"cfg_exotic_strength"`), initialise them once in
-`init_session_state()` via `setdefault`, add a nested `"config"` block to
+`init_session_state()` via `setdefault`, add a nested `"ui_config"` block to
 `export_session`/`apply_session`, and bump `SESSION_VERSION` to 4 (older files keep
 defaults for missing fields — the existing "accept v1/v2/v3" pattern). The
 value-level round-trip test (`tests/test_session_roundtrip.py`) and its key-symmetry
 test extend to cover the new fields.
+
+**Naming deviation from the original design (found during implementation):** this
+block is named `"ui_config"`, not `"config"`. `src/cli.py` already reads a top-level
+`"config"` key with a *different*, semantic schema (`advanced`/`transport_km`/
+`cement_type`/`robust`/`age`/`clinker_source`) and raises `CliError` on unknown keys
+under it. A same-named UI block full of raw `cfg_*` widget keys would collide and
+break `python -m src.cli ... --config <exported-session.json>` — exactly the kind of
+integration bug the R5 CLI spec's "one config dialect" design was meant to prevent.
+`"ui_config"` avoids the collision with zero CLI changes; a regression test
+(`tests/test_cli.py::test_config_accepts_real_ui_session_export`) feeds a real
+`export_session()` output through `load_project_config` and asserts it does not
+raise. If you're implementing this from the spec text alone, check for this collision
+before choosing a field name — don't reuse `"config"`.
 
 **R7.4b — Registry-driven core sliders.** Add a `slider: {min, max, label}` block to
 each **trained_feature** record in `data/materials.json`; add
@@ -123,7 +136,10 @@ Decision + one doc paragraph; no code beyond possibly `.gitattributes`.
 ### Acceptance gates
 - Round-trip test: exporting after changing a carbon factor **and** a Config control
   (e.g. transport_km, robust toggle) then importing into a fresh session reproduces
-  both; key-symmetry test covers the new `config` block.
+  both; key-symmetry test covers the new `ui_config` block.
+- CLI compatibility: a real `export_session()` output, fed through
+  `load_project_config`, does not raise (guards the `"config"`/`"ui_config"`
+  naming-collision finding above).
 - Registry gate: editing a `slider.max` in `materials.json` changes the corresponding
   Compare slider with **no code change** (test via `set_materials_path` on a temp
   JSON, as `tests/test_materials.py` already does); `slider_specs_view()` order equals
@@ -153,10 +169,11 @@ This is the same `StreamlitAPIException` trap R4.1/R3.4/R5.1 hit. Rules:
 4. `capture_rate`/`electricity`/`kiln_fuel` are nested inside the "Clinker source"
    expander and only rendered when a non-default fuel is chosen. Persist the keys
    regardless; they're read only when that branch renders.
-5. Bump `SESSION_VERSION` to 4 and keep `apply_session` tolerant: `if "config" in
+5. Bump `SESSION_VERSION` to 4 and keep `apply_session` tolerant: `if "ui_config" in
    data:` then set each present key — missing keys keep their `setdefault` default, so
-   a v1–v3 file still imports. Add the new keys to the `config` sub-dict in
-   `export_session`, and to the symmetry test's expected set.
+   a v1–v3 file still imports. Add the new keys to the `ui_config` sub-dict in
+   `export_session`, and to the symmetry test's expected set. Use `"ui_config"`, not
+   `"config"` — see the naming-deviation note above.
 
 ### Robust benchmarking (R7.3a) — the flow is the trap
 - The metaheuristics take `robust=` through `sample_posterior`; the **flow ignores
