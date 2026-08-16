@@ -4,6 +4,11 @@ Tests for exotic admixtures (src/exotics.py).
 The key contract: exotics must NOT move predicted strength unless the switch is
 explicitly enabled (the strength model knows nothing about them), while cost and
 carbon always apply.
+
+R7.5 WP-2: every exotic also carries a density_kg_m3 in the registry now (see
+docs/specs/R7.5-chemistry-remediation.md WP-2), surfaced via
+materials.exotic_densities_view() and consumed by physical.mix_volume's optional
+`exotic` argument -- exercised in tests/test_physical.py and tests/test_materials.py.
 """
 from src.exotics import (
     EXOTIC_ADMIXTURES,
@@ -11,6 +16,7 @@ from src.exotics import (
     exotic_cost,
     exotic_strength_delta,
 )
+from src.materials import exotic_densities_view
 
 
 def _mix(**kw):
@@ -54,3 +60,14 @@ def test_carbon_and_cost_always_apply():
 def test_every_admixture_has_a_strength_factor():
     for name, props in EXOTIC_ADMIXTURES.items():
         assert "strength_factor" in props, f"{name} missing strength_factor"
+
+
+def test_every_admixture_has_a_positive_density():
+    """R7.5 WP-2: every exotic in the registry must declare a physically sensible
+    density so mix_volume's `exotic` argument (src/physical.py) can account for its
+    displaced volume -- without this, dosing an exotic silently breaks the 'fills
+    1 m3' batchability guarantee (see docs/specs/R7.5-chemistry-remediation.md)."""
+    densities = exotic_densities_view()
+    for name in EXOTIC_ADMIXTURES:
+        assert name in densities, f"{name} missing density_kg_m3"
+        assert densities[name] > 0, f"{name} has a non-positive density"
