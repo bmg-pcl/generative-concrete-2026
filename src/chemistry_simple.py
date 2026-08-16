@@ -49,12 +49,28 @@ def calculate_embodied_carbon(mix: Dict[str, float], transport_km: float = 0.0,
 def estimate_curing_time(mix: Dict[str, float]) -> float:
     """
     Heuristic to estimate curing time to reach 70% strength (days).
+
+    Two effects, charged once each (R7.5 WP-3): dilution, via water/BINDER, and the
+    genuinely slower reaction rate of SCMs, via a bounded SCM fraction. The previous
+    version used water/CEMENT *and* an unbounded (ash+slag)/cement term, so replacing
+    cement with slag was penalised twice for the same substitution — a 200 cement /
+    200 slag / 180 water mix reported 17 days off an apparent w/c of 0.9, when its
+    true w/b is 0.45.
+
+    Still a heuristic, not a model; it just no longer contradicts itself.
     """
-    w_c_ratio = mix.get("water", 180) / max(mix.get("cement", 300), 1)
-    ash_slag_ratio = (mix.get("ash", 0) + mix.get("slag", 0)) / max(mix.get("cement", 300), 1)
-    
+    cement = mix.get("cement", 300)
+    slag = mix.get("slag", 0)
+    ash = mix.get("ash", 0)
+    water = mix.get("water", 180)
+
+    binder = cement + slag + ash
+    denom = max(binder, 1)                  # zero-binder mixes cannot divide by zero;
+    wb_ratio = water / denom                # when binder == 0, slag == ash == 0 too,
+    scm_fraction = (slag + ash) / denom     # so scm_fraction stays 0.
+
     base_days = 7.0
-    base_days += (w_c_ratio - 0.4) * 10
-    base_days += ash_slag_ratio * 5
-    
+    base_days += (wb_ratio - 0.4) * 10
+    base_days += scm_fraction * 5           # bounded in [0, 1] -> at most +5 days
+
     return max(1.0, base_days)
