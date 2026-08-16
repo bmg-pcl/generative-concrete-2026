@@ -7,7 +7,8 @@
         "Fe2O3": 3.0,
         "SO3": 2.5,
         "MgO": 2.0,
-        "clinker_factor": 0.95
+        "clinker_factor": 0.95,
+        "bogue_valid": true
     },
     "SLAG": {
         "name": "Ground Granulated Blast Furnace Slag",
@@ -16,7 +17,8 @@
         "Al2O3": 12.0,
         "Fe2O3": 0.5,
         "MgO": 8.0,
-        "clinker_factor": 0.0
+        "clinker_factor": 0.0,
+        "bogue_valid": false
     },
     "FLY_ASH_F": {
         "name": "Fly Ash (Class F)",
@@ -24,7 +26,8 @@
         "SiO2": 55.0,
         "Al2O3": 25.0,
         "Fe2O3": 8.0,
-        "clinker_factor": 0.0
+        "clinker_factor": 0.0,
+        "bogue_valid": false
     },
     "FLY_ASH_C": {
         "name": "Fly Ash (Class C)",
@@ -32,7 +35,8 @@
         "SiO2": 40.0,
         "Al2O3": 18.0,
         "Fe2O3": 6.0,
-        "clinker_factor": 0.0
+        "clinker_factor": 0.0,
+        "bogue_valid": false
     },
     "LC3": {
         "name": "Limestone Calcined Clay Cement",
@@ -40,6 +44,7 @@
         "SiO2": 25.0,
         "Al2O3": 10.0,
         "Fe2O3": 3.0,
-        "clinker_factor": 0.50
+        "clinker_factor": 0.50,
+        "bogue_valid": false
     }
 }
