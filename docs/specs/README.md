@@ -294,12 +294,15 @@ all of R7 (R7.1–R7.4) has now shipped:
   ordering logic itself lives in `ui/state.py`, not `materials.py`, to avoid a
   circular import); the coverage floor was *measured* in the no-TF (CI) environment
   (69.98%) before being set, not guessed.
-- **Ready to delegate, four ways in parallel:** R7.5 —
+- **Delegated four ways in parallel and shipped (Wave A):** R7.5 —
   [`R7.5-chemistry-remediation.md`](R7.5-chemistry-remediation.md). Partitioned by
   exclusive file ownership rather than by finding, because six of the nine defects
   live in one module; the spec names the frozen surfaces that keep concurrent agents
-  from breaking each other's tests, and quarantines the one cross-cutting fix into a
-  second wave.
+  from breaking each other's tests, and quarantines the one cross-cutting fix (WP-5,
+  still pending) into a second wave. The fan-out's retrospective — what the
+  partitioning got right and the six operational failure modes it exposed — is
+  [`../DELEGATION_WORKFLOW.md`](../DELEGATION_WORKFLOW.md), which is now the process
+  reference for the next parallel delegation.
 - **Shipped (senior/escalate at the time):** R7.1 (joint model — coverage and
   no-crossing gates were the net) and R7.2 (age-conditioned flow retrain, escalated
   once from R2.1; SBC-across-a-grid acceptance).

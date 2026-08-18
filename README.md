@@ -164,6 +164,7 @@ size approaches 250 MiB; until then LFS would add operational cost with no measu
 - [`docs/TECHNICAL_REPORT.md`](docs/TECHNICAL_REPORT.md) — the framework, decisions, and limitations
 - [`docs/AMORTIZED_INFERENCE.md`](docs/AMORTIZED_INFERENCE.md) — what amortized inference is and how it is trained/calibrated
 - [`docs/MODEL_CRITIQUE.md`](docs/MODEL_CRITIQUE.md) — the original point-in-time model critique
+- [`docs/DELEGATION_WORKFLOW.md`](docs/DELEGATION_WORKFLOW.md) — the engineering process for parallel agent delegation: the R7.5 fan-out retrospective (six measured failure modes) and the workflow that falls out of it
 - [`docs/specs/`](docs/specs/README.md) — roadmap specs (R1 trustworthy numbers, R2 physical validity, R3 dormant value, R4 engineering)
 - [`docs/FIX_PLAN.md`](docs/FIX_PLAN.md) / [`docs/UI_FIX_PLAN.md`](docs/UI_FIX_PLAN.md) — the sequenced fix plans
 
