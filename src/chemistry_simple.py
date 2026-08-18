@@ -1,13 +1,20 @@
 """
 chemistry_simple.py - Tier 1: Linear Constituent Analysis
 
-A simplified model for carbon emissions and material costs based on 
-mass-weighted factors. This is NOT a true chemistry model—it treats 
+A simplified model for carbon emissions and material costs based on
+mass-weighted factors. This is NOT a true chemistry model—it treats
 concrete as a bag of inert components.
 
 For molecular-level analysis, see chemistry_advanced.py.
+
+R7.5 WP-5: `transport_carbon` is the single definition of the transport heuristic,
+shared by both tiers and by `ui_logic.carbon_breakdown` (previously the same
+expression was triplicated across chemistry_simple.py, chemistry_advanced.py, and
+ui_logic.py, and only summed the seven core factor keys -- exotic admixture mass
+shipped for free). `exotic=None` reproduces the pre-WP-5 core-only mass sum exactly,
+the same convention `physical.mix_volume(mix, exotic=None)` established in WP-2.
 """
-from typing import Dict
+from typing import Dict, Optional
 
 from .materials import carbon_factors_view, unit_costs_view
 
@@ -25,25 +32,48 @@ def calculate_mix_cost(mix: Dict[str, float], custom_costs: Dict[str, float] = N
     costs = custom_costs or UNIT_COSTS
     return sum(mix.get(k, 0) * costs.get(k, 0) for k in costs)
 
+def transport_carbon(mix: Dict[str, float], transport_km: float,
+                     factors: Dict[str, float],
+                     exotic: Optional[Dict[str, float]] = None) -> float:
+    """
+    Transport heuristic (kg CO2/m³): 0.1 kg CO2 per tonne per km, applied ONE-WAY
+    to the distance entered (see ui/config.py's help text -- the factor is not
+    doubled for a return leg).
+
+    Sums mass over `factors`' keys (the core mix constituents with a carbon
+    factor) -- 'age' is a curing time in days, not a mass, so it is excluded in
+    both tiers. When `exotic` (a {material: kg/m3} dosing dict, e.g. from
+    src/exotics.py) is given, its mass is added too, since exotic admixtures are
+    physically hauled to site same as everything else. Default `exotic=None`
+    reproduces the pre-WP-5 core-only mass sum exactly -- the single definition
+    that both tiers and `ui_logic.carbon_breakdown` now share.
+    """
+    total_mass = sum(mix.get(k, 0) for k in factors)
+    if exotic:
+        total_mass += sum(exotic.values())
+    return (total_mass / 1000.0) * transport_km * 0.1
+
+
 def calculate_embodied_carbon(mix: Dict[str, float], transport_km: float = 0.0,
-                              factors: Dict[str, float] = None) -> float:
+                              factors: Dict[str, float] = None,
+                              exotic: Optional[Dict[str, float]] = None) -> float:
     """
     Calculates embodied carbon for a concrete mix (kg CO2 per m³).
-    
+
     This is a LINEAR model: Carbon = Σ(mass_i × factor_i).
     It does NOT account for:
     - Clinker substitution ratios
     - Regional electricity grid carbon intensity
     - Hydration chemistry
+
+    `exotic`, if given, is included in the transport mass (see `transport_carbon`);
+    it does NOT add the exotic materials' own carbon factor -- that stays in
+    `exotics.exotic_carbon`, which callers already add separately (see
+    `ui_logic.compute_metrics`).
     """
     factors = factors or CARBON_FACTORS
     carbon = sum(mix.get(k, 0) * factors.get(k, 0) for k in factors)
-
-    # Transport heuristic: 0.1 kg CO2 per tonne per km. Sum only material masses
-    # (the factor keys) -- 'age' is a curing time in days, not a mass.
-    total_mass = sum(mix.get(k, 0) for k in factors)
-    carbon += (total_mass / 1000.0) * transport_km * 0.1
-    
+    carbon += transport_carbon(mix, transport_km, factors, exotic=exotic)
     return carbon
 
 def estimate_curing_time(mix: Dict[str, float]) -> float:

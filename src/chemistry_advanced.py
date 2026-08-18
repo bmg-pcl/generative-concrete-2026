@@ -26,7 +26,9 @@ import numpy as np
 # Reuse the Tier-1 emission factors so the two tiers share the SAME non-cement
 # carbon accounting (aggregates, water, SCMs, admixtures, transport). The advanced
 # tier only differs by computing the CEMENT term from clinker chemistry.
-from .chemistry_simple import CARBON_FACTORS as SIMPLE_CARBON_FACTORS
+# `transport_carbon` (R7.5 WP-5) is the single shared definition of the transport
+# heuristic -- see its docstring in chemistry_simple.py.
+from .chemistry_simple import CARBON_FACTORS as SIMPLE_CARBON_FACTORS, transport_carbon
 from .materials import get_material
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
@@ -391,6 +393,7 @@ def embodied_carbon_advanced(
     cement_type: str = "OPC",
     factors: dict[str, float] | None = None,
     clinker_source: dict | None = None,
+    exotic: dict[str, float] | None = None,
 ) -> float:
     """
     Full-mix embodied carbon (kg CO2/m³) on the SAME system boundary as the Tier-1
@@ -404,6 +407,10 @@ def embodied_carbon_advanced(
     The tier toggle therefore changes *fidelity*, not *scope*: switching to Advanced
     only refines how the cement contribution is computed, so the two tiers are
     directly comparable.
+
+    `exotic`, if given, is included in the transport mass (see
+    `chemistry_simple.transport_carbon`); default `exotic=None` is bit-identical to
+    before R7.5 WP-5.
     """
     factors = factors or SIMPLE_CARBON_FACTORS
     carbon = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type,
@@ -415,10 +422,8 @@ def embodied_carbon_advanced(
             continue
         carbon += mix.get(component, 0.0) * factor
 
-    # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km). Only material
-    # masses count -- 'age' is a curing time, not a mass.
-    total_mass = sum(mix.get(k, 0.0) for k in factors)
-    carbon += (total_mass / 1000.0) * transport_km * 0.1
+    # Same transport heuristic as Tier-1 -- one shared definition (R7.5 WP-5).
+    carbon += transport_carbon(mix, transport_km, factors, exotic=exotic)
 
     return carbon
 

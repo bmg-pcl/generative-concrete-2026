@@ -62,6 +62,60 @@ def test_transport_ignores_age():
             == cs.calculate_embodied_carbon(old, transport_km=500))
 
 
+# --- R7.5 WP-5: transport mass consistency ---------------------------------------
+# The transport heuristic ((total_mass/1000) * km * 0.1) used to be triplicated
+# across chemistry_simple.py, chemistry_advanced.py, and ui_logic.py, and summed
+# only the seven core factor keys -- so exotic admixture mass shipped for free (a
+# small, systematic, always-low bias). Now there is ONE definition,
+# `chemistry_simple.transport_carbon`, shared by both tiers and by
+# `ui_logic.carbon_breakdown`.
+
+def test_transport_carbon_is_the_single_shared_definition():
+    """Both tiers delegate to the same `transport_carbon` function (not just to
+    equivalent-looking arithmetic) -- chemistry_advanced imports it directly."""
+    assert ca.transport_carbon is cs.transport_carbon
+
+
+def test_exotic_mass_raises_transport_term_both_tiers():
+    """A mix with exotics dosed shows a HIGHER transport term than the same mix
+    without -- and the delta matches the exact expected value: 100 kg/m3 dosed x
+    500 km x 0.1/1000 = 5.0 kg CO2 (R7.5 WP-5 acceptance gate)."""
+    exotic = {"silica_fume": 100.0}
+    expected_delta = (100.0 / 1000.0) * 500.0 * 0.1
+    assert expected_delta == pytest.approx(5.0)
+
+    simple_base = cs.calculate_embodied_carbon(OPC_MIX, transport_km=500)
+    simple_dosed = cs.calculate_embodied_carbon(OPC_MIX, transport_km=500, exotic=exotic)
+    assert simple_dosed - simple_base == pytest.approx(expected_delta)
+
+    adv_base = ca.embodied_carbon_advanced(OPC_MIX, transport_km=500)
+    adv_dosed = ca.embodied_carbon_advanced(OPC_MIX, transport_km=500, exotic=exotic)
+    assert adv_dosed - adv_base == pytest.approx(expected_delta)
+
+
+def test_exotic_none_default_is_bit_identical_to_pre_wp5():
+    """Default exotic=None must not move a single number (both tiers)."""
+    assert (cs.calculate_embodied_carbon(OPC_MIX, transport_km=500)
+            == cs.calculate_embodied_carbon(OPC_MIX, transport_km=500, exotic=None))
+    assert (ca.embodied_carbon_advanced(OPC_MIX, transport_km=500)
+            == ca.embodied_carbon_advanced(OPC_MIX, transport_km=500, exotic=None))
+    # An empty exotic dict must also be a no-op (falsy -- same as None).
+    assert (cs.calculate_embodied_carbon(OPC_MIX, transport_km=500)
+            == cs.calculate_embodied_carbon(OPC_MIX, transport_km=500, exotic={}))
+
+
+def test_exotic_mass_still_ignores_age():
+    """'age' must stay excluded from transport mass even when an exotic dict is
+    also passed, in both tiers."""
+    exotic = {"silica_fume": 50.0}
+    young = {**OPC_MIX, "age": 1}
+    old = {**OPC_MIX, "age": 365}
+    assert (cs.calculate_embodied_carbon(young, transport_km=500, exotic=exotic)
+            == cs.calculate_embodied_carbon(old, transport_km=500, exotic=exotic))
+    assert (ca.embodied_carbon_advanced(young, transport_km=500, exotic=exotic)
+            == ca.embodied_carbon_advanced(old, transport_km=500, exotic=exotic))
+
+
 # --- R7.5 WP-3: the curing heuristic no longer double-penalises SCMs -------------
 # It used water/CEMENT *and* an unbounded (ash+slag)/cement term, charging a
 # cement->SCM substitution twice for the same swap. Now: water/BINDER for dilution,

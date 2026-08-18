@@ -15,6 +15,7 @@ from .chemistry_simple import (
     calculate_embodied_carbon,
     calculate_mix_cost,
     estimate_curing_time,
+    transport_carbon,
     CARBON_FACTORS,
     UNIT_COSTS,
 )
@@ -46,17 +47,21 @@ def tensile_estimate(fc: float) -> float:
 
 def carbon_for_mode(mix: Dict[str, float], advanced: bool, transport_km: float = 0.0,
                     cement_type: str = "OPC", factors: Dict[str, float] = None,
-                    clinker_source: Optional[dict] = None) -> float:
+                    clinker_source: Optional[dict] = None,
+                    exotic: Optional[Dict[str, float]] = None) -> float:
     """The single carbon function the whole UI uses; respects the chemistry toggle,
     the transport distance, the clinker/cement source (incl. an R6.3 clinker-source
     descriptor — kiln fuel / electricity / capture), and any factor overrides.
     `clinker_source` only affects the advanced tier (the simple tier's cement factor
-    already bundles the production route into one number)."""
+    already bundles the production route into one number). `exotic`, if given, is
+    included in the transport mass (R7.5 WP-5); default `exotic=None` is bit-identical
+    to before."""
     if advanced:
         return embodied_carbon_advanced(mix, transport_km=transport_km,
                                         cement_type=cement_type, factors=factors,
-                                        clinker_source=clinker_source)
-    return calculate_embodied_carbon(mix, transport_km=transport_km, factors=factors)
+                                        clinker_source=clinker_source, exotic=exotic)
+    return calculate_embodied_carbon(mix, transport_km=transport_km, factors=factors,
+                                     exotic=exotic)
 
 
 def compute_metrics(
@@ -73,7 +78,10 @@ def compute_metrics(
     All performance metrics for one mix, on the selected chemistry tier.
 
     `exotic_strength` gates the (unvalidated) exotic strength contribution; when False
-    exotics move only cost and carbon. Carbon/cost always include the exotic terms.
+    exotics move only cost and carbon. Carbon/cost always include the exotic terms --
+    carbon via both the exotic materials' own factor (`exotic_carbon`) AND their
+    transport mass (R7.5 WP-5: `carbon_for_mode`'s `exotic=` thread), since dosed
+    admixtures are physically hauled to site too.
     """
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
@@ -90,7 +98,7 @@ def compute_metrics(
         "novelty": novelty,
         "in_support": bool(novelty <= predictor.support_threshold()),
         "workability": workability_flag(d),
-        "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})) + exotic_carbon(exotic),
+        "carbon": carbon_for_mode(d, advanced, exotic=exotic, **(carbon_kwargs or {})) + exotic_carbon(exotic),
         "cost": calculate_mix_cost(d, costs) + exotic_cost(exotic),
         "curing": estimate_curing_time(d),
         "uncertainty": float(uncertainty_fn(arr)) if uncertainty_fn else None,
@@ -244,8 +252,13 @@ def pareto_front_mask(strength, carbon, cost) -> np.ndarray:
 
 def carbon_breakdown(mix: Dict[str, float], advanced: bool = False, transport_km: float = 0.0,
                      cement_type: str = "OPC", factors: Dict[str, float] = None,
-                     clinker_source: Optional[dict] = None) -> Dict[str, float]:
-    """Per-source carbon contributions (kg CO₂/m³) that sum to carbon_for_mode(...)."""
+                     clinker_source: Optional[dict] = None,
+                     exotic: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+    """Per-source carbon contributions (kg CO₂/m³) that sum to carbon_for_mode(...).
+
+    `exotic`, if given, is included in the "transport" entry's mass (R7.5 WP-5, via
+    the shared `transport_carbon`); default `exotic=None` is bit-identical to before.
+    """
     from .chemistry_advanced import carbon_from_clinker
     factors = factors or CARBON_FACTORS
     bd = {}
@@ -255,8 +268,7 @@ def carbon_breakdown(mix: Dict[str, float], advanced: bool = False, transport_km
                                         clinker_source=clinker_source)
         else:
             bd[k] = mix.get(k, 0.0) * f
-    total_mass = sum(mix.get(k, 0.0) for k in factors)
-    bd["transport"] = (total_mass / 1000.0) * transport_km * 0.1
+    bd["transport"] = transport_carbon(mix, transport_km, factors, exotic=exotic)
     return bd
 
 
