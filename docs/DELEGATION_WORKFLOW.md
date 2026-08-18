@@ -236,3 +236,13 @@ fan-out's logistics failures spent.** With Phase 0/1 done properly — baseline 
 workspaces verified, test policy explicit — the same four packages plausibly land in
 ~2 h wall. The design machinery needs no changes; the checklist above is where the
 next multiple comes from.
+
+**First validation of v2 (WP-5, 2026-08-18).** The remaining Wave B package ran
+solo under this workflow: baseline handed in the prompt, the F1 workspace fix as an
+explicit step 0 (the worktree base was verified good within seconds of spawn),
+foreground-only targeted tests, no full-suite runs by the agent. Result: 96k tokens,
+43 tool calls, ~6 minutes wall, zero stalls, zero corrections needed — versus 213k
+tokens / 161 calls / 84 minutes for the comparable-scope stalled agent under v1. The
+agent also correctly flagged a scope-boundary judgment call (the mix ticket's
+pre-existing exotic reconciliation gap) instead of silently expanding scope to fix
+it — the report-deviations clause doing its job.
