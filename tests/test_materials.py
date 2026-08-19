@@ -4,6 +4,11 @@ R6.1 gate: the legacy dicts, now views over data/materials.json, must be
 BIT-IDENTICAL to the pre-registry literals (pinned below). R6.2: EPD plug-in and
 provenance resolution. R6.4: a registry JSON edit (no code change) surfaces a new
 material in every view — the pluggability contract.
+
+R7.5 WP-2 gate: exotic admixtures carry density_kg_m3 too, surfaced through a
+SEPARATE exotic_densities_view() so the pinned core-only densities_view() /
+EXPECTED_DENSITIES below stays exactly seven entries (see
+docs/specs/R7.5-chemistry-remediation.md WP-2).
 """
 import json
 
@@ -19,6 +24,7 @@ from src.materials import (
     carbon_factors_view,
     unit_costs_view,
     densities_view,
+    exotic_densities_view,
     exotics_view,
     slider_specs_view,
 )
@@ -55,6 +61,13 @@ EXPECTED_EXOTICS = {
     "calcium_chloride":    {"default": 0, "max": 10,  "carbon_factor": 0.80, "cost": 0.30,   "category": "Chemical", "strength_factor": 0.10},
     "shrink_reducer":      {"default": 0, "max": 8,   "carbon_factor": 2.00, "cost": 6.00,   "category": "Chemical", "strength_factor": 0.00},
 }
+# R7.5 WP-2: the twelve exotic densities, per the spec's table (WP-2 §Design item 1).
+EXPECTED_EXOTIC_DENSITIES = {
+    "silica_fume": 2200.0, "metakaolin": 2500.0, "rice_husk_ash": 2100.0,
+    "limestone_filler": 2700.0, "calcined_clay": 2600.0, "steel_fiber": 7850.0,
+    "polypropylene_fiber": 910.0, "basalt_fiber": 2650.0, "nano_silica": 2200.0,
+    "graphene_oxide": 1800.0, "calcium_chloride": 2150.0, "shrink_reducer": 1000.0,
+}
 
 
 def test_views_are_bit_identical_to_pre_registry_literals():
@@ -66,6 +79,16 @@ def test_views_are_bit_identical_to_pre_registry_literals():
     # Iteration ORDER matters too (the UI editors iterate these dicts).
     assert list(carbon_factors_view()) == list(EXPECTED_CARBON)
     assert list(exotics_view()) == list(EXPECTED_EXOTICS)
+
+
+def test_exotic_densities_view_matches_spec_table_and_core_densities_untouched():
+    """R7.5 WP-2: exotic_densities_view() is a SEPARATE view from densities_view() --
+    it must carry all twelve exotic densities from the spec's table, while
+    densities_view() / EXPECTED_DENSITIES above stays the pinned seven-entry core
+    view, unwidened."""
+    assert exotic_densities_view() == EXPECTED_EXOTIC_DENSITIES
+    assert len(densities_view()) == 7
+    assert set(exotic_densities_view()) & set(densities_view()) == set()
 
 
 def test_legacy_module_dicts_are_the_views():
@@ -114,6 +137,27 @@ def test_validate_material_rejects_bad_records():
               "strength_treatment": "magic"})
 
 
+def test_validate_material_rejects_delta_estimate_missing_density():
+    """R7.5 WP-2: an exotic (delta_estimate) record missing density_kg_m3 is rejected
+    with a readable message -- the acceptance gate for the exotic volume-accounting
+    fix (mix_volume can't be blind to a material's density if the registry refuses
+    to load without one)."""
+    rec = {
+        "name": "X", "category": "Filler",
+        "carbon": [{"value": 0.1, "source": "database"}],
+        "strength_treatment": "delta_estimate",
+        "dosage": {"default": 0, "max": 10, "unit": "kg/m3"},
+        "strength_factor": 0.0,
+        # density_kg_m3 deliberately omitted
+    }
+    err = validate_material("x", rec)
+    assert err is not None
+    assert "density_kg_m3" in err
+    # Adding it makes the record valid.
+    rec["density_kg_m3"] = 2000
+    assert validate_material("x", rec) is None
+
+
 # --- R6.2: EPD plug-in + provenance ---------------------------------------------
 EPD = {"epds": {"cement": {"value": 0.55, "unit": "kgCO2e/kg", "boundary": "A1-A3",
                            "reference": "EPD-BREVIK-2025"}}}
@@ -147,6 +191,7 @@ def test_new_material_via_registry_json(tmp_path):
     registry = json.loads(open("data/materials.json", encoding="utf-8").read())
     registry["materials"]["volcanic_ash"] = {
         "name": "Natural volcanic ash", "category": "Pozzolan",
+        "density_kg_m3": 2400,
         "dosage": {"default": 0, "max": 90, "unit": "kg/m3"},
         "unit_cost": {"value": 0.07, "currency": "USD/kg", "source": "test"},
         "carbon": [{"value": 0.006, "unit": "kgCO2e/kg", "boundary": "A1-A3",
@@ -188,5 +233,25 @@ def test_slider_bound_edit_via_registry_json(tmp_path):
         assert slider_specs_view()["cement"]["max"] == 600
         # Everything else is untouched.
         assert slider_specs_view()["slag"] == EXPECTED_SLIDER_SPECS["slag"]
+    finally:
+        set_materials_path(None)
+
+
+def test_exotic_density_edit_via_registry_json(tmp_path):
+    """R7.5 WP-2 acceptance gate: editing an exotic's density_kg_m3 in the JSON (no
+    code change) changes the value exotic_densities_view() reports, and nothing
+    else -- the registry is the single authority for exotic densities too."""
+    registry = json.loads(open("data/materials.json", encoding="utf-8").read())
+    registry["materials"]["calcined_clay"]["density_kg_m3"] = 2222
+    p = tmp_path / "materials.json"
+    p.write_text(json.dumps(registry))
+    try:
+        set_materials_path(str(p))
+        assert exotic_densities_view()["calcined_clay"] == 2222.0
+        # Everything else, including core densities, is untouched.
+        rest = {k: v for k, v in EXPECTED_EXOTIC_DENSITIES.items() if k != "calcined_clay"}
+        edited = {k: v for k, v in exotic_densities_view().items() if k != "calcined_clay"}
+        assert edited == rest
+        assert densities_view() == EXPECTED_DENSITIES
     finally:
         set_materials_path(None)

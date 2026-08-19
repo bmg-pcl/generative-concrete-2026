@@ -90,7 +90,8 @@ def render_config(predictor, bayesian, presets) -> AppContext:
         transport_km = st.number_input(
             "Transport distance (km)", 0, 2000,
             key="cfg_transport_km",
-            help="Round-trip haul from plant to site. Adds ~0.1 kg CO₂ per tonne per km.",
+            help="One-way haul distance, plant to site; the 0.1 kg CO₂/t·km factor is "
+                 "applied to the distance entered (not doubled for a return leg).",
         )
         cement_source = st.selectbox(
             "Clinker / cement source", ["OPC (Portland)", "LC3 (limestone calcined clay)"],

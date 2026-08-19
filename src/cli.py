@@ -27,6 +27,7 @@ import numpy as np
 
 from .generative_ga import PARAM_NAMES
 from .chemistry_simple import UNIT_COSTS, CARBON_FACTORS
+from .chemistry_advanced import FUEL_EF, GRID_EF
 from .exotics import EXOTIC_ADMIXTURES
 from .materials import validate_epd_json, carbon_provenance
 
@@ -36,6 +37,43 @@ DEFAULT_RUN_CONFIG = {"advanced": False, "transport_km": 0.0, "cement_type": "OP
 
 class CliError(Exception):
     """Input/validation error -> exit code 1 with the message on stderr."""
+
+
+def validate_clinker_source(src) -> str | None:
+    """Return None if a `clinker_source` descriptor is usable, else an error message.
+
+    Mirrors `materials.validate_epd_json`'s shape: this is boundary validation of
+    CLI-supplied input (spec R7.5 WP-4). `ui/config.py` cannot produce a bad key here
+    since it builds its selectboxes from `sorted(FUEL_EF.keys())` and
+    `sorted(GRID_EF.keys())` — but a hand-edited project config can name anything, and
+    without this check an unknown fuel/grid reaches `FUEL_EF[fuel]` / `GRID_EF[elec]`
+    inside `clinker_scope_split` as an uncaught KeyError instead of a clean CliError."""
+    if src is None:
+        return None            # the legitimate default (DEFAULT_RUN_CONFIG) — nothing to check
+    if not isinstance(src, dict):
+        return "clinker_source must be a JSON object."
+    if "kiln_fuel" in src and src["kiln_fuel"] not in FUEL_EF:
+        return (f"Unknown kiln_fuel '{src['kiln_fuel']}'. Valid fuels: "
+                f"{', '.join(sorted(FUEL_EF))}.")
+    if "electricity" in src and src["electricity"] not in GRID_EF:
+        return (f"Unknown electricity '{src['electricity']}'. Valid grids: "
+                f"{', '.join(sorted(GRID_EF))}.")
+    capture = src.get("capture")
+    if capture is not None:
+        if not isinstance(capture, dict):
+            return "clinker_source.capture must be a JSON object."
+        if "rate" in capture:
+            rate = capture["rate"]
+            if not isinstance(rate, (int, float)) or isinstance(rate, bool) \
+                    or not (0.0 <= rate <= 1.0):
+                return f"clinker_source.capture.rate must be numeric in [0, 1]; got {rate!r}."
+        if "energy_kwh_per_tCO2" in capture:
+            energy = capture["energy_kwh_per_tCO2"]
+            if not isinstance(energy, (int, float)) or isinstance(energy, bool) \
+                    or energy < 0:
+                return ("clinker_source.capture.energy_kwh_per_tCO2 must be numeric "
+                        f"and >= 0; got {energy!r}.")
+    return None
 
 
 def _load_json(path: str, what: str) -> dict:
@@ -80,6 +118,10 @@ def load_project_config(path: str = None, epd_path: str = None) -> dict:
     unknown = set(run) - set(DEFAULT_RUN_CONFIG)
     if unknown:
         raise CliError(f"Unknown config option(s): {', '.join(sorted(unknown))}.")
+    if run.get("clinker_source") is not None:
+        err = validate_clinker_source(run["clinker_source"])
+        if err:
+            raise CliError(err)
     cfg["run"].update(run)
     return cfg
 

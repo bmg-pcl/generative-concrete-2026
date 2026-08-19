@@ -3,17 +3,33 @@ chemistry_advanced.py - Tier 2: Molecular-Level Generative Chemistry
 
 A thermodynamic and kinetic simulation layer for cement hydration.
 Provides both FORWARD (analysis) and INVERSE (generative) modes.
+
+R7.5 / WP-1 status (see docs/specs/R7.5-chemistry-remediation.md): the Bogue ->
+hydration -> pozzolanic chain below is DIMENSIONALLY CHECKED but UNCALIBRATED.
+Units are now internally consistent (kg/m3 throughout the hydration chain, wt%
+only for the raw Bogue clinker-phase output) and the portlandite budget is
+conserved, but there is no calorimetry or degree-of-hydration data anywhere in
+this repo to fit the reaction-rate or stoichiometry coefficients against. Treat
+every number from `bogue_calculation` onward as a labelled, order-of-magnitude
+sketch -- NOT a validated prediction. This is the opposite situation from the
+carbon-accounting functions below (`embodied_carbon_advanced`,
+`carbon_from_clinker`, `clinker_scope_split`), which ARE measured and tested
+against reference values (WBCSD/CSI defaults, kiln energy benchmarks) and are
+frozen: WP-1 must not change their behaviour (see the module's carbon section).
 """
-import os
 import json
-import numpy as np
-from typing import Dict, Tuple
+import os
 from dataclasses import dataclass
+
+import numpy as np
 
 # Reuse the Tier-1 emission factors so the two tiers share the SAME non-cement
 # carbon accounting (aggregates, water, SCMs, admixtures, transport). The advanced
 # tier only differs by computing the CEMENT term from clinker chemistry.
-from .chemistry_simple import CARBON_FACTORS as SIMPLE_CARBON_FACTORS
+# `transport_carbon` (R7.5 WP-5) is the single shared definition of the transport
+# heuristic -- see its docstring in chemistry_simple.py.
+from .chemistry_simple import CARBON_FACTORS as SIMPLE_CARBON_FACTORS, transport_carbon
+from .materials import get_material
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 _OXIDE_JSON = os.path.join(_DATA_DIR, "oxide_compositions.json")
@@ -21,15 +37,22 @@ _OXIDE_JSON = os.path.join(_DATA_DIR, "oxide_compositions.json")
 # ============================================================================
 # OXIDE COMPOSITIONS (Typical values, should be loaded from JSON in production)
 # ============================================================================
+# `bogue_valid` mirrors data/oxide_compositions.json (R7.5 WP-1 finding 5): Bogue
+# applies to Portland CLINKER oxides only. True for OPC; false for anything that
+# is a blend or a byproduct oxide set that Bogue was never derived for.
 DEFAULT_OXIDE_COMPOSITIONS = {
-    "OPC": {"CaO": 65.0, "SiO2": 21.0, "Al2O3": 5.5, "Fe2O3": 3.0, "SO3": 2.5, "MgO": 2.0},
-    "SLAG": {"CaO": 40.0, "SiO2": 35.0, "Al2O3": 12.0, "Fe2O3": 0.5, "MgO": 8.0},
-    "FLY_ASH_F": {"CaO": 5.0, "SiO2": 55.0, "Al2O3": 25.0, "Fe2O3": 8.0},
-    "FLY_ASH_C": {"CaO": 20.0, "SiO2": 40.0, "Al2O3": 18.0, "Fe2O3": 6.0},
+    "OPC": {"CaO": 65.0, "SiO2": 21.0, "Al2O3": 5.5, "Fe2O3": 3.0, "SO3": 2.5, "MgO": 2.0,
+            "bogue_valid": True},
+    "SLAG": {"CaO": 40.0, "SiO2": 35.0, "Al2O3": 12.0, "Fe2O3": 0.5, "MgO": 8.0,
+              "bogue_valid": False},
+    "FLY_ASH_F": {"CaO": 5.0, "SiO2": 55.0, "Al2O3": 25.0, "Fe2O3": 8.0,
+                  "bogue_valid": False},
+    "FLY_ASH_C": {"CaO": 20.0, "SiO2": 40.0, "Al2O3": 18.0, "Fe2O3": 6.0,
+                  "bogue_valid": False},
 }
 
 
-def load_oxide_compositions() -> Dict[str, Dict]:
+def load_oxide_compositions() -> dict[str, dict]:
     """Load cement/SCM oxide compositions (incl. clinker_factor) from data JSON.
 
     Falls back to DEFAULT_OXIDE_COMPOSITIONS if the file is missing or unreadable.
@@ -41,7 +64,7 @@ def load_oxide_compositions() -> Dict[str, Dict]:
         return DEFAULT_OXIDE_COMPOSITIONS
 
 
-def clinker_factor_for(cement_type: str = "OPC", oxide_compositions: Dict = None) -> float:
+def clinker_factor_for(cement_type: str = "OPC", oxide_compositions: dict | None = None) -> float:
     """Clinker fraction for a cement type, read from the oxide JSON (OPC≈0.95,
     LC3≈0.50). Defaults to 0.95 when the type or field is absent."""
     comps = oxide_compositions or load_oxide_compositions()
@@ -52,112 +75,211 @@ def clinker_factor_for(cement_type: str = "OPC", oxide_compositions: Dict = None
 # ============================================================================
 @dataclass
 class ClinkerPhases:
-    """Major clinker phases from Bogue calculation (wt%)."""
+    """Major clinker phases from Bogue calculation (wt% of clinker)."""
     C3S: float  # Alite
     C2S: float  # Belite
     C3A: float  # Tricalcium Aluminate
     C4AF: float # Ferrite
 
-def bogue_calculation(oxides: Dict[str, float]) -> ClinkerPhases:
+def bogue_calculation(oxides: dict[str, float]) -> ClinkerPhases:
     """
     Classic Bogue calculation to estimate clinker phase composition.
-    
+
     Assumes:
     - CaO, SiO2, Al2O3, Fe2O3 in wt%
-    - Remainder is minor oxides (MgO, SO3, etc.)
-    
+    - Remainder is minor oxides (MgO, SO3, etc.) -- do not force the four major
+      phases to sum to 100%; that remainder is real, not a rounding error.
+
+    Bogue applies to Portland CLINKER oxides only (R7.5 WP-1 finding 5). A record
+    carrying `"bogue_valid": false` (blended cements: SLAG, FLY_ASH_*, LC3 -- their
+    oxide sets are not a clinker composition Bogue was derived for) raises instead
+    of silently fabricating phase percentages. A record with no `bogue_valid` key
+    at all (e.g. a bare oxide dict passed directly, not from the registry) is
+    treated as valid for backward compatibility -- the flag is an explicit "no",
+    not a required "yes".
+
     Reference: Bogue, R.H. (1929) "Calculation of the Compounds in Portland Cement"
     """
+    if oxides.get("bogue_valid", True) is False:
+        raise ValueError(
+            "bogue_calculation: this oxide record is flagged bogue_valid=false "
+            "(not a Portland clinker composition -- Bogue does not apply to "
+            "blended/SCM oxide sets). See data/oxide_compositions.json."
+        )
+
     CaO = oxides.get("CaO", 65.0)
     SiO2 = oxides.get("SiO2", 21.0)
     Al2O3 = oxides.get("Al2O3", 5.5)
     Fe2O3 = oxides.get("Fe2O3", 3.0)
     SO3 = oxides.get("SO3", 2.5)
-    
+
     # Bogue equations
     C3S = 4.071 * CaO - 7.600 * SiO2 - 6.718 * Al2O3 - 1.430 * Fe2O3 - 2.852 * SO3
     C2S = 2.867 * SiO2 - 0.7544 * C3S
     C3A = 2.650 * Al2O3 - 1.692 * Fe2O3
     C4AF = 3.043 * Fe2O3
-    
+
     # Clamp to reasonable values
     C3S = max(0, min(80, C3S))
     C2S = max(0, min(50, C2S))
     C3A = max(0, min(15, C3A))
     C4AF = max(0, min(20, C4AF))
-    
+
     return ClinkerPhases(C3S=C3S, C2S=C2S, C3A=C3A, C4AF=C4AF)
 
 # ============================================================================
 # HYDRATION MODEL
 # ============================================================================
+# All state below the raw Bogue wt% is expressed in kg/m3 of concrete, or in
+# kJ per kg of CEMENT for heat -- one unit system, named on every field
+# (R7.5 WP-1 finding 2). The conversion from Bogue's wt%-of-clinker to kg/m3
+# is `phase_pct / 100 * cement_mass_kg_m3 * clinker_factor`.
 @dataclass
 class HydrationState:
-    """State of cement hydration at a given time."""
+    """State of cement hydration at a given time. UNCALIBRATED (see module docstring)."""
     age_days: float
-    degree_of_hydration: float  # 0 to 1
-    CSH_content: float          # C-S-H gel (wt% of paste)
-    CH_content: float           # Portlandite (Ca(OH)2)
-    heat_released_kJ_kg: float
+    degree_of_hydration: float  # 0 to 1, dimensionless
+    CSH_kg_m3: float            # C-S-H gel formed from clinker phases, kg per m3 of concrete
+    CH_kg_m3: float             # Portlandite (Ca(OH)2) produced, kg per m3 of concrete
+    heat_kJ_per_kg_cement: float  # cumulative heat released, kJ per kg of CEMENT (not clinker)
 
-def hydration_kinetics(phases: ClinkerPhases, w_c_ratio: float, age_days: float) -> HydrationState:
+def hydration_kinetics(
+    phases: ClinkerPhases,
+    w_c_ratio: float,
+    age_days: float,
+    cement_mass_kg_m3: float,
+    clinker_factor: float,
+) -> HydrationState:
     """
     Simplified Parrot & Killoh style hydration model.
-    
+
     Models the degree of hydration based on:
     - Phase composition (C3S reacts fastest)
     - Water availability (w/c ratio)
     - Time (logarithmic approach to ultimate degree)
+
+    Args:
+        phases: Bogue clinker phases (wt% of CLINKER).
+        w_c_ratio: water/cement mass ratio.
+        age_days: curing age.
+        cement_mass_kg_m3: cement dosage of the mix, kg per m3 of concrete.
+        clinker_factor: fraction of the cement that is clinker (OPC≈0.95, LC3≈0.50).
     """
     # Ultimate degree of hydration (limited by water)
     alpha_ult = min(1.0, w_c_ratio / 0.38)
-    
+
     # Time-dependent hydration (Avrami-style)
     k = 0.15 * (phases.C3S / 60.0)  # Faster with more alite
     alpha = alpha_ult * (1 - np.exp(-k * age_days ** 0.6))
-    
-    # Phase products (simplified stoichiometry)
-    CSH = alpha * (phases.C3S + phases.C2S) * 0.7
-    CH = alpha * (phases.C3S * 0.3 + phases.C2S * 0.15)
-    
-    # Heat of hydration (J/g clinker phase)
-    heat = alpha * (phases.C3S * 500 + phases.C2S * 250 + phases.C3A * 1340 + phases.C4AF * 420) / 1000.0
-    
+
+    # Convert Bogue's wt%-of-clinker phases into kg/m3 masses of that phase.
+    clinker_mass_kg_m3 = cement_mass_kg_m3 * clinker_factor
+    C3S_kg_m3 = phases.C3S / 100.0 * clinker_mass_kg_m3
+    C2S_kg_m3 = phases.C2S / 100.0 * clinker_mass_kg_m3
+
+    # Phase products (simplified stoichiometry, declared placeholders)
+    CSH_kg_m3 = alpha * (C3S_kg_m3 + C2S_kg_m3) * 0.7
+    CH_kg_m3 = alpha * (C3S_kg_m3 * 0.3 + C2S_kg_m3 * 0.15)
+
+    # Heat of hydration. The phase percentages are wt% OF CLINKER, and the
+    # coefficients are J per gram of the pure phase (== kJ/kg), so summing
+    # phase_pct * coefficient and dividing by 100 (percent -> fraction) gives
+    # kJ per kg of CLINKER. Multiplying by clinker_factor rebases it to kJ per
+    # kg of CEMENT, since heat comes only from the clinker fraction of the
+    # cement. (Previously `/ 1000.0` -- a factor-of-10 unit bug; R7.5 WP-1
+    # finding 1.)
+    heat_kJ_per_kg_clinker = alpha * (
+        phases.C3S * 500 + phases.C2S * 250 + phases.C3A * 1340 + phases.C4AF * 420
+    ) / 100.0
+    heat_kJ_per_kg_cement = heat_kJ_per_kg_clinker * clinker_factor
+
     return HydrationState(
         age_days=age_days,
         degree_of_hydration=alpha,
-        CSH_content=CSH,
-        CH_content=CH,
-        heat_released_kJ_kg=heat
+        CSH_kg_m3=CSH_kg_m3,
+        CH_kg_m3=CH_kg_m3,
+        heat_kJ_per_kg_cement=heat_kJ_per_kg_cement,
     )
 
 # ============================================================================
-# POZZOLANIC REACTION MODEL
+# POZZOLANIC / LATENT-HYDRAULIC REACTION MODELS
 # ============================================================================
+# Two distinct reaction paths (R7.5 WP-1 finding 6), driven by the SCM's
+# `reactivity_class` in data/materials.json:
+#   - "pozzolanic" (fly ash): CH is a stoichiometric REACTANT, consumed roughly
+#     in proportion to the pozzolan mass that has reacted.
+#   - "latent-hydraulic" (slag): the material principally self-hydrates: CH
+#     ACTIVATES the reaction rather than being consumed mole-for-mole, so its
+#     CH draw per kg is far lower than a true pozzolan's.
+# Both sets of rate/stoichiometry constants below are DECLARED PLACEHOLDERS --
+# there is no calorimetry or degree-of-hydration data in this repo to fit them
+# against. Do not tune them to "look right"; that would manufacture false
+# precision (see module docstring).
+POZZOLANIC_REACTIVITY = {"FLY_ASH_F": 0.3, "FLY_ASH_C": 0.5}
+LATENT_HYDRAULIC_REACTIVITY = {"SLAG": 0.8}
+
+# kg CH consumed per kg of reacting material, at full reaction extent (placeholder).
+POZZOLANIC_CH_DRAW = 0.2
+# An order of magnitude below the pozzolanic draw: slag's CH need is catalytic
+# (activation), not stoichiometric consumption of the pozzolan-reaction kind.
+LATENT_HYDRAULIC_CH_DRAW = 0.05
+
+
 def pozzolanic_reaction(
-    CH_available: float, 
-    pozzolan_mass: float, 
-    pozzolan_type: str, 
-    age_days: float
-) -> Tuple[float, float]:
+    CH_available_kg_m3: float,
+    pozzolan_mass_kg_m3: float,
+    pozzolan_type: str,
+    age_days: float,
+) -> tuple[float, float]:
     """
-    Models the pozzolanic reaction: CH + Pozzolan → C-S-H.
-    
+    Models the pozzolanic reaction: CH + Pozzolan -> C-S-H (true pozzolans, e.g.
+    fly ash), where CH is consumed stoichiometrically. All quantities kg/m3.
+
     Returns:
-        (CH_consumed, additional_CSH)
+        (CH_consumed_kg_m3, additional_CSH_kg_m3)
     """
-    # Reactivity factors (Class F ash is slower than slag)
-    reactivity = {"FLY_ASH_F": 0.3, "FLY_ASH_C": 0.5, "SLAG": 0.8}
-    k = reactivity.get(pozzolan_type, 0.4)
-    
+    k = POZZOLANIC_REACTIVITY.get(pozzolan_type, 0.4)
+
     # Reaction extent (time-dependent)
     extent = min(1.0, k * np.log1p(age_days / 7.0))
-    
-    # CH consumed proportional to pozzolan mass and silica content
-    CH_consumed = min(CH_available, pozzolan_mass * 0.2 * extent)
-    additional_CSH = CH_consumed * 1.5
-    
-    return CH_consumed, additional_CSH
+
+    # CH consumed proportional to pozzolan mass and reaction extent, capped by
+    # what is actually available (the caller threads a running CH budget across
+    # SCMs -- see analyze_mix).
+    CH_consumed_kg_m3 = min(CH_available_kg_m3, pozzolan_mass_kg_m3 * POZZOLANIC_CH_DRAW * extent)
+    additional_CSH_kg_m3 = CH_consumed_kg_m3 * 1.5
+
+    return CH_consumed_kg_m3, additional_CSH_kg_m3
+
+
+def latent_hydraulic_reaction(
+    CH_available_kg_m3: float,
+    material_mass_kg_m3: float,
+    material_type: str,
+    age_days: float,
+) -> tuple[float, float]:
+    """
+    Models a latent-hydraulic SCM's reaction (e.g. GGBS/slag): the material
+    principally self-hydrates, forming C-S-H-like binder in rough proportion to
+    its own reacted mass, while CH acts as an activator consumed at a much lower
+    rate than a true pozzolan's stoichiometric draw. All quantities kg/m3.
+
+    Returns:
+        (CH_consumed_kg_m3, additional_CSH_kg_m3)
+    """
+    k = LATENT_HYDRAULIC_REACTIVITY.get(material_type, 0.6)
+
+    extent = min(1.0, k * np.log1p(age_days / 7.0))
+
+    CH_consumed_kg_m3 = min(
+        CH_available_kg_m3, material_mass_kg_m3 * LATENT_HYDRAULIC_CH_DRAW * extent
+    )
+    # Self-hydration: CSH formation tracks the material's own reacted mass, not
+    # the (much smaller) CH draw -- unlike the pozzolanic path above. Ratio is a
+    # declared placeholder.
+    additional_CSH_kg_m3 = material_mass_kg_m3 * extent * 0.5
+
+    return CH_consumed_kg_m3, additional_CSH_kg_m3
 
 # ============================================================================
 # CARBON FROM CLINKER (More Accurate than Linear Model)
@@ -167,6 +289,13 @@ def pozzolanic_reaction(
 # electricity powering an electrified kiln or a capture plant, and the capture rate.
 # The tables below parameterize that; a supplier EPD, when attached, beats all of it
 # (measured > modeled — see the resolution order in src/materials.py).
+#
+# R7.5 — FROZEN SURFACE. Everything from here to the end of this section
+# (CALCINATION_EF, FUEL_EF, KILN_KWH_PER_KG, GRID_EF, DEFAULT_CAPTURE_KWH_PER_T_CO2,
+# clinker_scope_split, carbon_from_clinker, embodied_carbon_advanced) is measured
+# and tested (tests/test_chemistry.py, tests/test_clinker_source.py) and MUST NOT
+# change behaviour as part of WP-1. Contrast with the hydration chain above, which
+# is uncalibrated by necessity -- this carbon section is not.
 
 CALCINATION_EF = 0.53   # kg CO2 / kg clinker — process chemistry, fuel-independent
 
@@ -193,7 +322,7 @@ GRID_EF = {
 DEFAULT_CAPTURE_KWH_PER_T_CO2 = 150.0
 
 
-def clinker_scope_split(clinker_mass: float, source: Dict) -> Dict[str, float]:
+def clinker_scope_split(clinker_mass: float, source: dict) -> dict[str, float]:
     """Scope-split clinker carbon (kg CO2) for a clinker source descriptor.
 
         source = {"kiln_fuel": "natural_gas", "electricity": "hydro",
@@ -221,10 +350,10 @@ def clinker_scope_split(clinker_mass: float, source: Dict) -> Dict[str, float]:
 
 def carbon_from_clinker(
     cement_mass: float,
-    clinker_factor: float = None,
+    clinker_factor: float | None = None,
     kiln_fuel_carbon: float = 0.35,
     cement_type: str = "OPC",
-    clinker_source: Dict = None,
+    clinker_source: dict | None = None,
 ) -> float:
     """
     Calculates CO2 emissions from the CEMENT term based on clinker chemistry.
@@ -259,11 +388,12 @@ def carbon_from_clinker(
 
 
 def embodied_carbon_advanced(
-    mix: Dict[str, float],
+    mix: dict[str, float],
     transport_km: float = 0.0,
     cement_type: str = "OPC",
-    factors: Dict[str, float] = None,
-    clinker_source: Dict = None,
+    factors: dict[str, float] | None = None,
+    clinker_source: dict | None = None,
+    exotic: dict[str, float] | None = None,
 ) -> float:
     """
     Full-mix embodied carbon (kg CO2/m³) on the SAME system boundary as the Tier-1
@@ -277,6 +407,10 @@ def embodied_carbon_advanced(
     The tier toggle therefore changes *fidelity*, not *scope*: switching to Advanced
     only refines how the cement contribution is computed, so the two tiers are
     directly comparable.
+
+    `exotic`, if given, is included in the transport mass (see
+    `chemistry_simple.transport_carbon`); default `exotic=None` is bit-identical to
+    before R7.5 WP-5.
     """
     factors = factors or SIMPLE_CARBON_FACTORS
     carbon = carbon_from_clinker(mix.get("cement", 0.0), cement_type=cement_type,
@@ -288,10 +422,8 @@ def embodied_carbon_advanced(
             continue
         carbon += mix.get(component, 0.0) * factor
 
-    # Same transport heuristic as Tier-1 (0.1 kg CO2 / tonne / km). Only material
-    # masses count -- 'age' is a curing time, not a mass.
-    total_mass = sum(mix.get(k, 0.0) for k in factors)
-    carbon += (total_mass / 1000.0) * transport_km * 0.1
+    # Same transport heuristic as Tier-1 -- one shared definition (R7.5 WP-5).
+    carbon += transport_carbon(mix, transport_km, factors, exotic=exotic)
 
     return carbon
 
@@ -300,9 +432,9 @@ def embodied_carbon_advanced(
 # ============================================================================
 def inverse_plan_mix(
     target_strength_mpa: float,
-    target_carbon_kg: float = None,
-    max_cost: float = None
-) -> Dict[str, float]:
+    target_carbon_kg: float | None = None,
+    max_cost: float | None = None
+) -> dict[str, float]:
     """
     Given target properties, generate a plausible mix design.
 
@@ -332,52 +464,138 @@ def inverse_plan_mix(
 # ============================================================================
 # ANALYSIS REPORT (Full Forward Pass)
 # ============================================================================
-def analyze_mix(mix: Dict[str, float], oxide_compositions: Dict = None) -> Dict:
+# SCM mix keys -> the material registry key that carries their chemistry hooks
+# (data/materials.json `chemistry.oxides_key` / `chemistry.reactivity_class`).
+_SCM_MIX_KEYS = ("slag", "ash")
+
+
+def _scm_chemistry(name: str) -> tuple[str | None, str | None]:
+    """(oxides_key, reactivity_class) for an SCM mix key, or (None, None) if the
+    registry has no chemistry hooks for it (keeps analyze_mix from crashing on a
+    custom/partial materials registry -- WP-1 only reads this data, never writes it)."""
+    try:
+        chem = get_material(name).get("chemistry", {})
+    except (KeyError, FileNotFoundError, OSError, ValueError):
+        return None, None
+    return chem.get("oxides_key"), chem.get("reactivity_class")
+
+
+def analyze_mix(
+    mix: dict[str, float],
+    cement_type: str = "OPC",
+    clinker_source: dict | None = None,
+    oxide_compositions: dict | None = None,
+) -> dict:
     """
     Full molecular-level analysis of a concrete mix.
-    
+
+    UNCALIBRATED (see module docstring): this is dimensionally checked, unit-
+    consistent (kg/m3 throughout the hydration chain), and conserves the
+    portlandite budget across SCMs -- but it is not fit to any calorimetry or
+    degree-of-hydration measurement. Contrast with the carbon figures below
+    (`carbon_kg_m3`, via `carbon_from_clinker`), which ARE measured and tested.
+
     Returns a comprehensive report including:
-    - Clinker phases (Bogue)
-    - Hydration state at 28 days
-    - Carbon breakdown
-    - Pozzolanic contribution
+    - Clinker phases (Bogue), or None with `phases_unavailable_reason` set if
+      `cement_type` is unknown or its record is flagged `bogue_valid: false`
+      (blended cements -- Bogue does not apply; see `bogue_calculation`).
+    - Hydration state (None under the same condition as phases)
+    - Carbon breakdown (always available -- clinker_factor_for degrades
+      gracefully to a default, and carbon accounting does not need Bogue phases)
+    - Pozzolanic / latent-hydraulic contribution, with the CH (portlandite)
+      budget threaded as a running pool across slag then ash IN THAT ORDER, so
+      Σ CH consumed ≤ CH produced (never double-spent). The result is therefore
+      order-dependent -- a real property of this sequential approximation, not
+      hidden behind an arbitrary split.
+
+    Args:
+        mix: mix quantities, kg/m3 (plus `age` in days).
+        cement_type: key into `oxide_compositions` (e.g. "OPC", "LC3").
+        clinker_source: optional clinker-source descriptor, forwarded to
+            `carbon_from_clinker` (kiln fuel / electricity / capture).
+        oxide_compositions: defaults to `load_oxide_compositions()`.
     """
-    oxide_compositions = oxide_compositions or DEFAULT_OXIDE_COMPOSITIONS
-    
-    # Get clinker phases from OPC oxide composition
-    phases = bogue_calculation(oxide_compositions["OPC"])
-    
-    # Hydration at 28 days
-    w_c = mix.get("water", 180) / max(mix.get("cement", 300), 1)
-    hydration = hydration_kinetics(phases, w_c, age_days=mix.get("age", 28))
-    
-    # Pozzolanic reaction (if slag or ash present)
-    pozzolanic_csh = 0.0
-    if mix.get("slag", 0) > 0:
-        _, csh = pozzolanic_reaction(hydration.CH_content, mix["slag"], "SLAG", mix.get("age", 28))
-        pozzolanic_csh += csh
-    if mix.get("ash", 0) > 0:
-        _, csh = pozzolanic_reaction(hydration.CH_content, mix["ash"], "FLY_ASH_F", mix.get("age", 28))
-        pozzolanic_csh += csh
-    
-    # Carbon from clinker chemistry
-    carbon = carbon_from_clinker(mix.get("cement", 300))
-    
+    oxide_compositions = oxide_compositions or load_oxide_compositions()
+    cement_mass = mix.get("cement", 300)
+
+    cement_record = oxide_compositions.get(cement_type)
+    phases = None
+    hydration = None
+    phases_unavailable_reason = None
+    if cement_record is None:
+        phases_unavailable_reason = f"unknown cement_type '{cement_type}'"
+    elif cement_record.get("bogue_valid", True) is False:
+        phases_unavailable_reason = (
+            f"Bogue calculation does not apply to '{cement_type}' "
+            "(bogue_valid=false -- blended cement, not a clinker oxide set)"
+        )
+    else:
+        phases = bogue_calculation(cement_record)
+        w_c = mix.get("water", 180) / max(cement_mass, 1)
+        clinker_factor = clinker_factor_for(cement_type, oxide_compositions)
+        hydration = hydration_kinetics(
+            phases, w_c, age_days=mix.get("age", 28),
+            cement_mass_kg_m3=cement_mass, clinker_factor=clinker_factor,
+        )
+
+    # Pozzolanic / latent-hydraulic reactions, conserving the CH budget: thread a
+    # running pool through the sequential reactions (slag, then ash) instead of
+    # handing the same CH_kg_m3 to both (R7.5 WP-1 finding 3 -- the previous code
+    # overspent the pool: each SCM drew against the FULL portlandite produced).
+    # Order is documented here as a real, deliberate limitation of the
+    # sequential approximation, not hidden behind an arbitrary split.
+    ch_remaining_kg_m3 = hydration.CH_kg_m3 if hydration is not None else 0.0
+    pozzolanic_csh_kg_m3 = 0.0
+    for name in _SCM_MIX_KEYS:
+        scm_mass = mix.get(name, 0)
+        if scm_mass <= 0:
+            continue
+        oxides_key, reactivity_class = _scm_chemistry(name)
+        oxides_key = oxides_key or name.upper()
+        age_days = mix.get("age", 28)
+        if reactivity_class == "latent-hydraulic":
+            consumed, csh = latent_hydraulic_reaction(
+                ch_remaining_kg_m3, scm_mass, oxides_key, age_days)
+        else:
+            # Default path for anything not explicitly latent-hydraulic
+            # (pozzolanic fly ash, or an SCM the registry doesn't classify).
+            consumed, csh = pozzolanic_reaction(
+                ch_remaining_kg_m3, scm_mass, oxides_key, age_days)
+        ch_remaining_kg_m3 -= consumed
+        pozzolanic_csh_kg_m3 += csh
+
+    # Carbon from clinker chemistry -- honours cement_type/clinker_source (R7.5
+    # WP-1 finding 4; previously hardcoded to OPC with no source descriptor, so
+    # an LC3 mix silently reported OPC carbon). Always computable: it only needs
+    # a clinker_factor, which clinker_factor_for degrades gracefully for.
+    carbon = carbon_from_clinker(cement_mass, cement_type=cement_type,
+                                 clinker_source=clinker_source)
+
+    total_CSH_kg_m3 = (hydration.CSH_kg_m3 if hydration is not None else 0.0) + pozzolanic_csh_kg_m3
+
     return {
         "clinker_phases": phases,
+        "phases_unavailable_reason": phases_unavailable_reason,
         "hydration": hydration,
-        "total_CSH": hydration.CSH_content + pozzolanic_csh,
+        "total_CSH_kg_m3": total_CSH_kg_m3,
         "carbon_kg_m3": carbon,
-        "pozzolanic_CSH_contribution": pozzolanic_csh
+        "pozzolanic_CSH_kg_m3": pozzolanic_csh_kg_m3,
+        "CH_remaining_kg_m3": ch_remaining_kg_m3,
     }
 
 if __name__ == "__main__":
     # Example usage
     test_mix = {"cement": 350, "slag": 100, "ash": 0, "water": 160, "coarse_agg": 1000, "fine_agg": 750, "age": 28}
     report = analyze_mix(test_mix)
-    
-    print("=== Molecular Analysis Report ===")
-    print(f"Clinker Phases: C3S={report['clinker_phases'].C3S:.1f}%, C2S={report['clinker_phases'].C2S:.1f}%")
-    print(f"Degree of Hydration (28d): {report['hydration'].degree_of_hydration:.2%}")
-    print(f"Total C-S-H (incl. pozzolanic): {report['total_CSH']:.1f} wt%")
+
+    print("=== Molecular Analysis Report (DIMENSIONALLY CHECKED, UNCALIBRATED) ===")
+    print("No calorimetry or degree-of-hydration data backs this layer -- contrast")
+    print("with the carbon figure below, which is measured and tested.")
+    if report["clinker_phases"] is not None:
+        print(f"Clinker Phases: C3S={report['clinker_phases'].C3S:.1f}%, C2S={report['clinker_phases'].C2S:.1f}%")
+        print(f"Degree of Hydration (28d): {report['hydration'].degree_of_hydration:.2%}")
+        print(f"Heat released: {report['hydration'].heat_kJ_per_kg_cement:.1f} kJ/kg cement")
+    else:
+        print(f"Clinker phases unavailable: {report['phases_unavailable_reason']}")
+    print(f"Total C-S-H (incl. pozzolanic/latent-hydraulic): {report['total_CSH_kg_m3']:.1f} kg/m3")
     print(f"Clinker-based CO2: {report['carbon_kg_m3']:.1f} kg/m³")

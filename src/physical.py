@@ -5,14 +5,24 @@ A batched mix must fill ~1 m³: Σ(mass_i / density_i) + entrained air ≈ 1. Th
 envelope the generators search does NOT enforce this, so they can propose mixes that
 are not batchable. This module provides a volume-balance check + repair (R2.2) and a
 workability heuristic (R2.3).
+
+R7.5 WP-2: `mix_volume` optionally accounts for exotic admixture volume too (measured:
+150 kg/m³ of calcined clay alone displaces ~0.058 m³, more than the entire
+VOLUME_TOLERANCE below). The core-only path (`exotic=None`) is unchanged bit-for-bit;
+`volume_error` / `repair_volume` / `enforce_volume` stay core-only by design -- wiring
+exotic volume into the batchability check or the repair strategy is a deliberate
+non-goal here (see docs/specs/R7.5-chemistry-remediation.md WP-2 Non-goals).
 """
 from typing import Dict, Optional
 
-from .materials import densities_view
+from .materials import densities_view, exotic_densities_view
 
 # Absolute densities (kg/m³) — standard values (ACI 211.1 / material data sheets).
 # Since R6.1 a view over the material registry (data/materials.json); values unchanged.
 DENSITIES = densities_view()
+# R7.5 WP-2: densities for the exotic (delta_estimate) admixtures, kept separate from
+# the pinned core-only DENSITIES above.
+EXOTIC_DENSITIES = exotic_densities_view()
 AIR_FRACTION = 0.02  # entrained/entrapped air, ~2% by volume
 
 # Acceptable |volume − 1 m³|. Calibrated against the 1,030 UCI rows: their 95th
@@ -21,9 +31,19 @@ AIR_FRACTION = 0.02  # entrained/entrapped air, ~2% by volume
 VOLUME_TOLERANCE = 0.05
 
 
-def mix_volume(mix: Dict[str, float]) -> float:
-    """Absolute volume (m³) of a per-m³ batch, including entrained air."""
-    return sum(mix.get(k, 0.0) / rho for k, rho in DENSITIES.items()) + AIR_FRACTION
+def mix_volume(mix: Dict[str, float], exotic: Optional[Dict[str, float]] = None) -> float:
+    """Absolute volume (m³) of a per-m³ batch, including entrained air.
+
+    `exotic`, if given, is a {material: kg/m3} dict of exotic admixture dosing (the
+    same shape ui_logic/exotics.py use) and adds Σ mass/density for those materials
+    on top of the core volume. Default `exotic=None` reproduces the pre-WP-2
+    core-only behaviour exactly, so every existing caller (the generators, via
+    enforce_volume) is unaffected.
+    """
+    vol = sum(mix.get(k, 0.0) / rho for k, rho in DENSITIES.items()) + AIR_FRACTION
+    if exotic:
+        vol += sum(exotic.get(k, 0.0) / rho for k, rho in EXOTIC_DENSITIES.items())
+    return vol
 
 
 def volume_error(mix: Dict[str, float]) -> float:

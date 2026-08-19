@@ -5,10 +5,15 @@ line-length = 100
 target-version = "py311"
 
 [lint]
-# Default rule set (Pyflakes F + a subset of pycodestyle E) is enough to catch the
-# findings we care about. E501 (line too long) is noisy on the long help/markdown
-# strings and docstrings here, so leave it off.
-extend-ignore = ["E501"]
+# Pyflakes F + pycodestyle E is enough to catch the findings we care about. This
+# used to rely on ruff's IMPLICIT defaults, which drifted: with ruff unpinned in
+# requirements.txt, 0.16.x widened the default rule set and CI started failing on
+# 338 pre-existing stylistic findings before tests ever ran (R7.5 follow-up). The
+# intent was always E+F, so select it EXPLICITLY — version-proof, unlike pinning.
+# E501 (line too long) is noisy on the long help/markdown strings and docstrings
+# here, so leave it off.
+select = ["E", "F"]
+ignore = ["E501"]
 
 [lint.per-file-ignores]
 # Tests set sys.path / importorskip before importing project modules, so imports

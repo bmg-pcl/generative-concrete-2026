@@ -56,6 +56,46 @@ def test_carbon_for_mode_transport_and_factor_overrides():
     assert carbon_for_mode(d, advanced=False, factors=zero_factors) == 0.0  # override applies
 
 
+# --- R7.5 WP-5: transport mass consistency ---------------------------------------
+
+def test_carbon_for_mode_exotic_raises_transport_term():
+    """A mix with exotics dosed shows a HIGHER transport term than the same mix
+    without -- exact expected delta: 100 kg/m3 x 500 km x 0.1/1000 = 5.0 kg CO2."""
+    d = mix_dict(MIX)
+    exotic = {"silica_fume": 100.0}
+    expected_delta = (100.0 / 1000.0) * 500.0 * 0.1
+    assert expected_delta == pytest.approx(5.0)
+    for advanced in (False, True):
+        base = carbon_for_mode(d, advanced=advanced, transport_km=500)
+        dosed = carbon_for_mode(d, advanced=advanced, transport_km=500, exotic=exotic)
+        assert dosed - base == pytest.approx(expected_delta)
+
+
+def test_carbon_for_mode_exotic_default_is_bit_identical():
+    d = mix_dict(MIX)
+    assert (carbon_for_mode(d, advanced=False, transport_km=500)
+            == carbon_for_mode(d, advanced=False, transport_km=500, exotic=None))
+    assert (carbon_for_mode(d, advanced=True, transport_km=500)
+            == carbon_for_mode(d, advanced=True, transport_km=500, exotic=None))
+
+
+def test_compute_metrics_carbon_rises_with_exotic_transport_mass():
+    """Dosing exotics with a nonzero transport leg must raise the carbon metric by
+    at least the transport delta on top of the exotics' own carbon factor -- the
+    exotic mass must not ship for free."""
+    predictor = StrengthPredictor()
+    exotic_off = _no_exotics()
+    exotic_on = _no_exotics()
+    exotic_on["silica_fume"] = 100.0
+    carbon_kwargs = {"transport_km": 500.0}
+    off = compute_metrics(MIX, exotic_off, COSTS, predictor, carbon_kwargs=carbon_kwargs)
+    on = compute_metrics(MIX, exotic_on, COSTS, predictor, carbon_kwargs=carbon_kwargs)
+    from src.exotics import exotic_carbon
+    own_factor_delta = exotic_carbon(exotic_on) - exotic_carbon(exotic_off)
+    transport_delta = (100.0 / 1000.0) * 500.0 * 0.1
+    assert on["carbon"] - off["carbon"] == pytest.approx(own_factor_delta + transport_delta)
+
+
 def test_metrics_respect_chemistry_mode(predictor):
     simple = compute_metrics(MIX, _no_exotics(), COSTS, predictor, advanced=False)
     advanced = compute_metrics(MIX, _no_exotics(), COSTS, predictor, advanced=True)
@@ -182,6 +222,21 @@ def test_carbon_breakdown_sums_to_carbon_for_mode():
         carbon_for_mode(d, advanced=False, transport_km=50.0)
     )
     assert "transport" in bd
+
+
+def test_carbon_breakdown_sums_to_carbon_for_mode_with_exotic():
+    """R7.5 WP-5: the invariant holds WITH an exotic dosing dict too, in both
+    tiers -- the "transport" entry, not a hidden extra term, carries the exotic
+    mass."""
+    d = mix_dict(MIX)
+    exotic = {"silica_fume": 100.0}
+    for advanced in (False, True):
+        bd = carbon_breakdown(d, advanced=advanced, transport_km=50.0, exotic=exotic)
+        assert sum(bd.values()) == pytest.approx(
+            carbon_for_mode(d, advanced=advanced, transport_km=50.0, exotic=exotic)
+        )
+        bd_no_exotic = carbon_breakdown(d, advanced=advanced, transport_km=50.0)
+        assert bd["transport"] > bd_no_exotic["transport"]
 
 
 def test_carbon_breakdown_reconciles_in_advanced_mode():

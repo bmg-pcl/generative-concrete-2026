@@ -69,6 +69,8 @@ span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at clo
 | R7.3 | ~1–1.5 d (a+b+c combined) | **~0.3 d** | Straightforward given the R7.1/R7.2 groundwork (predict_interval, run_nsga's existing robust= arg); the only real judgment call was excluding a "robust flow" row rather than fudging one — see spec's sonnet-ready note |
 | R7.4 | ~1–1.5 d (a+b+c combined) | **~0.4 d** | R7.4a (session restore) was the largest item but followed the established keyed-widget pattern exactly; the one real find was the `"config"`/`"ui_config"` naming collision with the CLI, caught before it shipped. R7.4b's only deviation from the spec text was where the PARAM_NAMES ordering lives (ui/state.py, not materials.py — avoids a circular import). R7.4c was a five-minute measurement (13.4 MiB) confirming the "stay on plain git" default |
 
+| R7.5 | ~1.25 d serial / ~0.7 d parallel | **~0.7 d** (≈0.4 d implementation + ≈0.3 d failure recovery) | Four-agent fan-out; wall clock hit the parallel estimate but for the wrong reason — logistics failures (see `../DELEGATION_WORKFLOW.md`) ate what parallelism saved. WP-5, run solo under the v2 process, took ~6 min of agent time with zero stalls |
+
 **Reading the log so far:** the block estimates (R1–R6) were accurate at block
 granularity but say nothing about per-item variance. The two data points since
 per-spec tracking started (R7.1, R7.2) both landed well under a wide estimate range —
@@ -163,6 +165,29 @@ interesting model in the repo — serves almost nothing).
   the naming collision); a registry `slider.max` edit changes `slider_specs_view()`
   with no code change; slider order pinned to `PARAM_NAMES`; existing bit-identical
   core views unchanged; 125 tests green at the 65% floor.
+
+**R7.5 Chemistry layer remediation** — ✅ **Shipped** (Wave A 2026-08-16, WP-5 2026-08-18):
+[`R7.5-chemistry-remediation.md`](R7.5-chemistry-remediation.md)
+- **Origin:** an adversarial review of the base chemistry models (2026-08-15), not a
+  planned roadmap item. Reopens the R7 theme for one bounded remediation wave;
+  R7.1–R7.4 stay closed.
+- **What the review found:** the carbon accounting survives attack (calcination
+  stoichiometry, kiln-electricity derivation, Scope 1/2 split, capture-energy
+  handling, and tier-boundary equality are all correct — leave them alone). The
+  hydration/Bogue layer does not: a factor-of-10 heat unit error, a dimensionally
+  incoherent pozzolanic reaction (wt% compared against kg/m³), and a portlandite
+  budget spent twice. That layer is unreferenced by the app and CLI but *is* called
+  by `notebooks/experiment_ga.ipynb`, so it is user-facing and untested. Separately:
+  exotic admixtures carry no density and are invisible to the volume balance (150
+  kg/m³ of calcined clay displaces ~0.058 m³, more than the whole 0.05 tolerance),
+  and a config-supplied clinker source crashes the CLI with a raw `KeyError`.
+- **Structure:** four work packages with disjoint file ownership run in parallel
+  (~0.7 d wall-clock vs ~1.25 d serial), plus one serialised follow-up for the
+  transport heuristic, which is triplicated across three files owned by two packages.
+- **The gate discipline:** we can fix dimensional correctness because physics verifies
+  it; we cannot validate the hydration model, since the repo holds no calorimetry or
+  DoH data. Every gate is a unit, conservation, or frozen-surface check — never
+  "matches the literature value."
 
 ### Horizon 2 — R8: From strength tool to specification tool (~1–2 wk)
 
@@ -269,6 +294,16 @@ all of R7 (R7.1–R7.4) has now shipped:
   ordering logic itself lives in `ui/state.py`, not `materials.py`, to avoid a
   circular import); the coverage floor was *measured* in the no-TF (CI) environment
   (69.98%) before being set, not guessed.
+- **Delegated four ways in parallel and shipped (Wave A):** R7.5 —
+  [`R7.5-chemistry-remediation.md`](R7.5-chemistry-remediation.md). Partitioned by
+  exclusive file ownership rather than by finding, because six of the nine defects
+  live in one module; the spec names the frozen surfaces that keep concurrent agents
+  from breaking each other's tests, and quarantines the one cross-cutting fix (WP-5,
+  since shipped under the v2 process with zero stalls) into a second wave. The
+  fan-out's retrospective — what the
+  partitioning got right and the six operational failure modes it exposed — is
+  [`../DELEGATION_WORKFLOW.md`](../DELEGATION_WORKFLOW.md), which is now the process
+  reference for the next parallel delegation.
 - **Shipped (senior/escalate at the time):** R7.1 (joint model — coverage and
   no-crossing gates were the net) and R7.2 (age-conditioned flow retrain, escalated
   once from R2.1; SBC-across-a-grid acceptance).

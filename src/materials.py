@@ -76,6 +76,8 @@ def validate_material(key: str, rec: dict) -> Optional[str]:
     if rec["strength_treatment"] == "delta_estimate":
         if "dosage" not in rec or "strength_factor" not in rec:
             return f"'{key}' is a delta_estimate material and must declare dosage and strength_factor"
+        if "density_kg_m3" not in rec:
+            return f"'{key}' is a delta_estimate material and must declare density_kg_m3"
     return None
 
 
@@ -107,6 +109,18 @@ def unit_costs_view() -> Dict[str, float]:
 
 def densities_view() -> Dict[str, float]:
     return {k: float(v["density_kg_m3"]) for k, v in _core_items()}
+
+
+def exotic_densities_view() -> Dict[str, float]:
+    """{material: density kg/m3} for the exotic (delta_estimate) admixtures.
+
+    Deliberately separate from densities_view() (R7.5 WP-2): that view is pinned
+    core-only (EXPECTED_DENSITIES in tests/test_materials.py, an R6.1 bit-identical
+    migration gate) and must stay exactly seven entries, so exotic densities get
+    their own view rather than widening it. Consumed by physical.mix_volume's
+    optional `exotic` argument."""
+    return {k: float(v["density_kg_m3"]) for k, v in load_materials().items()
+            if v["strength_treatment"] == "delta_estimate"}
 
 
 def slider_specs_view() -> Dict[str, dict]:

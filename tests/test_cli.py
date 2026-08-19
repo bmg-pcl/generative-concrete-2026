@@ -11,7 +11,7 @@ import sys
 import numpy as np
 import pytest
 
-from src.cli import main, load_mix, load_project_config, CliError
+from src.cli import main, load_mix, load_project_config, CliError, validate_clinker_source
 from src.models import StrengthPredictor
 from src.ui_logic import PARAM_NAMES, compute_metrics
 
@@ -194,3 +194,121 @@ def test_config_accepts_real_ui_session_export(tmp_path):
     cfg = load_project_config(str(p))  # must not raise CliError
     assert cfg["run"] == {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
                           "robust": True, "age": None, "clinker_source": None}
+
+
+# --- R7.5 WP-4: clinker_source boundary validation --------------------------------
+# `clinker_source`'s contents used to pass through unchecked into `FUEL_EF[fuel]` /
+# `GRID_EF[elec]` inside `clinker_scope_split` (src/chemistry_advanced.py, frozen
+# surface — not touched here). An unknown fuel or grid must be caught at the CLI
+# boundary and turned into a clean exit-1 CliError, not an uncaught KeyError traceback.
+
+def test_clinker_source_none_is_the_legitimate_default():
+    assert validate_clinker_source(None) is None
+
+
+def test_clinker_source_valid_descriptor_passes():
+    assert validate_clinker_source({
+        "kiln_fuel": "natural_gas", "electricity": "hydro",
+        "capture": {"rate": 0.9, "energy_kwh_per_tCO2": 150},
+    }) is None
+    assert validate_clinker_source({}) is None  # every field optional
+
+
+def test_clinker_source_must_be_a_dict():
+    assert validate_clinker_source("coal") is not None
+    assert validate_clinker_source(["coal"]) is not None
+
+
+def test_clinker_source_unknown_fuel_names_valid_fuels():
+    err = validate_clinker_source({"kiln_fuel": "hydrogen"})
+    assert err is not None
+    assert "hydrogen" in err
+    # A user can't guess "alt_waste" -- the message must actually name it.
+    assert "alt_waste" in err
+
+
+def test_clinker_source_unknown_grid_names_valid_grids():
+    err = validate_clinker_source({"electricity": "grid_ZA"})
+    assert err is not None
+    assert "grid_ZA" in err
+    assert "grid_EU" in err
+
+
+@pytest.mark.parametrize("rate", [1.5, -0.1, "high"])
+def test_clinker_source_rejects_bad_capture_rate(rate):
+    assert validate_clinker_source({"capture": {"rate": rate}}) is not None
+
+
+@pytest.mark.parametrize("rate", [0.0, 0.5, 1.0])
+def test_clinker_source_accepts_boundary_capture_rate(rate):
+    assert validate_clinker_source({"capture": {"rate": rate}}) is None
+
+
+def test_clinker_source_rejects_negative_capture_energy():
+    assert validate_clinker_source(
+        {"capture": {"energy_kwh_per_tCO2": -5}}) is not None
+    assert validate_clinker_source(
+        {"capture": {"energy_kwh_per_tCO2": 0}}) is None
+
+
+def test_clinker_source_config_unknown_fuel_exits_1_no_traceback(tmp_path, capsys):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps(
+        {"config": {"clinker_source": {"kiln_fuel": "hydrogen"}}}))
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp), "--config", str(cfg)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "hydrogen" in err
+    assert "alt_waste" in err  # the valid fuels are actually named
+    assert "Traceback" not in err
+
+
+def test_clinker_source_config_unknown_grid_exits_1(tmp_path, capsys):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps(
+        {"config": {"clinker_source": {"electricity": "grid_ZA"}}}))
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp), "--config", str(cfg)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "grid_ZA" in err
+    assert "Traceback" not in err
+
+
+def test_clinker_source_config_bad_capture_rate_exits_1(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    for bad_rate in (1.5, -0.1):
+        cfg = tmp_path / "cfg.json"
+        cfg.write_text(json.dumps(
+            {"config": {"clinker_source": {"kiln_fuel": "coal",
+                                            "capture": {"rate": bad_rate}}}}))
+        rc = main(["predict", "--mix", str(mixp), "--config", str(cfg)])
+        assert rc == 1, bad_rate
+        assert "Traceback" not in capsys.readouterr().err
+
+
+def test_clinker_source_config_valid_descriptor_reaches_predict(tmp_path, capsys):
+    """A valid clinker_source is accepted and actually used (not just permitted)."""
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    base_cfg = tmp_path / "base_cfg.json"
+    base_cfg.write_text(json.dumps({"config": {"advanced": True}}))
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"config": {
+        "advanced": True,
+        "clinker_source": {"kiln_fuel": "natural_gas", "electricity": "hydro",
+                           "capture": {"rate": 0.9}},
+    }}))
+    rc_base = main(["predict", "--mix", str(mixp), "--config", str(base_cfg)])
+    assert rc_base == 0
+    base_carbon = json.loads(capsys.readouterr().out)["carbon"]
+
+    rc = main(["predict", "--mix", str(mixp), "--config", str(cfg)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["carbon"] < base_carbon  # low-carbon clinker source lowers total carbon

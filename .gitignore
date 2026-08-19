@@ -6,3 +6,8 @@ __pycache__/
 
 models/metrics_history.json
 .coverage
+
+# Transient agent worktrees (throwaway checkouts created for parallel work).
+# Scoped to worktrees/ rather than all of .claude/, so committed project config
+# (settings.json, agents, skills) stays trackable if it is added later.
+.claude/worktrees/
