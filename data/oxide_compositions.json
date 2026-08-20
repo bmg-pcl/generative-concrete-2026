@@ -45,6 +45,7 @@
         "Al2O3": 10.0,
         "Fe2O3": 3.0,
         "clinker_factor": 0.50,
-        "bogue_valid": false
+        "bogue_valid": false,
+        "constituents": {"calcined_clay": 0.30, "limestone_filler": 0.15}
     }
 }
