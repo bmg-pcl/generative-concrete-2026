@@ -16,7 +16,7 @@ for the mix ticket.
 import json
 import math
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 DEFAULT_MATERIALS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "materials.json"
@@ -28,6 +28,19 @@ _cache: Dict[str, dict] = {}
 
 STRENGTH_TREATMENTS = ("trained_feature", "delta_estimate", "inert")
 CARBON_SOURCES = ("epd", "database", "parametric", "placeholder")
+# R8.0 WP-D1: how a carbon factor's number was attributed to this material vs. a
+# co-product. "byproduct-mass" = mass-allocated to a byproduct of another process
+# (slag/ash/silica_fume/rice_husk_ash's low factors *assume* this -- an EN 15804
+# tender challenge turns on exactly which basis was used); "process" = the
+# material's own dedicated production process (cement clinker, calcination);
+# "economic" = value-based allocation (reserved, unused by the current registry);
+# "none" = no allocation question applies (primary/mined material, water, etc).
+ALLOCATION_BASES = ("byproduct-mass", "economic", "process", "none")
+# R8.0 WP-D4: kg CO2 per tonne-km, declared defaults.
+#   truck: ~0.1 kgCO2/t.km is the common UK DEFRA/GLEC-range default for a laden
+#          heavy goods vehicle; rail ~0.03 and sea freight ~0.015 kgCO2/t.km are
+#          the GLEC Framework's typical order-of-magnitude ratios to truck.
+TRANSPORT_MODE_EF = {"truck": 0.1, "rail": 0.03, "ship": 0.015}
 
 
 def set_materials_path(path: Optional[str]):
@@ -66,6 +79,8 @@ def validate_material(key: str, rec: dict) -> Optional[str]:
             return f"'{key}' has a carbon record without a numeric 'value'"
         if c.get("source") not in CARBON_SOURCES:
             return f"'{key}' carbon record needs source in {CARBON_SOURCES}"
+        if c.get("allocation") not in ALLOCATION_BASES:
+            return f"'{key}' carbon record needs allocation in {ALLOCATION_BASES}"
     if rec["strength_treatment"] == "trained_feature":
         if "density_kg_m3" not in rec:
             return f"'{key}' is a trained feature and must declare density_kg_m3"
@@ -199,3 +214,80 @@ def carbon_provenance(current_factors: Dict[str, float],
         else:
             out[mat] = "user-override"
     return out
+
+
+# -- uncertainty propagation (R8.0 WP-D3) -------------------------------------
+def factor_uncertainties_view() -> Dict[str, float]:
+    """{material: relative uncertainty} from every material's primary carbon
+    record (rec["carbon"][0]["uncertainty"]) -- the registry has carried these
+    since R6 but nothing read them until carbon_interval below. Covers ALL
+    materials (core mix constituents AND exotic admixtures, unlike
+    carbon_factors_view's core-only scope) so a caller can look either kind of
+    material up by the same key when building a carbon_interval call."""
+    return {k: float(v["carbon"][0].get("uncertainty", 0.0))
+            for k, v in load_materials().items()}
+
+
+def carbon_interval(mix: Dict[str, float], factors: Dict[str, float],
+                    uncertainties: Dict[str, float],
+                    exotic: Optional[Dict[str, float]] = None) -> Tuple[float, float]:
+    """A 95%-ish carbon interval (kg CO2/m3) from independent per-material
+    relative uncertainty, around the plain point total.
+
+    Linear, INDEPENDENT-error propagation: sigma^2 = Sum (mass * factor *
+    rel_unc)^2 over every material in `factors` (the mix term) plus, when
+    `exotic` is given, every material in `exotic` (the exotic term) -- the same
+    core+exotic total convention chemistry_simple.calculate_embodied_carbon and
+    exotics.exotic_carbon already use. The plain point total is
+    Sum mass*factor (+ exotic Sum dose*factor when given; transport excluded,
+    per the D3 spec). The interval returned is total +/- 1.96*sigma.
+
+    Honestly excludes, not modelled here:
+      - correlation between factors (e.g. shared assumptions across
+        clinker-derived materials) -- every material is treated independent;
+      - transport uncertainty;
+      - the clinker/Bogue chemistry path's own uncertainty -- a Monte Carlo
+        treatment of the clinker model is future work (Wave B / later R8).
+    """
+    total = sum(mix.get(k, 0) * factors.get(k, 0) for k in factors)
+    variance = sum(
+        (mix.get(k, 0) * factors.get(k, 0) * uncertainties.get(k, 0.0)) ** 2
+        for k in factors
+    )
+    if exotic:
+        total += sum(exotic.get(k, 0) * factors.get(k, 0) for k in exotic)
+        variance += sum(
+            (exotic.get(k, 0) * factors.get(k, 0) * uncertainties.get(k, 0.0)) ** 2
+            for k in exotic
+        )
+    sigma = math.sqrt(variance)
+    return (total - 1.96 * sigma, total + 1.96 * sigma)
+
+
+# -- per-material transport (R8.0 WP-D4) --------------------------------------
+def material_transport_carbon(mix: Dict[str, float],
+                              exotic: Optional[Dict[str, float]] = None,
+                              overrides: Optional[Dict[str, dict]] = None) -> float:
+    """Per-material transport carbon (kg CO2/m3): mass * km * mode_ef / 1000,
+    summed over every material carrying a `"transport": {"mode", "km"}` block in
+    the registry (or an `overrides` entry, which wins). Materials without a
+    block -- registry or override -- contribute nothing (0), by design (D4):
+    this is an additive, opt-in per-material path that COEXISTS with
+    chemistry_simple.transport_carbon's single global-km heuristic; it does not
+    replace it -- Wave B decides how the two combine on the ticket."""
+    registry = load_materials()
+    overrides = overrides or {}
+    quantities: Dict[str, float] = dict(mix)
+    if exotic:
+        for k, v in exotic.items():
+            quantities[k] = quantities.get(k, 0) + v
+    total = 0.0
+    for k, qty in quantities.items():
+        if not qty:
+            continue
+        block = overrides.get(k) or registry.get(k, {}).get("transport")
+        if not block:
+            continue
+        mode_ef = TRANSPORT_MODE_EF[block["mode"]]
+        total += qty * block["km"] * mode_ef / 1000.0
+    return total
