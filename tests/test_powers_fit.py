@@ -14,7 +14,6 @@ tests gate:
   - that the script does not import xgboost, `src.models`, or `ui/` -- WP-F
     is zero runtime integration.
 """
-import importlib
 import json
 import subprocess
 import sys
@@ -197,16 +196,21 @@ def test_residual_std_is_nonnegative(result_json):
 
 def test_no_xgboost_import():
     """Importing the fit script module must not pull in xgboost (src/models.py's
-    dependency) -- WP-F is a standalone evidence script, not a runtime path."""
-    assert "xgboost" not in sys.modules
-    spec = importlib.util.spec_from_file_location("fit_powers_module", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    try:
-        assert "xgboost" not in sys.modules, "fit_powers.py must not import xgboost"
-        assert "src.models" not in sys.modules, "fit_powers.py must not import src.models"
-    finally:
-        sys.modules.pop("fit_powers_module", None)
+    dependency) -- WP-F is a standalone evidence script, not a runtime path.
+
+    Runs in a FRESH interpreter (the test_cli_never_imports_streamlit pattern):
+    asserting on this process's sys.modules is order-dependent -- any earlier test
+    that touches StrengthPredictor imports xgboost and poisons the check."""
+    code = (
+        "import importlib.util, sys; "
+        f"spec = importlib.util.spec_from_file_location('fit_powers_module', {str(SCRIPT_PATH)!r}); "
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); "
+        "assert 'xgboost' not in sys.modules, 'fit_powers.py must not import xgboost'; "
+        "assert 'src.models' not in sys.modules, 'fit_powers.py must not import src.models'"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       cwd=str(REPO_ROOT))
+    assert r.returncode == 0, r.stderr
 
 
 def test_no_ui_import_in_script_source():
