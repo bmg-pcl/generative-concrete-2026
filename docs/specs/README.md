@@ -69,6 +69,7 @@ span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at clo
 | R7.3 | ~1–1.5 d (a+b+c combined) | **~0.3 d** | Straightforward given the R7.1/R7.2 groundwork (predict_interval, run_nsga's existing robust= arg); the only real judgment call was excluding a "robust flow" row rather than fudging one — see spec's sonnet-ready note |
 | R7.4 | ~1–1.5 d (a+b+c combined) | **~0.4 d** | R7.4a (session restore) was the largest item but followed the established keyed-widget pattern exactly; the one real find was the `"config"`/`"ui_config"` naming collision with the CLI, caught before it shipped. R7.4b's only deviation from the spec text was where the PARAM_NAMES ordering lives (ui/state.py, not materials.py — avoids a circular import). R7.4c was a five-minute measurement (13.4 MiB) confirming the "stay on plain git" default |
 
+| R8.0 | ~2–2.5 d serial / ~1 d parallel (Wave A) + ~0.5 d Wave B | — | spec written; five-way parallel dispatch planned under the v2 delegation process |
 | R7.5 | ~1.25 d serial / ~0.7 d parallel | **~0.7 d** (≈0.4 d implementation + ≈0.3 d failure recovery) | Four-agent fan-out; wall clock hit the parallel estimate but for the wrong reason — logistics failures (see `../DELEGATION_WORKFLOW.md`) ate what parallelism saved. WP-5, run solo under the v2 process, took ~6 min of agent time with zero stalls |
 
 **Reading the log so far:** the block estimates (R1–R6) were accurate at block
@@ -191,6 +192,29 @@ interesting model in the repo — serves almost nothing).
 
 ### Horizon 2 — R8: From strength tool to specification tool (~1–2 wk)
 
+**R8.0 Deepening the carbon & chemistry layers** — full parallel-delegation spec:
+[`R8.0-carbon-chemistry-deepening.md`](R8.0-carbon-chemistry-deepening.md)
+- **Origin:** post-R7.5 analysis. R7.5 fixed what was *wrong*; R8.0 addresses what is
+  *missing*: the Tier-2 cement term's dropped scope (grinding/process electricity —
+  most of the "tier gap" is dropped scope wearing a fidelity costume), LC3's
+  zero-carbon non-clinker half, the never-built CLAUDE.md waste factor, the ticket's
+  exotic reconciliation gap, and a hydration layer that computes heat/CH/C-S-H that
+  nothing consumes.
+- **Structure:** four disjoint Wave A packages for parallel sonnet agents (accounting
+  boundary; Tier-2 scope completion — the one package licensed to change quoted
+  numbers, with an external-validation gate that the LC3 cement term must land in the
+  published 0.50–0.65 kg/kg EPD band; hydration consumers as a new additive module —
+  adiabatic ΔT/mass-pour flag, maturity curing, carbonation upper bound; registry
+  conventions — allocation basis, chloride restrictions, uncertainty propagation,
+  per-material transport data), plus a Wave B integrator and a fenced phase-1-only
+  Powers-calibration fit (the R9-class hybrid's evidence-gathering step, delegable
+  because it fits only Powers' two constants and reports R² as a finding, never
+  tuning the hydration layer).
+- **Absorbs** R8.3 (carbon intervals) into its WP-D/WP-E; R8.1/R8.2/R8.4 unchanged
+  (R8.2 gains a ready-made data hook: the restrictions field and
+  `compliance_warnings`).
+- **Process:** dispatched per [`../DELEGATION_WORKFLOW.md`](../DELEGATION_WORKFLOW.md) v2.
+
 The theme: real specifications are written in exposure classes, workability targets,
 and (increasingly) carbon ceilings — not bare 28-day strength. Meet them there.
 This is where the business analysis (`../BUSINESS_REPORT.md` §6) becomes product.
@@ -213,7 +237,7 @@ Also makes the national-variation cost visible: the same mix's compliance across
 jurisdictions in one table. *Gates:* golden tests against published table rows;
 packs are JSON, adding a jurisdiction is a data edit.
 
-**R8.3 Carbon intervals** — propagate the registry's per-factor `uncertainty`
+**R8.3 Carbon intervals** — *absorbed into R8.0 (WP-D/WP-E); kept here for the record* — propagate the registry's per-factor `uncertainty`
 fields to an interval on total carbon (analytic linear propagation; Monte Carlo for
 the clinker model). *Value:* symmetry — strength has honest uncertainty, carbon
 currently pretends to be exact; procurement comparisons at ±15% vs ±40% provenance
