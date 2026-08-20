@@ -32,7 +32,8 @@ from .exotics import EXOTIC_ADMIXTURES
 from .materials import validate_epd_json, carbon_provenance
 
 DEFAULT_RUN_CONFIG = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
-                      "robust": True, "age": None, "clinker_source": None}
+                      "robust": True, "age": None, "clinker_source": None,
+                      "waste_factor": 0.0}
 
 
 class CliError(Exception):
@@ -73,6 +74,19 @@ def validate_clinker_source(src) -> str | None:
                     or energy < 0:
                 return ("clinker_source.capture.energy_kwh_per_tCO2 must be numeric "
                         f"and >= 0; got {energy!r}.")
+    return None
+
+
+def validate_waste_factor(value) -> str | None:
+    """Return None if a `waste_factor` value is usable, else an error message.
+
+    Boundary validation (spec R8.0 WP-A A2), mirroring `validate_clinker_source`'s
+    style: 3-8% overbatch (batched-vs-placed) is typical, so [0, 0.5) keeps a
+    fat-fingered value from silently producing a nonsense as-placed carbon figure."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return f"waste_factor must be numeric; got {value!r}."
+    if not (0.0 <= value < 0.5):
+        return f"waste_factor must be numeric in [0, 0.5); got {value!r}."
     return None
 
 
@@ -122,6 +136,10 @@ def load_project_config(path: str = None, epd_path: str = None) -> dict:
         err = validate_clinker_source(run["clinker_source"])
         if err:
             raise CliError(err)
+    if "waste_factor" in run:
+        err = validate_waste_factor(run["waste_factor"])
+        if err:
+            raise CliError(err)
     cfg["run"].update(run)
     return cfg
 
@@ -157,6 +175,7 @@ def _carbon_kwargs(cfg: dict) -> dict:
 def _ticket_config(cfg: dict) -> dict:
     return {**_carbon_kwargs(cfg), "advanced": bool(cfg["run"]["advanced"]),
             "costs": cfg["costs"], "robust": bool(cfg["run"]["robust"]),
+            "waste_factor": float(cfg["run"]["waste_factor"]),
             "carbon_provenance": carbon_provenance(cfg["carbon_factors"], cfg["epds"]),
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
@@ -173,10 +192,10 @@ def _jsonable(obj):
     return obj
 
 
-def _write_ticket(path: str, mix_dict_named: dict, metrics: dict, cfg: dict):
+def _write_ticket(path: str, mix_dict_named: dict, metrics: dict, cfg: dict, exotic: dict = None):
     from .ui_logic import mix_ticket
     with open(path, "w", encoding="utf-8") as f:
-        f.write(mix_ticket(mix_dict_named, metrics, _ticket_config(cfg)))
+        f.write(mix_ticket(mix_dict_named, metrics, _ticket_config(cfg), exotic=exotic))
     print(f"Ticket written to {path}", file=sys.stderr)
 
 
@@ -189,11 +208,12 @@ def cmd_predict(args) -> int:
     metrics = compute_metrics(mix, exotic, cfg["costs"], predictor,
                               advanced=bool(cfg["run"]["advanced"]),
                               exotic_strength=False,
-                              carbon_kwargs=_carbon_kwargs(cfg))
+                              carbon_kwargs=_carbon_kwargs(cfg),
+                              waste_factor=float(cfg["run"]["waste_factor"]))
     out = {"mix": dict(zip(PARAM_NAMES, mix)), **metrics}
     print(json.dumps(_jsonable(out), indent=2))
     if args.ticket:
-        _write_ticket(args.ticket, dict(zip(PARAM_NAMES, mix)), metrics, cfg)
+        _write_ticket(args.ticket, dict(zip(PARAM_NAMES, mix)), metrics, cfg, exotic=exotic)
     return 0
 
 

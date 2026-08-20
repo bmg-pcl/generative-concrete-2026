@@ -145,6 +145,21 @@ def render_config(predictor, bayesian, presets) -> AppContext:
             "clinker_source": clinker_source,
         }
 
+        # R8.0 WP-A A2: batched material isn't all placed. Applied at the metrics/
+        # ticket layer only (compute_metrics/mix_ticket) -- it never touches the
+        # carbon_kwargs above, so the batched, per-m3 figures the optimizers target
+        # are untouched. Keyed-only (no value=), same pattern as the other cfg_
+        # controls.
+        waste_factor = st.slider(
+            "Waste factor (batched → placed)", 0.0, 0.25, step=0.01,
+            key="cfg_waste_factor",
+            help="Batched material is not all placed: spillage, over-ordering, and "
+                 "pump/washout losses typically add 3-8% before compaction. This "
+                 "scales the CARBON and COST 'as-placed' figures shown alongside the "
+                 "batched, per-m³ numbers -- it does NOT change the mix design itself, "
+                 "and the optimizers always target the batched (unscaled) figures.",
+        )
+
         st.divider()
         st.subheader("Optimization")
         robust_mode = st.toggle(
@@ -183,7 +198,7 @@ def render_config(predictor, bayesian, presets) -> AppContext:
 
     ticket_config = {
         **carbon_kwargs, "advanced": use_advanced_chemistry, "costs": st.session_state.costs,
-        "robust": robust_mode,
+        "robust": robust_mode, "waste_factor": float(waste_factor),
         "carbon_provenance": carbon_provenance(st.session_state.carbon_factors,
                                                st.session_state.get("epds")),
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),

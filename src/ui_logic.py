@@ -73,6 +73,7 @@ def compute_metrics(
     exotic_strength: bool = False,
     uncertainty_fn: Optional[Callable] = None,
     carbon_kwargs: Optional[dict] = None,
+    waste_factor: float = 0.0,
 ) -> dict:
     """
     All performance metrics for one mix, on the selected chemistry tier.
@@ -82,24 +83,40 @@ def compute_metrics(
     carbon via both the exotic materials' own factor (`exotic_carbon`) AND their
     transport mass (R7.5 WP-5: `carbon_for_mode`'s `exotic=` thread), since dosed
     admixtures are physically hauled to site too.
+
+    `waste_factor` (R8.0 WP-A A2, default 0.0) is batched-vs-placed overbatch --
+    3-8% spillage/over-ordering/pump losses are typical. It scales `carbon`/`cost`
+    into `carbon_as_placed`/`cost_as_placed` ONLY: the batched `carbon`/`cost`
+    figures -- what the optimizers target -- never move, and at `waste_factor=0.0`
+    the as-placed figures are bit-identical to the batched ones.
+
+    `carbon_intensity` (A3) is kg CO2 per m3.MPa of the point-strength estimate --
+    the number procurement actually compares across bids. It is NOT fed to any
+    optimizer objective (that would change Pareto fronts).
     """
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
     base_strength = float(predictor.predict(arr))
     delta = exotic_strength_delta(exotic, enabled=exotic_strength)
+    strength = base_strength + delta
     lo, _, hi = predictor.predict_interval(arr)
     novelty = float(predictor.novelty(arr)[0])
+    carbon = carbon_for_mode(d, advanced, exotic=exotic, **(carbon_kwargs or {})) + exotic_carbon(exotic)
+    cost = calculate_mix_cost(d, costs) + exotic_cost(exotic)
     return {
-        "strength": base_strength + delta,
+        "strength": strength,
         "exotic_strength": delta,
-        "tensile": tensile_estimate(base_strength + delta),  # EC2 correlation (derived)
+        "tensile": tensile_estimate(strength),  # EC2 correlation (derived)
         "interval_lo": float(lo[0]) + delta,   # 90% prediction interval, shifted by
         "interval_hi": float(hi[0]) + delta,   # any exotic strength estimate
         "novelty": novelty,
         "in_support": bool(novelty <= predictor.support_threshold()),
         "workability": workability_flag(d),
-        "carbon": carbon_for_mode(d, advanced, exotic=exotic, **(carbon_kwargs or {})) + exotic_carbon(exotic),
-        "cost": calculate_mix_cost(d, costs) + exotic_cost(exotic),
+        "carbon": carbon,
+        "carbon_as_placed": carbon * (1.0 + waste_factor),
+        "carbon_intensity": carbon / max(strength, 1.0),
+        "cost": cost,
+        "cost_as_placed": cost * (1.0 + waste_factor),
         "curing": estimate_curing_time(d),
         "uncertainty": float(uncertainty_fn(arr)) if uncertainty_fn else None,
     }
@@ -254,10 +271,15 @@ def carbon_breakdown(mix: Dict[str, float], advanced: bool = False, transport_km
                      cement_type: str = "OPC", factors: Dict[str, float] = None,
                      clinker_source: Optional[dict] = None,
                      exotic: Optional[Dict[str, float]] = None) -> Dict[str, float]:
-    """Per-source carbon contributions (kg CO₂/m³) that sum to carbon_for_mode(...).
+    """Per-source carbon contributions (kg CO₂/m³) that sum to the DISPLAYED carbon
+    (`compute_metrics(...)["carbon"]`): `carbon_for_mode(...)` plus, when `exotic` is
+    given, the exotic admixtures' own carbon factor via the "exotics" line (R8.0
+    WP-A A1 -- previously the ticket omitted this term entirely, so a dosed mix's
+    ticket TOTAL fell short of the displayed number).
 
-    `exotic`, if given, is included in the "transport" entry's mass (R7.5 WP-5, via
-    the shared `transport_carbon`); default `exotic=None` is bit-identical to before.
+    `exotic`, if given, is ALSO included in the "transport" entry's mass (R7.5 WP-5,
+    via the shared `transport_carbon`); default `exotic=None` is bit-identical to
+    before.
     """
     from .chemistry_advanced import carbon_from_clinker
     factors = factors or CARBON_FACTORS
@@ -269,19 +291,27 @@ def carbon_breakdown(mix: Dict[str, float], advanced: bool = False, transport_km
         else:
             bd[k] = mix.get(k, 0.0) * f
     bd["transport"] = transport_carbon(mix, transport_km, factors, exotic=exotic)
+    bd["exotics"] = exotic_carbon(exotic) if exotic else 0.0
     return bd
 
 
-def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict) -> str:
+def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict,
+              exotic: Optional[Dict[str, float]] = None) -> str:
     """A CSV 'mix ticket' — the recipe + predictions (with interval), carbon and cost
     breakdowns, per-material carbon provenance (which EPD/database/override produced
     each factor), the active config, and the standing disclaimer. The carbon
-    breakdown sums exactly to the displayed carbon."""
+    breakdown sums exactly to the displayed carbon.
+
+    `exotic` (R8.0 WP-A A1), if given, must be the SAME dosing dict `compute_metrics`
+    was called with -- it is threaded into `carbon_breakdown` so the ticket's
+    `carbon_kgCO2,TOTAL` row reconciles with the displayed carbon for a dosed mix
+    too; default `exotic=None` is bit-identical to before.
+    """
     cfg_carbon = {k: config[k] for k in ("advanced", "transport_km", "cement_type",
                                          "factors", "clinker_source")
                   if k in config}
     costs = config.get("costs") or UNIT_COSTS
-    bd = carbon_breakdown(mix, **cfg_carbon)
+    bd = carbon_breakdown(mix, exotic=exotic, **cfg_carbon)
 
     rows = ["section,key,value", f"meta,generated,{config.get('timestamp', '')}"]
     for p in PARAM_NAMES:
@@ -295,9 +325,21 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict) -> str:
         f"prediction,novelty,{metrics['novelty']:.2f}",
         f"prediction,in_support,{metrics['in_support']}",
     ]
+    # A3: carbon-intensity KPI (kg CO2 per m3.MPa, point-strength based) -- the row
+    # name discloses that basis. Prefer the caller's own metrics dict (compute_metrics
+    # always supplies it); fall back to deriving it from this ticket's own totals for
+    # callers (e.g. recommend_recipe's design tickets) that predate this field.
+    strength = float(metrics.get("strength", 0.0))
+    carbon_intensity = metrics.get("carbon_intensity", sum(bd.values()) / max(strength, 1.0))
+    rows.append(f"prediction,carbon_intensity_kg_per_m3MPa_point,{carbon_intensity:.3f}")
     for k, v in bd.items():
         rows.append(f"carbon_kgCO2,{k},{v:.2f}")
-    rows.append(f"carbon_kgCO2,TOTAL,{sum(bd.values()):.2f}")
+    total = sum(bd.values())
+    rows.append(f"carbon_kgCO2,TOTAL,{total:.2f}")
+    # A2: waste factor (batched -> placed), applied at this layer only -- the
+    # batched TOTAL above never moves. Default 0.0 makes TOTAL_as_placed == TOTAL.
+    waste_factor = float(config.get("waste_factor", 0.0))
+    rows.append(f"carbon_kgCO2,TOTAL_as_placed,{total * (1.0 + waste_factor):.2f}")
     for k, c in costs.items():
         rows.append(f"cost_usd,{k},{mix.get(k, 0.0) * c:.2f}")
     # Provenance: what each factor rests on (epd:REF / database:REF / user-override).
@@ -317,7 +359,7 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict) -> str:
             f"clinker_scope,electricity,{cs.get('electricity', '')}",
             f"clinker_scope,capture_rate,{(cs.get('capture') or {}).get('rate', 0.0)}",
         ]
-    for k in ("advanced", "cement_type", "transport_km", "robust"):
+    for k in ("advanced", "cement_type", "transport_km", "robust", "waste_factor"):
         if k in config:
             rows.append(f"config,{k},{config[k]}")
     rows.append('disclaimer,,"Design exploration only — validate physically (ASTM/EN) '

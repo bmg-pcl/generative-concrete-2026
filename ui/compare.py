@@ -56,6 +56,10 @@ def render_compare(ctx: AppContext):
             exotic_strength=ctx.exotic_strength_enabled,
             uncertainty_fn=ctx.bayesian.evaluate_uncertainty,
             carbon_kwargs=ctx.carbon_kwargs,
+            # cfg_waste_factor is a keyed Config-tab widget (R8.0 WP-A A2); read via
+            # session_state rather than AppContext (ui/context.py is outside this
+            # work package's file ownership).
+            waste_factor=float(st.session_state.get("cfg_waste_factor", 0.0)),
         )
 
     m_a = get_metrics(mix_a, st.session_state.exotic_a)
@@ -83,7 +87,8 @@ def render_compare(ctx: AppContext):
         if m_a["workability"]:
             st.caption(f"Workability: {m_a['workability']}")
         st.download_button("Download ticket (A)", key="ticket_a",
-                           data=mix_ticket(dict(zip(param_names, mix_a)), m_a, ctx.ticket_config),
+                           data=mix_ticket(dict(zip(param_names, mix_a)), m_a, ctx.ticket_config,
+                                           exotic=st.session_state.exotic_a),
                            file_name="mix_A_ticket.csv", mime="text/csv")
     with res_b:
         st.subheader("Mix B")
@@ -98,5 +103,6 @@ def render_compare(ctx: AppContext):
         if m_b["workability"]:
             st.caption(f"Workability: {m_b['workability']}")
         st.download_button("Download ticket (B)", key="ticket_b",
-                           data=mix_ticket(dict(zip(param_names, mix_b)), m_b, ctx.ticket_config),
+                           data=mix_ticket(dict(zip(param_names, mix_b)), m_b, ctx.ticket_config,
+                                           exotic=st.session_state.exotic_b),
                            file_name="mix_B_ticket.csv", mime="text/csv")

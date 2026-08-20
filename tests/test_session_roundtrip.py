@@ -79,6 +79,7 @@ def test_pure_round_trip_every_field():
     src["cfg_kiln_fuel"] = "natural_gas"
     src["cfg_electricity"] = "hydro"
     src["cfg_capture_rate"] = 0.9
+    src["cfg_waste_factor"] = 0.08  # R8.0 WP-A A2
 
     exported = export_session(src)
     dst = _fresh_state()
@@ -99,6 +100,7 @@ def test_pure_round_trip_every_field():
     assert dst["cfg_kiln_fuel"] == "natural_gas"
     assert dst["cfg_electricity"] == "hydro"
     assert dst["cfg_capture_rate"] == 0.9
+    assert dst["cfg_waste_factor"] == 0.08
     # And the whole export re-exports identically (idempotent round trip).
     assert export_session(dst) == exported
 
@@ -119,16 +121,19 @@ def test_apptest_round_trip_survives_widget_state():
     at.number_input(key="cfg_transport_km").set_value(150).run()
     default_robust = at.toggle(key="cfg_robust").value
     at.toggle(key="cfg_robust").set_value(not default_robust).run()
+    at.slider(key="cfg_waste_factor").set_value(0.08).run()  # R8.0 WP-A A2
     exported = export_session(at.session_state)
     assert exported["mix_a"][0] == 444
     assert exported["carbon_factors"]["cement"] == 0.5
     assert exported["ui_config"]["cfg_transport_km"] == 150
     assert exported["ui_config"]["cfg_robust"] == (not default_robust)
+    assert exported["ui_config"]["cfg_waste_factor"] == 0.08
 
     # Session 2 (fresh): widgets have their own (default) state; the import must win.
     at2 = AppTest.from_file(APP, default_timeout=240).run()
     assert at2.slider(key="cement_A").value != 444
     assert at2.number_input(key="cfg_transport_km").value != 150
+    assert at2.slider(key="cfg_waste_factor").value != 0.08
     apply_session(exported, at2.session_state)
     at2.run()
     assert not at2.exception
@@ -136,6 +141,7 @@ def test_apptest_round_trip_survives_widget_state():
     assert at2.number_input(key="cf_cement").value == 0.5
     assert at2.number_input(key="cfg_transport_km").value == 150
     assert at2.toggle(key="cfg_robust").value == (not default_robust)
+    assert at2.slider(key="cfg_waste_factor").value == 0.08
     # The derived dict must agree after the rerun (the keyed widgets did not
     # overwrite the imported factor — the exact live-session bug this guards).
     assert at2.session_state["carbon_factors"]["cement"] == 0.5

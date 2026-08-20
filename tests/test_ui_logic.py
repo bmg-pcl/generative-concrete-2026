@@ -225,18 +225,23 @@ def test_carbon_breakdown_sums_to_carbon_for_mode():
 
 
 def test_carbon_breakdown_sums_to_carbon_for_mode_with_exotic():
-    """R7.5 WP-5: the invariant holds WITH an exotic dosing dict too, in both
-    tiers -- the "transport" entry, not a hidden extra term, carries the exotic
-    mass."""
+    """R8.0 WP-A A1: WITH an exotic dosing dict, the breakdown sums to the
+    DISPLAYED carbon -- carbon_for_mode(...) (which already carries the exotic
+    transport mass, R7.5 WP-5) PLUS the exotics' own carbon factor via the new
+    "exotics" line. Before A1 the ticket omitted that factor entirely."""
+    from src.exotics import exotic_carbon
     d = mix_dict(MIX)
     exotic = {"silica_fume": 100.0}
     for advanced in (False, True):
         bd = carbon_breakdown(d, advanced=advanced, transport_km=50.0, exotic=exotic)
         assert sum(bd.values()) == pytest.approx(
             carbon_for_mode(d, advanced=advanced, transport_km=50.0, exotic=exotic)
+            + exotic_carbon(exotic)
         )
+        assert bd["exotics"] == pytest.approx(exotic_carbon(exotic))
         bd_no_exotic = carbon_breakdown(d, advanced=advanced, transport_km=50.0)
         assert bd["transport"] > bd_no_exotic["transport"]
+        assert bd_no_exotic["exotics"] == 0.0  # default exotic=None is inert
 
 
 def test_carbon_breakdown_reconciles_in_advanced_mode():
@@ -284,3 +289,131 @@ def test_mix_ticket_is_parseable_and_balanced(predictor):
         carbon_for_mode(d, advanced=False, transport_km=0.0), abs=0.05
     )
     assert any("disclaimer" in line for line in lines)
+
+
+# --- R8.0 WP-A A1: ticket reconciliation for a DOSED mix (the headline gate) ------
+
+def test_mix_ticket_total_equals_displayed_carbon_for_dosed_mix(predictor):
+    """The A1 headline gate: for a mix with exotics dosed, the ticket's
+    carbon_kgCO2,TOTAL row must equal compute_metrics(...)["carbon"] -- the number
+    actually displayed in the UI -- not just carbon_for_mode(...) alone (which omits
+    the exotics' own carbon factor)."""
+    d = mix_dict(MIX)
+    exotic = _no_exotics()
+    exotic["silica_fume"] = 80.0
+    exotic["nano_silica"] = 5.0
+    carbon_kwargs = {"transport_km": 50.0}
+    m = compute_metrics(MIX, exotic, COSTS, predictor, carbon_kwargs=carbon_kwargs)
+    config = {"advanced": False, "transport_km": 50.0, "cement_type": "OPC",
+              "factors": None, "costs": COSTS, "robust": True,
+              "timestamp": "2026-07-01T00:00:00+00:00"}
+    csv = mix_ticket(d, m, config, exotic=exotic)
+    total_line = next(line for line in csv.splitlines() if line.startswith("carbon_kgCO2,TOTAL,"))
+    ticket_total = float(total_line.split(",")[2])
+    assert ticket_total == pytest.approx(m["carbon"], abs=0.05)
+
+
+def test_mix_ticket_omitting_exotic_undercounts_for_a_dosed_mix(predictor):
+    """Documents the failure mode A1 fixes: forgetting to pass `exotic` to
+    mix_ticket for a dosed mix makes the ticket total fall SHORT of the displayed
+    carbon -- this is why every call site must pass the dosing dict it holds."""
+    d = mix_dict(MIX)
+    exotic = _no_exotics()
+    exotic["silica_fume"] = 80.0
+    m = compute_metrics(MIX, exotic, COSTS, predictor)
+    config = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
+              "factors": None, "costs": COSTS, "robust": True,
+              "timestamp": "2026-07-01T00:00:00+00:00"}
+    csv = mix_ticket(d, m, config)  # exotic NOT passed -- the old, buggy call shape
+    total_line = next(line for line in csv.splitlines() if line.startswith("carbon_kgCO2,TOTAL,"))
+    ticket_total = float(total_line.split(",")[2])
+    assert ticket_total < m["carbon"] - 0.01
+
+
+def test_mix_ticket_exotic_none_is_bit_identical_to_before():
+    """Default `exotic=None` on mix_ticket must not change any existing number."""
+    d = mix_dict(MIX)
+    predictor = StrengthPredictor()
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    config = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
+              "factors": None, "costs": COSTS, "robust": True,
+              "timestamp": "2026-07-01T00:00:00+00:00"}
+    assert mix_ticket(d, m, config) == mix_ticket(d, m, config, exotic=None)
+
+
+# --- R8.0 WP-A A2: waste factor (batched vs placed) -------------------------------
+
+def test_compute_metrics_waste_factor_inert_at_default(predictor):
+    exotic = _no_exotics()
+    m0 = compute_metrics(MIX, exotic, COSTS, predictor)
+    m_explicit = compute_metrics(MIX, exotic, COSTS, predictor, waste_factor=0.0)
+    assert m0["carbon"] == m_explicit["carbon"]
+    assert m0["carbon"] == m0["carbon_as_placed"]   # wf=0 => as-placed == batched
+    assert m0["cost"] == m0["cost_as_placed"]
+
+
+def test_compute_metrics_waste_factor_scales_as_placed_only(predictor):
+    exotic = _no_exotics()
+    base = compute_metrics(MIX, exotic, COSTS, predictor)
+    wasted = compute_metrics(MIX, exotic, COSTS, predictor, waste_factor=0.05)
+    # The batched (per-m3) figures never move -- optimizers keep optimizing these.
+    assert wasted["carbon"] == base["carbon"]
+    assert wasted["cost"] == base["cost"]
+    # The as-placed figures scale by (1 + wf).
+    assert wasted["carbon_as_placed"] == pytest.approx(base["carbon"] * 1.05)
+    assert wasted["cost_as_placed"] == pytest.approx(base["cost"] * 1.05)
+
+
+def test_mix_ticket_waste_factor_rows(predictor):
+    d = mix_dict(MIX)
+    exotic = _no_exotics()
+    m = compute_metrics(MIX, exotic, COSTS, predictor, waste_factor=0.05)
+    config = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
+              "factors": None, "costs": COSTS, "robust": True, "waste_factor": 0.05,
+              "timestamp": "2026-07-01T00:00:00+00:00"}
+    csv = mix_ticket(d, m, config)
+    lines = csv.splitlines()
+    assert any(line == "config,waste_factor,0.05" for line in lines)
+    total_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL,"))
+    placed_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL_as_placed,"))
+    total = float(total_line.split(",")[2])
+    placed = float(placed_line.split(",")[2])
+    assert placed == pytest.approx(total * 1.05, abs=0.01)
+
+
+def test_mix_ticket_waste_factor_inert_at_default(predictor):
+    """wf=0 (the default -- whether via an absent key or an explicit 0.0) leaves
+    TOTAL_as_placed bit-identical to TOTAL."""
+    d = mix_dict(MIX)
+    exotic = _no_exotics()
+    m = compute_metrics(MIX, exotic, COSTS, predictor)
+    config = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
+              "factors": None, "costs": COSTS, "robust": True,
+              "timestamp": "2026-07-01T00:00:00+00:00"}
+    csv = mix_ticket(d, m, config)
+    lines = csv.splitlines()
+    total_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL,"))
+    placed_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL_as_placed,"))
+    assert total_line.split(",")[2] == placed_line.split(",")[2]
+
+
+# --- R8.0 WP-A A3: carbon-intensity KPI -------------------------------------------
+
+def test_compute_metrics_carbon_intensity(predictor):
+    exotic = _no_exotics()
+    m = compute_metrics(MIX, exotic, COSTS, predictor)
+    assert m["carbon_intensity"] == pytest.approx(m["carbon"] / max(m["strength"], 1.0))
+
+
+def test_mix_ticket_carbon_intensity_row(predictor):
+    d = mix_dict(MIX)
+    exotic = _no_exotics()
+    m = compute_metrics(MIX, exotic, COSTS, predictor)
+    config = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
+              "factors": None, "costs": COSTS, "robust": True,
+              "timestamp": "2026-07-01T00:00:00+00:00"}
+    csv = mix_ticket(d, m, config)
+    row = next(line for line in csv.splitlines()
+               if line.startswith("prediction,carbon_intensity_kg_per_m3MPa_point,"))
+    value = float(row.split(",")[2])
+    assert value == pytest.approx(m["carbon_intensity"], abs=0.001)

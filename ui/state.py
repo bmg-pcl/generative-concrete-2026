@@ -50,6 +50,10 @@ CONFIG_DEFAULTS = {
     "cfg_fix_age": True,
     "cfg_design_age": 28,
     "cfg_exotic_strength": False,
+    # R8.0 WP-A A2: batched-vs-placed waste factor (default 0.0 -- inert). Added
+    # HERE only: the ui_config export/import comprehension picks it up automatically
+    # (see export_session below) -- no SESSION_FIELDS edit, no SESSION_VERSION bump.
+    "cfg_waste_factor": 0.0,
 }
 
 
