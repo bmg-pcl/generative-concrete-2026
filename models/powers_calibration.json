@@ -1,0 +1,80 @@
+{
+  "description": "WP-F phase 1: Powers gel-space-ratio calibration. Evidence artifact only -- not read by any runtime path. See docs/specs/R8.0-carbon-chemistry-deepening.md, WP-F, and this script's module docstring for the full honesty fence.",
+  "formulas": {
+    "gel_space_ratio": "X = 0.68*alpha / (0.32*alpha + w_c)",
+    "powers_law": "f = A * X^n",
+    "log_linear_fit": "ln(f) = ln(A) + n*ln(X)"
+  },
+  "assumptions": {
+    "cement_type": "OPC",
+    "clinker_factor": 0.95,
+    "opc_assumption_note": "The UCI dataset has one unlabelled 'cement' mass column with no cement-type field. Every row is assumed to be OPC (data/oxide_compositions.json 'OPC' record) with clinker_factor=0.95. This is identical for all rows -- only w/c, cement dosage, and age vary row to row. Rows that are actually blended cement (PLC, LC3, etc.) violate this assumption and their residual is attributed to unmodelled hydration, not to the Powers fit.",
+    "scm_strength_contribution_note": "alpha comes from hydration_kinetics, which models CLINKER hydration only (see its docstring in src/chemistry_advanced.py). Slag and fly-ash pozzolanic/latent-hydraulic strength contributions are NOT represented in X. This is the expected dominant residual source on high-SCM mixes -- see scm_fraction_bucket_residuals_mpa below.",
+    "gel_space_ratio_constants_source": "Powers & Brownyard (1948); Powers (1958)"
+  },
+  "fit": {
+    "A": 74.552994,
+    "n": 1.017422,
+    "n_sanity_band_reported": [
+      1.5,
+      4.5
+    ],
+    "n_within_sanity_band": false,
+    "r2_log_space": 0.69135,
+    "r2_mpa_space": 0.644891,
+    "residual_std_mpa": 9.877542
+  },
+  "rows": {
+    "total": 1030,
+    "used": 1030,
+    "excluded": 0,
+    "excluded_reasons": {
+      "X_not_finite_or_not_positive": 0,
+      "strength_not_finite_or_not_positive_given_X_valid": 0
+    }
+  },
+  "age_bucket_residuals_mpa": {
+    "<=7": {
+      "count": 262,
+      "residual_mean_mpa": 1.2739,
+      "residual_std_mpa": 7.7186
+    },
+    "14-28": {
+      "count": 487,
+      "residual_mean_mpa": 1.3848,
+      "residual_std_mpa": 9.9178
+    },
+    "56-90": {
+      "count": 145,
+      "residual_mean_mpa": 1.9344,
+      "residual_std_mpa": 11.0451
+    },
+    ">=91": {
+      "count": 136,
+      "residual_mean_mpa": -0.0883,
+      "residual_std_mpa": 11.9113
+    }
+  },
+  "scm_fraction_bucket_residuals_mpa": {
+    "0%": {
+      "count": 232,
+      "residual_mean_mpa": -8.2026,
+      "residual_std_mpa": 8.5483
+    },
+    "0-25%": {
+      "count": 119,
+      "residual_mean_mpa": 1.5995,
+      "residual_std_mpa": 7.7664
+    },
+    "25-50%": {
+      "count": 482,
+      "residual_mean_mpa": 3.6815,
+      "residual_std_mpa": 8.29
+    },
+    "50%+": {
+      "count": 197,
+      "residual_mean_mpa": 6.1668,
+      "residual_std_mpa": 8.7441
+    }
+  }
+}

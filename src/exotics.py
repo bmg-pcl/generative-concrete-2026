@@ -18,9 +18,9 @@ exist so the switch is demonstrable and so there is one obvious place to drop in
 real, fitted coefficients once exotic strength data is collected. Until then, the
 UI labels any exotic strength contribution as an unvalidated estimate.
 """
-from typing import Dict
+from typing import Dict, List
 
-from .materials import exotics_view
+from .materials import exotics_view, load_materials
 
 # Per-admixture properties (a VIEW over data/materials.json since R6.1 -- add a new
 # admixture by appending a registry record, not by editing code; see
@@ -62,3 +62,30 @@ def exotic_strength_delta(exotic: Dict[str, float], enabled: bool = False) -> fl
     if not enabled:
         return 0.0
     return sum(exotic.get(k, 0) * props["strength_factor"] for k, props in EXOTIC_ADMIXTURES.items())
+
+
+def compliance_warnings(exotic: Dict[str, float]) -> List[str]:
+    """
+    Advisory compliance warnings (R8.0 WP-D2) -- one string per DOSED material
+    that carries a registry `"restrictions"` block (e.g. calcium_chloride's
+    ACI 318 ch. 19 / EN 206 chloride limit in reinforced concrete). Styled after
+    `physical.workability_flag`: advisory, not a hard constraint -- this tool
+    does not know whether the mix is going into reinforced concrete, it only
+    flags that the question exists. `{}` or nothing dosed returns [].
+
+    This is the data hook R8.2's compliance layer will consume; the UI wiring
+    (Compare tab / ticket) is Wave B.
+    """
+    registry = load_materials()
+    warnings = []
+    for k, amount in (exotic or {}).items():
+        if not amount:
+            continue
+        restrictions = registry.get(k, {}).get("restrictions")
+        if not restrictions:
+            continue
+        detail = ", ".join(f"{ctx}: {status}" for ctx, status in restrictions.items()
+                           if ctx != "reference")
+        reference = restrictions.get("reference", "unreferenced")
+        warnings.append(f"{k}: {detail} (see {reference}).")
+    return warnings

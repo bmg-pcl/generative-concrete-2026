@@ -71,8 +71,19 @@ def test_capture_energy_penalty_survives_capture():
 
 
 def test_legacy_default_unchanged():
-    # No descriptor → exactly the pre-R6.3 formula.
-    assert carbon_from_clinker(300.0) == pytest.approx(300.0 * 0.95 * (0.53 + 0.35))
+    # R8.0/WP-B B1: the legacy (no-descriptor) path now also carries the process-
+    # electricity term (previously dropped scope -- see chemistry_advanced module
+    # docstring), on the documented legacy grid_EU default:
+    #   clinker term = 300 * 0.95 * (0.53 + 0.35)        = 250.8
+    #   process term = 300 * 0.11 * GRID_EF["grid_EU"]   = 300 * 0.11 * 0.25 = 8.25
+    #   total                                            = 259.05  (~0.8635/kg cement)
+    # OPC has no `constituents` entry, so B2 contributes exactly 0 here -- this
+    # gate is the "at least one gate runs the legacy path" requirement (grid_EU
+    # fallback coverage) from the spec's WP-B "Traps" note.
+    legacy_clinker_term = 300.0 * 0.95 * (0.53 + 0.35)
+    legacy_process_term = 300.0 * 0.11 * 0.25
+    assert carbon_from_clinker(300.0) == pytest.approx(
+        legacy_clinker_term + legacy_process_term)
     assert embodied_carbon_advanced(MIX) == pytest.approx(
         embodied_carbon_advanced(MIX, clinker_source=None))
 

@@ -237,6 +237,22 @@ workspaces verified, test policy explicit — the same four packages plausibly l
 ~2 h wall. The design machinery needs no changes; the checklist above is where the
 next multiple comes from.
 
+**Second validation of v2, at width 5 (R8.0 Wave A, 2026-08-20).** Five concurrent
+packages. Four ran clean start-to-finish — 70–106k tokens, 33–42 tool calls, 4.5–8 min
+each, zero stalls, and one (WP-C) caught a genuine spec arithmetic error (the ΔT band
+had been derived from 28-day heat instead of full-hydration heat) and corrected the
+band *with the derivation shown* rather than tuning anything — the report-deviations
+clause doing exactly its job. The fifth (WP-A) regressed into the background-and-wait
+stall twice despite the explicit prompt clause, then was killed by a **session usage
+limit** mid-report — a new failure mode: the agent had committed its work, so the
+commit was harvested and the orchestrator verified every gate independently (all
+passed). Two lessons added to the playbook: (1) the stall clause needs teeth the
+prompt alone lacks — a nudge message ("verify in the foreground THIS turn") un-stuck
+the agent where waiting would not have; (2) instruct agents to COMMIT BEFORE writing
+the final report, so a usage-limit death costs the narrative, not the work — and
+treat orchestrator-side gate verification as the standing backstop for any package
+whose report never arrives.
+
 **First validation of v2 (WP-5, 2026-08-18).** The remaining Wave B package ran
 solo under this workflow: baseline handed in the prompt, the F1 workspace fix as an
 explicit step 0 (the worktree base was verified good within seconds of spawn),

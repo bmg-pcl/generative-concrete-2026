@@ -93,6 +93,24 @@ def render_config(predictor, bayesian, presets) -> AppContext:
             help="One-way haul distance, plant to site; the 0.1 kg CO₂/t·km factor is "
                  "applied to the distance entered (not doubled for a return leg).",
         )
+        # R8.0 WP-E Decision 2: DEFAULT OFF. The registry carries a default
+        # transport block (mode + km) for most materials; applying it unconditionally
+        # would silently add carbon to every existing mix that left "Transport
+        # distance" at its 0 km default. ON swaps in per-material registry
+        # distances for materials that carry a block, keeping the global-km field
+        # above for the few that don't (water, superplasticizer).
+        transport_detail = st.toggle(
+            "Per-material transport detail (experimental)",
+            key="cfg_transport_detail",
+            help="OFF (default): the single 'Transport distance' above applies to "
+                 "every material's mass. ON: materials with a registry transport "
+                 "block (typical haul mode + distance, e.g. cement 200 km truck, "
+                 "aggregates 30 km truck, exotics 500 km truck / 10,000 km ship for "
+                 "nano materials) use THAT distance instead; only materials without "
+                 "a registry block still use the global km above. This changes the "
+                 "displayed carbon total for a dosed/default mix — off by default so "
+                 "no existing number moves silently.",
+        )
         cement_source = st.selectbox(
             "Clinker / cement source", ["OPC (Portland)", "LC3 (limestone calcined clay)"],
             key="cfg_cement_source",
@@ -145,6 +163,35 @@ def render_config(predictor, bayesian, presets) -> AppContext:
             "clinker_source": clinker_source,
         }
 
+        # R8.0 WP-A A2: batched material isn't all placed. Applied at the metrics/
+        # ticket layer only (compute_metrics/mix_ticket) -- it never touches the
+        # carbon_kwargs above, so the batched, per-m3 figures the optimizers target
+        # are untouched. Keyed-only (no value=), same pattern as the other cfg_
+        # controls.
+        waste_factor = st.slider(
+            "Waste factor (batched → placed)", 0.0, 0.25, step=0.01,
+            key="cfg_waste_factor",
+            help="Batched material is not all placed: spillage, over-ordering, and "
+                 "pump/washout losses typically add 3-8% before compaction. This "
+                 "scales the CARBON and COST 'as-placed' figures shown alongside the "
+                 "batched, per-m³ numbers -- it does NOT change the mix design itself, "
+                 "and the optimizers always target the batched (unscaled) figures.",
+        )
+
+        # R8.0 WP-E Decision 1: feeds ONLY the secondary `curing_maturity_days`
+        # disclosure metric (src/thermal.py's ASTM C1074 maturity function) — it
+        # never touches the primary `curing` heuristic or any carbon/cost figure.
+        site_temp_c = st.number_input(
+            "Site curing temperature (°C, secondary maturity estimate)", 0.0, 45.0,
+            key="cfg_site_temp_c",
+            help="Feeds an UNCALIBRATED, secondary maturity-based curing estimate "
+                 "(ASTM C1074 Arrhenius) shown alongside — not instead of — the "
+                 "primary curing heuristic above. The two estimate different "
+                 "quantities and commonly disagree; that disagreement is itself "
+                 "information, not a bug (see the ticket's "
+                 "curing_maturity_days_uncalibrated row).",
+        )
+
         st.divider()
         st.subheader("Optimization")
         robust_mode = st.toggle(
@@ -183,7 +230,14 @@ def render_config(predictor, bayesian, presets) -> AppContext:
 
     ticket_config = {
         **carbon_kwargs, "advanced": use_advanced_chemistry, "costs": st.session_state.costs,
-        "robust": robust_mode,
+        "robust": robust_mode, "waste_factor": float(waste_factor),
+        # R8.0 WP-E Decisions 1 & 2: UI-session concerns only (the CLI's run
+        # config deliberately gains neither key — see src/cli.py), so they ride
+        # only on the app's own ticket_config, not carbon_kwargs (carbon_kwargs
+        # feeds every carbon call site, including the optimizers, which must keep
+        # targeting today's batched figures unchanged).
+        "transport_detail": bool(transport_detail),
+        "site_temp_c": float(site_temp_c),
         "carbon_provenance": carbon_provenance(st.session_state.carbon_factors,
                                                st.session_state.get("epds")),
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),

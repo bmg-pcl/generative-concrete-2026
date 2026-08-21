@@ -14,8 +14,17 @@ every number from `bogue_calculation` onward as a labelled, order-of-magnitude
 sketch -- NOT a validated prediction. This is the opposite situation from the
 carbon-accounting functions below (`embodied_carbon_advanced`,
 `carbon_from_clinker`, `clinker_scope_split`), which ARE measured and tested
-against reference values (WBCSD/CSI defaults, kiln energy benchmarks) and are
-frozen: WP-1 must not change their behaviour (see the module's carbon section).
+against reference values (WBCSD/CSI defaults, kiln energy benchmarks).
+
+R8.0 / WP-B status (see docs/specs/R8.0-carbon-chemistry-deepening.md): the
+carbon section was frozen for R7.5/WP-1 but WP-B is the one package licensed to
+revise it deliberately -- it closes two scope holes (process electricity,
+LC3's non-clinker constituent carbon) that were making the Tier-2 cement term
+under-count relative to Tier-1 and to published LC3 EPDs. Every changed pin is
+re-derived and re-justified in tests/test_chemistry.py, tests/test_clinker_source.py,
+and the commit message. `clinker_scope_split` and its per-kg-clinker worked-
+example pins are untouched by WP-B -- the new terms live in `carbon_from_clinker`,
+per kg CEMENT.
 """
 import json
 import os
@@ -98,6 +107,17 @@ def bogue_calculation(oxides: dict[str, float]) -> ClinkerPhases:
     treated as valid for backward compatibility -- the flag is an explicit "no",
     not a required "yes".
 
+    R8.0/WP-B B3 -- bare-dict hygiene: `CaO` and `SiO2` are the two oxides that
+    dominate the Bogue equations and define what "OPC-like" even means, so a bare
+    dict missing either raises `ValueError` naming the missing oxide(s) rather than
+    silently impersonating a real OPC composition (the pre-WP-B behaviour: an empty
+    dict returned full OPC-typical phases). `Al2O3`, `Fe2O3`, `SO3` are minor oxides
+    with a real, if smaller, effect on the equations below; they keep their
+    OPC-typical defaults for backward compatibility with partial records that DO
+    carry the majors. Every registry record (data/oxide_compositions.json) carries
+    all five oxides, so the registry-record path through `analyze_mix` is
+    unaffected -- this only tightens the bare-dict path.
+
     Reference: Bogue, R.H. (1929) "Calculation of the Compounds in Portland Cement"
     """
     if oxides.get("bogue_valid", True) is False:
@@ -107,8 +127,17 @@ def bogue_calculation(oxides: dict[str, float]) -> ClinkerPhases:
             "blended/SCM oxide sets). See data/oxide_compositions.json."
         )
 
-    CaO = oxides.get("CaO", 65.0)
-    SiO2 = oxides.get("SiO2", 21.0)
+    missing = [name for name in ("CaO", "SiO2") if name not in oxides]
+    if missing:
+        raise ValueError(
+            "bogue_calculation: missing required major oxide(s) "
+            f"{', '.join(missing)} -- a bare oxide dict must at least specify CaO "
+            "and SiO2 (Bogue's dominant terms); defaults are only applied to the "
+            "minor oxides (Al2O3, Fe2O3, SO3)."
+        )
+
+    CaO = oxides["CaO"]
+    SiO2 = oxides["SiO2"]
     Al2O3 = oxides.get("Al2O3", 5.5)
     Fe2O3 = oxides.get("Fe2O3", 3.0)
     SO3 = oxides.get("SO3", 2.5)
@@ -290,12 +319,21 @@ def latent_hydraulic_reaction(
 # The tables below parameterize that; a supplier EPD, when attached, beats all of it
 # (measured > modeled — see the resolution order in src/materials.py).
 #
-# R7.5 — FROZEN SURFACE. Everything from here to the end of this section
-# (CALCINATION_EF, FUEL_EF, KILN_KWH_PER_KG, GRID_EF, DEFAULT_CAPTURE_KWH_PER_T_CO2,
-# clinker_scope_split, carbon_from_clinker, embodied_carbon_advanced) is measured
-# and tested (tests/test_chemistry.py, tests/test_clinker_source.py) and MUST NOT
-# change behaviour as part of WP-1. Contrast with the hydration chain above, which
+# R7.5 — FROZEN SURFACE (through R7.5/WP-1). Everything from here to the end of
+# this section (CALCINATION_EF, FUEL_EF, KILN_KWH_PER_KG, GRID_EF,
+# DEFAULT_CAPTURE_KWH_PER_T_CO2, clinker_scope_split, carbon_from_clinker,
+# embodied_carbon_advanced) is measured and tested (tests/test_chemistry.py,
+# tests/test_clinker_source.py). Contrast with the hydration chain above, which
 # is uncalibrated by necessity -- this carbon section is not.
+#
+# R8.0 / WP-B — deliberately revised (see module docstring). `clinker_scope_split`
+# and DEFAULT_CAPTURE_KWH_PER_T_CO2 / CALCINATION_EF / FUEL_EF / KILN_KWH_PER_KG /
+# GRID_EF stay byte-identical (contract 2 of the spec -- the per-kg-clinker
+# worked-example pins in test_clinker_source.py must survive untouched). WP-B
+# adds two new per-kg-CEMENT terms inside `carbon_from_clinker` only: process
+# electricity (B1) and LC3 constituent carbon (B2). Every resulting change to a
+# quoted number is re-derived in the commit message and re-pinned in the owned
+# test files, per the spec's "number-change protocol".
 
 CALCINATION_EF = 0.53   # kg CO2 / kg clinker — process chemistry, fuel-independent
 
@@ -320,6 +358,22 @@ GRID_EF = {
 # Capture electricity demand (kWh per tonne CO2 captured): compression + auxiliaries
 # for a heat-integrated capture plant. Site-specific — override in the descriptor.
 DEFAULT_CAPTURE_KWH_PER_T_CO2 = 150.0
+
+# R8.0 / WP-B B1 — process electricity for raw-meal prep, kiln drives, and cement
+# grinding, per kg CEMENT (not clinker): ~100-120 kWh/t cement is typical for a
+# modern dry-process plant (IEA/WBCSD GNR benchmark range); take 110 kWh/t =
+# 0.11 kWh/kg as the declared default. This was previously dropped scope in the
+# Tier-2 cement term (see the module docstring) -- it belongs to EVERY cement,
+# clinker-only or blended, which is why it is charged per kg cement rather than
+# folded into `clinker_scope_split` (that function is per kg clinker and frozen).
+CEMENT_PROCESS_KWH_PER_KG = 0.11
+
+# R8.0 / WP-B B2 — the ~5% gypsum in LC3-50 (calcined_clay 0.30 + limestone_filler
+# 0.15 + clinker 0.50 + gypsum ~0.05, LC3-50 nominal proportions) has no carbon
+# record in data/materials.json (gypsum is not a registry material in this repo)
+# and is DELIBERATELY EXCLUDED from the constituent carbon term below -- its A1-A3
+# factor is small (natural gypsum, low-energy grinding) relative to the terms that
+# are counted, but it is an honest omission, not a zero-carbon claim.
 
 
 def clinker_scope_split(clinker_mass: float, source: dict) -> dict[str, float]:
@@ -361,10 +415,24 @@ def carbon_from_clinker(
     The main sources are:
     1. Calcination of limestone: CaCO3 → CaO + CO2 (~0.53 kg CO2/kg clinker)
     2. Fuel combustion in the kiln (~0.35 kg CO2/kg clinker, varies by fuel)
+    3. (R8.0/WP-B B1) Process electricity for raw-meal prep, kiln drives, and
+       grinding, per kg CEMENT -- see CEMENT_PROCESS_KWH_PER_KG.
+    4. (R8.0/WP-B B2) Non-clinker constituent carbon (e.g. LC3's calcined clay
+       and limestone filler), per kg CEMENT -- see the cement_type's
+       `constituents` entry in data/oxide_compositions.json.
 
     With a `clinker_source` descriptor (R6.3) the fuel/electricity/capture terms are
-    computed per source via `clinker_scope_split`; without one, the legacy default
-    (0.53 + kiln_fuel_carbon) is byte-for-byte unchanged.
+    computed per source via `clinker_scope_split`; without one, the legacy clinker
+    subtotal (0.53 + kiln_fuel_carbon per kg clinker) is byte-for-byte unchanged --
+    both paths then add the same B1/B2 per-kg-cement terms on top (R8.0/WP-B: the
+    Tier-2 cement term is no longer clinker-only, closing scope that was previously
+    dropped -- see the module docstring).
+
+    The process-electricity grid: with a clinker_source descriptor, its
+    `"electricity"` key selects the GRID_EF entry (same grid the scope-split uses,
+    so a single source descriptor is internally consistent); without one, the
+    legacy/default grid is GRID_EF["grid_EU"] (documented default -- no descriptor
+    means no better information about where the plant sits).
 
     Note: this is the cement-only contribution. For a full mix carbon figure on the
     same system boundary as the Tier-1 model, use `embodied_carbon_advanced`.
@@ -374,17 +442,37 @@ def carbon_from_clinker(
         clinker_factor: Fraction of cement that is clinker. If None, it is read from
             data/oxide_compositions.json for `cement_type` (e.g., 0.95 OPC, 0.50 LC3).
         kiln_fuel_carbon: Carbon intensity of kiln fuel (legacy path only)
-        cement_type: Key into the oxide JSON used when clinker_factor is None.
+        cement_type: Key into the oxide JSON used when clinker_factor is None, AND
+            (R8.0/WP-B B2) to look up the `constituents` recipe for non-clinker
+            cement components (e.g. LC3's calcined clay + limestone filler). Absent
+            for OPC, so B2 contributes 0 for OPC.
         clinker_source: Optional source descriptor (kiln_fuel / electricity / capture).
     """
     if clinker_factor is None:
         clinker_factor = clinker_factor_for(cement_type)
     clinker_mass = cement_mass * clinker_factor
     if clinker_source is not None:
-        return clinker_scope_split(clinker_mass, clinker_source)["total"]
-    calcination_co2 = clinker_mass * CALCINATION_EF
-    fuel_co2 = clinker_mass * kiln_fuel_carbon
-    return calcination_co2 + fuel_co2
+        clinker_co2 = clinker_scope_split(clinker_mass, clinker_source)["total"]
+        grid_ef = GRID_EF[clinker_source.get("electricity", "grid_EU")]
+    else:
+        calcination_co2 = clinker_mass * CALCINATION_EF
+        fuel_co2 = clinker_mass * kiln_fuel_carbon
+        clinker_co2 = calcination_co2 + fuel_co2
+        grid_ef = GRID_EF["grid_EU"]
+
+    # B1 — process electricity, per kg cement, on the same grid as the clinker term.
+    process_co2 = cement_mass * CEMENT_PROCESS_KWH_PER_KG * grid_ef
+
+    # B2 — non-clinker constituent carbon (LC3-style blends only; OPC has no
+    # `constituents` key so this is exactly 0 and OPC is unaffected).
+    oxide_compositions = load_oxide_compositions()
+    constituents = oxide_compositions.get(cement_type, {}).get("constituents", {})
+    constituent_co2 = sum(
+        cement_mass * frac * get_material(material)["carbon"][0]["value"]
+        for material, frac in constituents.items()
+    )
+
+    return clinker_co2 + process_co2 + constituent_co2
 
 
 def embodied_carbon_advanced(

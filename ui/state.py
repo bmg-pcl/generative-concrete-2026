@@ -50,6 +50,19 @@ CONFIG_DEFAULTS = {
     "cfg_fix_age": True,
     "cfg_design_age": 28,
     "cfg_exotic_strength": False,
+    # R8.0 WP-A A2: batched-vs-placed waste factor (default 0.0 -- inert). Added
+    # HERE only: the ui_config export/import comprehension picks it up automatically
+    # (see export_session below) -- no SESSION_FIELDS edit, no SESSION_VERSION bump.
+    "cfg_waste_factor": 0.0,
+    # R8.0 WP-E Decision 1: site temperature feeding ONLY the secondary
+    # curing_maturity_days disclosure metric (default 20.0 == thermal.py's own
+    # ASTM C1074 reference temperature, so this is inert at default -- the
+    # maturity estimate at 20 C equals the direct alpha-inversion). Same
+    # single-place-add pattern as cfg_waste_factor -- no SESSION_VERSION bump.
+    "cfg_site_temp_c": 20.0,
+    # R8.0 WP-E Decision 2: per-material transport detail toggle (default False
+    # -- inert; today's single global-km transport heuristic, bit-identical).
+    "cfg_transport_detail": False,
 }
 
 

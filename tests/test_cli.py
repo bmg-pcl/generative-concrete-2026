@@ -11,7 +11,8 @@ import sys
 import numpy as np
 import pytest
 
-from src.cli import main, load_mix, load_project_config, CliError, validate_clinker_source
+from src.cli import (main, load_mix, load_project_config, CliError, validate_clinker_source,
+                     validate_waste_factor, DEFAULT_RUN_CONFIG)
 from src.models import StrengthPredictor
 from src.ui_logic import PARAM_NAMES, compute_metrics
 
@@ -193,7 +194,8 @@ def test_config_accepts_real_ui_session_export(tmp_path):
 
     cfg = load_project_config(str(p))  # must not raise CliError
     assert cfg["run"] == {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
-                          "robust": True, "age": None, "clinker_source": None}
+                          "robust": True, "age": None, "clinker_source": None,
+                          "waste_factor": 0.0}
 
 
 # --- R7.5 WP-4: clinker_source boundary validation --------------------------------
@@ -312,3 +314,132 @@ def test_clinker_source_config_valid_descriptor_reaches_predict(tmp_path, capsys
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["carbon"] < base_carbon  # low-carbon clinker source lowers total carbon
+
+
+# --- R8.0 WP-A A1/A2: ticket reconciliation & waste-factor boundary validation ----
+
+def test_cli_ticket_reconciles_for_dosed_mix(tmp_path, capsys):
+    """A1 headline gate via the CLI: for a mix with an "exotic" dosing dict, the
+    written ticket's carbon_kgCO2,TOTAL row must equal the displayed carbon."""
+    mix_with_exotic = dict(MIX)
+    mix_with_exotic["exotic"] = {"silica_fume": 50}
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(mix_with_exotic))
+    ticket = tmp_path / "ticket.csv"
+    rc = main(["predict", "--mix", str(mixp), "--ticket", str(ticket)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    lines = ticket.read_text().splitlines()
+    total_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL,"))
+    assert float(total_line.split(",")[2]) == pytest.approx(out["carbon"], abs=0.05)
+
+
+def test_waste_factor_default_is_zero():
+    assert DEFAULT_RUN_CONFIG["waste_factor"] == 0.0
+
+
+def test_validate_waste_factor_accepts_boundary_and_typical_values():
+    assert validate_waste_factor(0.0) is None
+    assert validate_waste_factor(0.05) is None
+    assert validate_waste_factor(0.4999) is None
+
+
+@pytest.mark.parametrize("bad", [-0.1, 0.6, 0.5, "high", True])
+def test_validate_waste_factor_rejects_out_of_range_and_non_numeric(bad):
+    assert validate_waste_factor(bad) is not None
+
+
+def test_cli_rejects_bad_waste_factor_exits_1_no_traceback(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    for bad in (-0.1, 0.6):
+        cfg = tmp_path / "cfg.json"
+        cfg.write_text(json.dumps({"config": {"waste_factor": bad}}))
+        rc = main(["predict", "--mix", str(mixp), "--config", str(cfg)])
+        assert rc == 1, bad
+        err = capsys.readouterr().err
+        assert "waste_factor" in err
+        assert "Traceback" not in err
+
+
+def test_cli_waste_factor_applies_to_metrics_and_ticket(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    ticket = tmp_path / "ticket.csv"
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"config": {"waste_factor": 0.05}}))
+    rc = main(["predict", "--mix", str(mixp), "--config", str(cfg), "--ticket", str(ticket)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["carbon_as_placed"] == pytest.approx(out["carbon"] * 1.05, rel=1e-6)
+    lines = ticket.read_text().splitlines()
+    assert any(line == "config,waste_factor,0.05" for line in lines)
+    total_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL,"))
+    placed_line = next(line for line in lines if line.startswith("carbon_kgCO2,TOTAL_as_placed,"))
+    total = float(total_line.split(",")[2])
+    placed = float(placed_line.split(",")[2])
+    assert placed == pytest.approx(total * 1.05, abs=0.01)
+
+
+def test_cli_waste_factor_at_default_is_bit_identical(tmp_path, capsys):
+    """wf=0 (the default) must not move any existing predict output field."""
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp)])
+    assert rc == 0
+    base = json.loads(capsys.readouterr().out)
+
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"config": {"waste_factor": 0.0}}))
+    rc = main(["predict", "--mix", str(mixp), "--config", str(cfg)])
+    assert rc == 0
+    explicit = json.loads(capsys.readouterr().out)
+    assert explicit["carbon"] == base["carbon"]
+    assert explicit["carbon_as_placed"] == base["carbon"]
+
+
+# --- R8.0 WP-E: disclosure rows reach the CLI ticket automatically ----------------
+# No new run-config keys (site temp / transport detail are UI-session concerns per
+# the WP-E prompt) -- the CLI's `predict --ticket` output must still gain every new
+# disclosure row through `mix_ticket`, at the module's own defaults (site_temp_c
+# 20.0, transport_detail off), without any src/cli.py wiring for them.
+
+def test_cli_predict_output_carries_disclosure_fields(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["carbon_interval_lo"] <= out["carbon"] <= out["carbon_interval_hi"]
+    assert out["delta_t_adiabatic_C"] is not None
+    assert out["curing_maturity_days"] is not None
+    assert out["curing_maturity_days"] != out["curing"]  # secondary, not a switchover
+
+
+def test_cli_ticket_carries_disclosure_rows(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    ticket = tmp_path / "ticket.csv"
+    rc = main(["predict", "--mix", str(mixp), "--ticket", str(ticket)])
+    assert rc == 0
+    lines = ticket.read_text().splitlines()
+    assert any(line.startswith("carbon_kgCO2,interval_lo,") for line in lines)
+    assert any(line.startswith("carbon_kgCO2,interval_hi,") for line in lines)
+    assert any(line.startswith("carbon_kgCO2,carbonation_uptake_bound_informational,") for line in lines)
+    assert any(line.startswith("thermal,delta_t_adiabatic_C,") for line in lines)
+    assert any(line.startswith("prediction,curing_maturity_days_uncalibrated,") for line in lines)
+    assert any(line.startswith("allocation,cement,") for line in lines)
+    # No new run-config keys: no per-material transport disclosure by default.
+    assert not any(line.startswith("transport_detail,") for line in lines)
+
+
+def test_cli_design_ticket_also_carries_disclosure_rows(tmp_path, capsys):
+    """recommend_recipe's own dict predates WP-E; the CLI ticket must still get
+    every disclosure row via mix_ticket's fallback (not just `predict`'s)."""
+    ticket = tmp_path / "ticket.csv"
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28",
+               "--ticket", str(ticket)])
+    assert rc == 0
+    lines = ticket.read_text().splitlines()
+    assert any(line.startswith("carbon_kgCO2,interval_lo,") for line in lines)
+    assert any(line.startswith("thermal,delta_t_adiabatic_C,") for line in lines)

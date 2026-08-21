@@ -15,6 +15,8 @@ import json
 import pytest
 
 from src.materials import (
+    ALLOCATION_BASES,
+    TRANSPORT_MODE_EF,
     load_materials,
     set_materials_path,
     validate_material,
@@ -27,6 +29,9 @@ from src.materials import (
     exotic_densities_view,
     exotics_view,
     slider_specs_view,
+    factor_uncertainties_view,
+    carbon_interval,
+    material_transport_carbon,
 )
 
 # --- R6.1: pinned pre-registry values (the migration must not move a digit) -----
@@ -144,7 +149,7 @@ def test_validate_material_rejects_delta_estimate_missing_density():
     to load without one)."""
     rec = {
         "name": "X", "category": "Filler",
-        "carbon": [{"value": 0.1, "source": "database"}],
+        "carbon": [{"value": 0.1, "source": "database", "allocation": "none"}],
         "strength_treatment": "delta_estimate",
         "dosage": {"default": 0, "max": 10, "unit": "kg/m3"},
         "strength_factor": 0.0,
@@ -196,7 +201,7 @@ def test_new_material_via_registry_json(tmp_path):
         "unit_cost": {"value": 0.07, "currency": "USD/kg", "source": "test"},
         "carbon": [{"value": 0.006, "unit": "kgCO2e/kg", "boundary": "A1-A3",
                     "region": "test", "vintage": 2026, "source": "database",
-                    "reference": "test", "uncertainty": 0.5}],
+                    "reference": "test", "uncertainty": 0.5, "allocation": "none"}],
         "strength_treatment": "delta_estimate", "strength_factor": 0.03,
     }
     p = tmp_path / "materials.json"
@@ -253,5 +258,136 @@ def test_exotic_density_edit_via_registry_json(tmp_path):
         edited = {k: v for k, v in exotic_densities_view().items() if k != "calcined_clay"}
         assert edited == rest
         assert densities_view() == EXPECTED_DENSITIES
+    finally:
+        set_materials_path(None)
+
+
+# --- R8.0 WP-D1: allocation basis ------------------------------------------------
+def test_every_material_carries_allocation():
+    for key, rec in load_materials().items():
+        for c in rec["carbon"]:
+            assert c.get("allocation") in ALLOCATION_BASES, \
+                f"{key} carbon record missing/invalid allocation"
+
+
+def test_allocation_assignments_match_spec_table():
+    """R8.0 WP-D1's populated table: byproduct-mass for slag/ash/silica_fume/
+    rice_husk_ash, process for cement/calcined_clay/metakaolin, none for the rest."""
+    reg = load_materials()
+    byproduct = ("slag", "ash", "silica_fume", "rice_husk_ash")
+    process = ("cement", "calcined_clay", "metakaolin")
+    for k in byproduct:
+        assert reg[k]["carbon"][0]["allocation"] == "byproduct-mass"
+    for k in process:
+        assert reg[k]["carbon"][0]["allocation"] == "process"
+    for k in set(reg) - set(byproduct) - set(process):
+        assert reg[k]["carbon"][0]["allocation"] == "none"
+
+
+def test_validate_material_rejects_missing_allocation():
+    rec = {"name": "X", "category": "scm", "strength_treatment": "inert",
+           "carbon": [{"value": 1.0, "source": "database"}]}
+    err = validate_material("x", rec)
+    assert err is not None
+    assert "allocation" in err
+
+
+def test_validate_material_rejects_unknown_allocation():
+    rec = {"name": "X", "category": "scm", "strength_treatment": "inert",
+           "carbon": [{"value": 1.0, "source": "database", "allocation": "made-up"}]}
+    err = validate_material("x", rec)
+    assert err is not None
+    assert "allocation" in err
+
+
+# --- R8.0 WP-D3: uncertainty propagation -----------------------------------------
+def test_factor_uncertainties_view_reads_registry():
+    view = factor_uncertainties_view()
+    assert view["cement"] == 0.15
+    assert view["slag"] == 0.3
+    # Exotic (delta_estimate) materials are covered too, unlike carbon_factors_view.
+    assert view["silica_fume"] == 0.5
+
+
+def test_carbon_interval_zero_uncertainty_collapses_to_total():
+    mix = {"cement": 300, "water": 180}
+    factors = {"cement": 0.9, "water": 0.0003}
+    uncertainties = {"cement": 0.0, "water": 0.0}
+    total = 300 * 0.9 + 180 * 0.0003
+    lo, hi = carbon_interval(mix, factors, uncertainties)
+    assert lo == pytest.approx(total)
+    assert hi == pytest.approx(total)
+
+
+def test_carbon_interval_symmetric_about_the_plain_total():
+    mix = {"cement": 300}
+    factors = {"cement": 0.9}
+    total = 300 * 0.9
+    lo, hi = carbon_interval(mix, factors, {"cement": 0.15})
+    assert (lo + hi) / 2 == pytest.approx(total)
+    assert hi - total == pytest.approx(total - lo)
+
+
+def test_carbon_interval_narrows_when_uncertainty_tightened():
+    mix = {"cement": 300}
+    factors = {"cement": 0.9}
+    wide_lo, wide_hi = carbon_interval(mix, factors, {"cement": 0.3})
+    tight_lo, tight_hi = carbon_interval(mix, factors, {"cement": 0.1})
+    assert (tight_hi - tight_lo) < (wide_hi - wide_lo)
+
+
+def test_carbon_interval_includes_exotic_contribution_when_given():
+    mix = {"cement": 300}
+    factors = {"cement": 0.9, "silica_fume": 0.02}
+    uncertainties = {"cement": 0.15, "silica_fume": 0.5}
+    exotic = {"silica_fume": 50}
+    without_lo, without_hi = carbon_interval(mix, factors, uncertainties)
+    with_lo, with_hi = carbon_interval(mix, factors, uncertainties, exotic=exotic)
+    total_without = (without_lo + without_hi) / 2
+    total_with = (with_lo + with_hi) / 2
+    assert total_with == pytest.approx(total_without + 50 * 0.02)
+    assert (with_hi - with_lo) > (without_hi - without_lo)  # exotic's own uncertainty widens it
+
+
+# --- R8.0 WP-D4: per-material transport ------------------------------------------
+def test_material_transport_carbon_uses_registry_blocks():
+    mix = {"cement": 300, "coarse_agg": 1000, "water": 180}
+    result = material_transport_carbon(mix)
+    expected = 300 * 200 * TRANSPORT_MODE_EF["truck"] / 1000 \
+        + 1000 * 30 * TRANSPORT_MODE_EF["truck"] / 1000
+    assert result == pytest.approx(expected)
+
+
+def test_material_transport_carbon_zero_for_materials_without_a_block():
+    # water carries no "transport" block in the registry -> contributes nothing.
+    assert material_transport_carbon({"water": 500}) == 0.0
+
+
+def test_material_transport_carbon_graphene_oxide_uses_ship_factor():
+    """D4's exact-value gate: graphene_oxide is one of the two ship-freighted
+    exotics (10000 km), not the 500 km truck default the other exotics get."""
+    exotic = {"graphene_oxide": 1}
+    result = material_transport_carbon({}, exotic=exotic)
+    assert result == pytest.approx(1 * 10000 * TRANSPORT_MODE_EF["ship"] / 1000)
+
+
+def test_material_transport_carbon_overrides_win_over_registry():
+    mix = {"cement": 300}
+    result = material_transport_carbon(mix, overrides={"cement": {"mode": "rail", "km": 100}})
+    assert result == pytest.approx(300 * 100 * TRANSPORT_MODE_EF["rail"] / 1000)
+
+
+def test_transport_block_edit_via_registry_json(tmp_path):
+    """Registry-edit gate (established set_materials_path/finally pattern): a
+    transport-block km edit in the JSON flows into material_transport_carbon
+    with no code change."""
+    registry = json.loads(open("data/materials.json", encoding="utf-8").read())
+    registry["materials"]["cement"]["transport"]["km"] = 400
+    p = tmp_path / "materials.json"
+    p.write_text(json.dumps(registry))
+    try:
+        set_materials_path(str(p))
+        result = material_transport_carbon({"cement": 300})
+        assert result == pytest.approx(300 * 400 * TRANSPORT_MODE_EF["truck"] / 1000)
     finally:
         set_materials_path(None)

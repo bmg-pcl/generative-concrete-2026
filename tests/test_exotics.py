@@ -12,6 +12,7 @@ materials.exotic_densities_view() and consumed by physical.mix_volume's optional
 """
 from src.exotics import (
     EXOTIC_ADMIXTURES,
+    compliance_warnings,
     exotic_carbon,
     exotic_cost,
     exotic_strength_delta,
@@ -71,3 +72,22 @@ def test_every_admixture_has_a_positive_density():
     for name in EXOTIC_ADMIXTURES:
         assert name in densities, f"{name} missing density_kg_m3"
         assert densities[name] > 0, f"{name} has a non-positive density"
+
+
+# --- R8.0 WP-D2: compliance warnings ---------------------------------------------
+def test_compliance_warnings_flags_dosed_calcium_chloride():
+    exotic = _mix(calcium_chloride=5)
+    warnings = compliance_warnings(exotic)
+    assert len(warnings) == 1
+    assert "ACI 318 ch. 19 chloride limits / EN 206" in warnings[0]
+    assert "calcium_chloride" in warnings[0]
+
+
+def test_compliance_warnings_empty_when_undosed_or_empty():
+    assert compliance_warnings(_mix(calcium_chloride=0)) == []
+    assert compliance_warnings({}) == []
+
+
+def test_compliance_warnings_ignores_dosed_materials_without_restrictions():
+    exotic = _mix(silica_fume=50, nano_silica=5)
+    assert compliance_warnings(exotic) == []
