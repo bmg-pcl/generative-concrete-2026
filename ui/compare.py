@@ -1,7 +1,7 @@
 """Compare Mixes tab — two mixes side by side with predicted performance."""
 import streamlit as st
 
-from src.exotics import EXOTIC_ADMIXTURES
+from src.exotics import EXOTIC_ADMIXTURES, compliance_warnings
 from src.ui_logic import PARAM_NAMES, compute_metrics, mix_ticket
 from ui.context import AppContext
 from ui.state import SLIDER_SPECS, current_mix, load_mix_into
@@ -56,10 +56,13 @@ def render_compare(ctx: AppContext):
             exotic_strength=ctx.exotic_strength_enabled,
             uncertainty_fn=ctx.bayesian.evaluate_uncertainty,
             carbon_kwargs=ctx.carbon_kwargs,
-            # cfg_waste_factor is a keyed Config-tab widget (R8.0 WP-A A2); read via
+            # cfg_waste_factor/cfg_transport_detail/cfg_site_temp_c are keyed
+            # Config-tab widgets (R8.0 WP-A A2 / WP-E Decisions 1 & 2); read via
             # session_state rather than AppContext (ui/context.py is outside this
             # work package's file ownership).
             waste_factor=float(st.session_state.get("cfg_waste_factor", 0.0)),
+            transport_detail=bool(st.session_state.get("cfg_transport_detail", False)),
+            site_temp_c=float(st.session_state.get("cfg_site_temp_c", 20.0)),
         )
 
     m_a = get_metrics(mix_a, st.session_state.exotic_a)
@@ -86,6 +89,11 @@ def render_compare(ctx: AppContext):
             st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
         if m_a["workability"]:
             st.caption(f"Workability: {m_a['workability']}")
+        # R8.0 WP-D2/WP-E: compliance advisories for any dosed restricted material
+        # (e.g. calcium_chloride in reinforced concrete) — advisory, not a hard
+        # constraint; this tool doesn't know the end use, only that the question exists.
+        for w in compliance_warnings(st.session_state.exotic_a):
+            st.warning(w)
         st.download_button("Download ticket (A)", key="ticket_a",
                            data=mix_ticket(dict(zip(param_names, mix_a)), m_a, ctx.ticket_config,
                                            exotic=st.session_state.exotic_a),
@@ -102,6 +110,8 @@ def render_compare(ctx: AppContext):
             st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
         if m_b["workability"]:
             st.caption(f"Workability: {m_b['workability']}")
+        for w in compliance_warnings(st.session_state.exotic_b):
+            st.warning(w)
         st.download_button("Download ticket (B)", key="ticket_b",
                            data=mix_ticket(dict(zip(param_names, mix_b)), m_b, ctx.ticket_config,
                                            exotic=st.session_state.exotic_b),

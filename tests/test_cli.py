@@ -396,3 +396,50 @@ def test_cli_waste_factor_at_default_is_bit_identical(tmp_path, capsys):
     explicit = json.loads(capsys.readouterr().out)
     assert explicit["carbon"] == base["carbon"]
     assert explicit["carbon_as_placed"] == base["carbon"]
+
+
+# --- R8.0 WP-E: disclosure rows reach the CLI ticket automatically ----------------
+# No new run-config keys (site temp / transport detail are UI-session concerns per
+# the WP-E prompt) -- the CLI's `predict --ticket` output must still gain every new
+# disclosure row through `mix_ticket`, at the module's own defaults (site_temp_c
+# 20.0, transport_detail off), without any src/cli.py wiring for them.
+
+def test_cli_predict_output_carries_disclosure_fields(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["carbon_interval_lo"] <= out["carbon"] <= out["carbon_interval_hi"]
+    assert out["delta_t_adiabatic_C"] is not None
+    assert out["curing_maturity_days"] is not None
+    assert out["curing_maturity_days"] != out["curing"]  # secondary, not a switchover
+
+
+def test_cli_ticket_carries_disclosure_rows(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    ticket = tmp_path / "ticket.csv"
+    rc = main(["predict", "--mix", str(mixp), "--ticket", str(ticket)])
+    assert rc == 0
+    lines = ticket.read_text().splitlines()
+    assert any(line.startswith("carbon_kgCO2,interval_lo,") for line in lines)
+    assert any(line.startswith("carbon_kgCO2,interval_hi,") for line in lines)
+    assert any(line.startswith("carbon_kgCO2,carbonation_uptake_bound_informational,") for line in lines)
+    assert any(line.startswith("thermal,delta_t_adiabatic_C,") for line in lines)
+    assert any(line.startswith("prediction,curing_maturity_days_uncalibrated,") for line in lines)
+    assert any(line.startswith("allocation,cement,") for line in lines)
+    # No new run-config keys: no per-material transport disclosure by default.
+    assert not any(line.startswith("transport_detail,") for line in lines)
+
+
+def test_cli_design_ticket_also_carries_disclosure_rows(tmp_path, capsys):
+    """recommend_recipe's own dict predates WP-E; the CLI ticket must still get
+    every disclosure row via mix_ticket's fallback (not just `predict`'s)."""
+    ticket = tmp_path / "ticket.csv"
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28",
+               "--ticket", str(ticket)])
+    assert rc == 0
+    lines = ticket.read_text().splitlines()
+    assert any(line.startswith("carbon_kgCO2,interval_lo,") for line in lines)
+    assert any(line.startswith("thermal,delta_t_adiabatic_C,") for line in lines)
