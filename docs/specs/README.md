@@ -69,7 +69,7 @@ span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at clo
 | R7.3 | ~1–1.5 d (a+b+c combined) | **~0.3 d** | Straightforward given the R7.1/R7.2 groundwork (predict_interval, run_nsga's existing robust= arg); the only real judgment call was excluding a "robust flow" row rather than fudging one — see spec's sonnet-ready note |
 | R7.4 | ~1–1.5 d (a+b+c combined) | **~0.4 d** | R7.4a (session restore) was the largest item but followed the established keyed-widget pattern exactly; the one real find was the `"config"`/`"ui_config"` naming collision with the CLI, caught before it shipped. R7.4b's only deviation from the spec text was where the PARAM_NAMES ordering lives (ui/state.py, not materials.py — avoids a circular import). R7.4c was a five-minute measurement (13.4 MiB) confirming the "stay on plain git" default |
 
-| R8.0 | ~2–2.5 d serial / ~1 d parallel (Wave A) + ~0.5 d Wave B | **Wave A: ~0.3 d wall** | Five concurrent sonnet packages under the v2 process: four ran clean start-to-finish (~5–8 min, ~70–106k tokens each, zero stalls); WP-A stalled twice on background-and-wait and was killed by a session usage limit before reporting — its commit was recoverable and the orchestrator verified its gates independently. WP-C caught a real spec error (the ΔT band was derived from 28-day heat, not full-hydration heat) and corrected the band with the derivation instead of tuning — the report-deviations clause working as designed. Headline: LC3 cement term landed at 0.544 kg/kg inside the published 0.50–0.65 EPD band with no coefficient fit to it. Wave B (WP-E) pending |
+| R8.0 | ~2–2.5 d serial / ~1 d parallel (Wave A) + ~0.5 d Wave B | **~0.4 d wall total** (Wave A ~0.3 d + WP-E ~25 min agent time) | Five concurrent sonnet packages under the v2 process: four ran clean start-to-finish (~5–8 min, ~70–106k tokens each, zero stalls); WP-A stalled twice on background-and-wait and was killed by a session usage limit before reporting — its commit was recoverable and the orchestrator verified its gates independently. WP-C caught a real spec error (the ΔT band was derived from 28-day heat, not full-hydration heat) and corrected the band with the derivation instead of tuning — the report-deviations clause working as designed. Headline: LC3 cement term landed at 0.544 kg/kg inside the published 0.50–0.65 EPD band with no coefficient fit to it. Wave B (WP-E) pending |
 | R7.5 | ~1.25 d serial / ~0.7 d parallel | **~0.7 d** (≈0.4 d implementation + ≈0.3 d failure recovery) | Four-agent fan-out; wall clock hit the parallel estimate but for the wrong reason — logistics failures (see `../DELEGATION_WORKFLOW.md`) ate what parallelism saved. WP-5, run solo under the v2 process, took ~6 min of agent time with zero stalls |
 
 **Reading the log so far:** the block estimates (R1–R6) were accurate at block
@@ -193,7 +193,7 @@ interesting model in the repo — serves almost nothing).
 ### Horizon 2 — R8: From strength tool to specification tool (~1–2 wk)
 
 **R8.0 Deepening the carbon & chemistry layers** — **Wave A ✅ shipped** (2026-08-20, five
-parallel sonnet packages); **Wave B (WP-E integration wiring) pending** — full spec:
+parallel sonnet packages) **and Wave B (WP-E integration wiring) — ✅ fully shipped** — full spec:
 [`R8.0-carbon-chemistry-deepening.md`](R8.0-carbon-chemistry-deepening.md)
 - **Origin:** post-R7.5 analysis. R7.5 fixed what was *wrong*; R8.0 addresses what is
   *missing*: the Tier-2 cement term's dropped scope (grinding/process electricity —
