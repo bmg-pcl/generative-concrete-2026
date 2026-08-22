@@ -1,0 +1,146 @@
+{
+  "pack_id": "en206",
+  "name": "EN 206:2013+A2:2021 — generic European recommended values",
+  "jurisdiction": "EU (generic; national annexes override these values)",
+  "source": {
+    "standard": "EN 206:2013+A2:2021",
+    "table": "Table F.1 (informative Annex F — recommended limiting values for composition and properties of concrete)",
+    "verified": false,
+    "verification_note": "Indicative values for design exploration, reconstructed from secondary-source summaries of Table F.1, NOT transcribed from a purchased copy of the standard. National annexes vary (see bs8500.json for one). Check against the published standard before any structural or tender use."
+  },
+  "strength_basis": "conformal_lower_bound",
+  "classes": {
+    "XC1": {
+      "description": "Corrosion induced by carbonation — dry or permanently wet",
+      "max_w_b": 0.65,
+      "min_cement_kg_m3": 260,
+      "min_strength_MPa": 20,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XC2": {
+      "description": "Corrosion induced by carbonation — wet, rarely dry",
+      "max_w_b": 0.60,
+      "min_cement_kg_m3": 280,
+      "min_strength_MPa": 25,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XC3": {
+      "description": "Corrosion induced by carbonation — moderate humidity",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 280,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XC4": {
+      "description": "Corrosion induced by carbonation — cyclic wet and dry",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XD1": {
+      "description": "Corrosion induced by chlorides other than seawater — moderate humidity",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XD2": {
+      "description": "Corrosion induced by chlorides other than seawater — wet, rarely dry",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XD3": {
+      "description": "Corrosion induced by chlorides other than seawater — cyclic wet and dry",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 320,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XS1": {
+      "description": "Corrosion induced by chlorides from seawater — airborne salt, no direct contact",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XS2": {
+      "description": "Corrosion induced by chlorides from seawater — permanently submerged",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 320,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XS3": {
+      "description": "Corrosion induced by chlorides from seawater — tidal, splash and spray zones",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 340,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XF1": {
+      "description": "Freeze/thaw attack — moderate water saturation, no de-icing agent",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "notes": "min_air_pct intentionally omitted (not null): air entrainment provisions for XF classes exist in Table F.1 but the numeric minimum depends on nominal max aggregate size, which is not confidently recalled here. The engine reports UNKNOWN for this rule rather than a guessed threshold."
+    },
+    "XF2": {
+      "description": "Freeze/thaw attack — moderate water saturation, with de-icing agent",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 25,
+      "notes": "min_air_pct intentionally omitted (not null); see XF1 note."
+    },
+    "XF3": {
+      "description": "Freeze/thaw attack — high water saturation, no de-icing agent",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 320,
+      "min_strength_MPa": 30,
+      "notes": "min_air_pct intentionally omitted (not null); see XF1 note."
+    },
+    "XF4": {
+      "description": "Freeze/thaw attack — high water saturation, with de-icing agent or seawater",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 340,
+      "min_strength_MPa": 30,
+      "notes": "min_air_pct intentionally omitted (not null); see XF1 note."
+    },
+    "XA1": {
+      "description": "Chemical attack — slightly aggressive environment",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 25,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    },
+    "XA2": {
+      "description": "Chemical attack — moderately aggressive environment",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 320,
+      "min_air_pct": null,
+      "notes": "min_strength_MPa intentionally omitted: secondary sources for Table F.1 disagree between C25/30 and C30/37 for XA2, so this is left UNKNOWN rather than guessed."
+    },
+    "XA3": {
+      "description": "Chemical attack — highly aggressive environment",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 360,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "w/b uses total binder; k-value substitution not modelled here."
+    }
+  },
+  "notes": "This pack is unverified secondary-source recall of EN 206 Table F.1, not a transcription of the purchased standard (see source.verification_note). Two categories of rule are deliberately omitted, not guessed: (1) max_scm_fraction is omitted for every class — SCM replacement limits are governed by EN 206 Sec 5.2.5 k-value provisions and EN 197-1 cement-type designations, which this pack does not model (see spec's Accepted exclusions); a class without this key means UNKNOWN, not 'unconstrained'. (2) min_air_pct is omitted (not null) for XF1-XF4 because the standard's air-entrainment minimum is aggregate-size dependent and was not confidently recalled; min_strength_MPa is similarly omitted for XA2 due to conflicting secondary-source recall. Every other numeric value above should still be checked against the published table before any real design use."
+}

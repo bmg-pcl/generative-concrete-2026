@@ -1,0 +1,146 @@
+{
+  "pack_id": "bs8500",
+  "name": "BS 8500-1:2015+A2:2019 — UK complementary standard to BS EN 206",
+  "jurisdiction": "United Kingdom (national annex / complementary standard to BS EN 206)",
+  "source": {
+    "standard": "BS 8500-1:2015+A2:2019",
+    "table": "Table A.4 (recommended limiting values for composition and properties for normal-weight concrete durability)",
+    "verified": false,
+    "verification_note": "Indicative values for design exploration, NOT transcribed from a purchased copy of the standard. BS 8500-1 Table A.4 is a matrix keyed by both exposure class AND cement/combination designation (e.g. CEM I vs CEM III/A) for a chosen intended working life; this pack collapses that matrix to one representative value per class, which is itself a simplification the real table does not make. Check against the published standard before any structural or tender use."
+  },
+  "strength_basis": "conformal_lower_bound",
+  "classes": {
+    "XC1": {
+      "description": "Corrosion induced by carbonation — dry or permanently wet",
+      "max_w_b": 0.65,
+      "min_cement_kg_m3": 260,
+      "min_strength_MPa": 20,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing. Collapses the CEM I / combination-type matrix — see pack notes."
+    },
+    "XC2": {
+      "description": "Corrosion induced by carbonation — wet, rarely dry",
+      "max_w_b": 0.60,
+      "min_cement_kg_m3": 280,
+      "min_strength_MPa": 25,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XC3": {
+      "description": "Corrosion induced by carbonation — moderate humidity",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 280,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XC4": {
+      "description": "Corrosion induced by carbonation — cyclic wet and dry",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XD1": {
+      "description": "Corrosion induced by chlorides other than seawater — moderate humidity",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XD2": {
+      "description": "Corrosion induced by chlorides other than seawater — wet, rarely dry",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XD3": {
+      "description": "Corrosion induced by chlorides other than seawater — cyclic wet and dry (e.g. car park decks)",
+      "max_w_b": 0.40,
+      "min_cement_kg_m3": 320,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "DELIBERATE DIVERGENCE FROM en206.json (which gives max_w_b 0.45 for XD3): UK guidance for this class (widely cited in UK car-park deck design practice) tightens the water/binder ratio beyond the generic EN 206 recommended value. This specific numeral (0.40) is this pack's best approximation of a well-documented directional pattern -- it is NOT a verified Table A.4 transcription for a specific cement combination. Treat with the same 'unverified' caution as every other value in this pack, but with lower confidence than the carried-over classes."
+    },
+    "XS1": {
+      "description": "Corrosion induced by chlorides from seawater — airborne salt, no direct contact",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XS2": {
+      "description": "Corrosion induced by chlorides from seawater — permanently submerged",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 320,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XS3": {
+      "description": "Corrosion induced by chlorides from seawater — tidal, splash and spray zones",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 340,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XF1": {
+      "description": "Freeze/thaw attack — moderate water saturation, no de-icing agent",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "notes": "min_air_pct intentionally omitted (not null); see en206.json's XF1 note -- same aggregate-size-dependence issue applies to the UK annex."
+    },
+    "XF2": {
+      "description": "Freeze/thaw attack — moderate water saturation, with de-icing agent",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 25,
+      "notes": "min_air_pct intentionally omitted (not null); see XF1 note."
+    },
+    "XF3": {
+      "description": "Freeze/thaw attack — high water saturation, no de-icing agent",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 320,
+      "min_strength_MPa": 30,
+      "notes": "min_air_pct intentionally omitted (not null); see XF1 note."
+    },
+    "XF4": {
+      "description": "Freeze/thaw attack — high water saturation, with de-icing agent or seawater",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 340,
+      "min_strength_MPa": 30,
+      "notes": "min_air_pct intentionally omitted (not null); see XF1 note."
+    },
+    "XA1": {
+      "description": "Chemical attack — slightly aggressive environment",
+      "max_w_b": 0.55,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 25,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    },
+    "XA2": {
+      "description": "Chemical attack — moderately aggressive environment",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 320,
+      "min_air_pct": null,
+      "notes": "min_strength_MPa intentionally omitted, matching en206.json's XA2 omission (conflicting secondary-source recall)."
+    },
+    "XA3": {
+      "description": "Chemical attack — highly aggressive environment",
+      "max_w_b": 0.45,
+      "min_cement_kg_m3": 360,
+      "min_strength_MPa": 35,
+      "min_air_pct": null,
+      "notes": "Not independently identified as diverging from the generic EN 206 value for this class; carried over pending BS 8500-specific sourcing."
+    }
+  },
+  "notes": "UK national annex / complementary standard to BS EN 206. Only XD3 has been identified here as a confident, real divergence from en206.json's generic recommended value (max_w_b tightened 0.45 -> 0.40, reflecting well-documented UK car-park/chloride design practice) -- this is the deliberate demonstration of national variation the spec calls for, and it is the LOWEST-confidence numeral in this pack precisely because it required judgement rather than direct recall. Every other class value in this pack is carried over unchanged from en206.json as an unverified approximation of the UK baseline, NOT as an independently sourced BS 8500-1 Table A.4 transcription -- Table A.4 in the real standard varies by cement/combination designation (CEM I, CEM II/B-V, CEM III/A, etc.) for a chosen intended working life, which this one-value-per-class schema cannot represent; the values here should be read as a CEM-I-like representative figure at best. max_scm_fraction is omitted for every class for the same reasons as en206.json. min_air_pct is omitted (not null) for XF1-XF4 for the same aggregate-size-dependence reason as en206.json."
+}
