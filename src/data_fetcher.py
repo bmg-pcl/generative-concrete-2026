@@ -19,7 +19,14 @@ AVAILABLE_DATASETS = {
         "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/concrete/slump/slump_test.data",
         "format": "csv",
         "samples": 103,
-        "description": "Slump test data with workability metrics."
+        "description": "Slump test data with workability metrics.",
+        # R8.1: the canonical UCI host is unreachable from this environment (403 on
+        # CONNECT at the proxy gateway), so this corpus is COMMITTED to the repo
+        # rather than fetched via `url` above -- see load_slump_data() and
+        # data/slump_test.PROVENANCE.md for the mirror source and integrity checks.
+        "committed": True,
+        "local_file": "data/slump_test.data",
+        "provenance": "data/slump_test.PROVENANCE.md",
     },
     # Note: These would require manual download or API keys
     "aci_mix_design": {
@@ -40,6 +47,28 @@ AVAILABLE_DATASETS = {
 
 LOCAL_FILE = os.path.join(DATA_DIR, "Concrete_Data.xls")
 OVERLAY_FILE = os.path.join(DATA_DIR, "Experimental_Overlay.csv")
+SLUMP_LOCAL_FILE = os.path.join(DATA_DIR, "slump_test.data")
+
+# Dataset column -> repo key, per docs/specs/R8.1's mapping table. "No" (row index)
+# is dropped; "Compressive Strength (28-day)(Mpa)" is kept as "strength" for
+# completeness/inspection only -- see load_slump_data()'s docstring for why it is
+# never used to train anything.
+_SLUMP_COLUMN_MAP = {
+    "Cement": "cement",
+    "Slag": "slag",
+    "Fly ash": "ash",
+    "Water": "water",
+    "SP": "superplasticizer",
+    "Coarse Aggr.": "coarse_agg",
+    "Fine Aggr.": "fine_agg",
+    "SLUMP(cm)": "slump_cm",
+    "FLOW(cm)": "flow_cm",
+    "Compressive Strength (28-day)(Mpa)": "strength",
+}
+_SLUMP_COLUMN_ORDER = [
+    "cement", "slag", "ash", "water", "superplasticizer", "coarse_agg", "fine_agg",
+    "slump_cm", "flow_cm", "strength",
+]
 
 # Default URL for backward compatibility
 UCI_URL = AVAILABLE_DATASETS["uci_yeh"]["url"]
@@ -94,6 +123,37 @@ def load_data() -> pd.DataFrame:
         print(f"Merged {len(overlay_df)} local experimental records.")
         
     return df
+
+def load_slump_data() -> pd.DataFrame:
+    """Loads the COMMITTED UCI concrete slump corpus (103 rows) and applies the
+    dataset -> repo key column mapping from docs/specs/R8.1.
+
+    Unlike ``load_data()``, this never downloads: the canonical UCI host
+    (archive.ics.uci.edu) is blocked from this environment, so ``slump_test.data`` is
+    committed to the repo (mirror-sourced and integrity-checked -- see
+    ``data/slump_test.PROVENANCE.md``) precisely so this function never needs network
+    access, at import time or otherwise. A missing file is a repo problem, not a
+    "go fetch it" situation, so this raises rather than falling back to a download.
+
+    The corpus's own ``Compressive Strength (28-day)(Mpa)`` column is loaded and
+    kept as ``strength`` for completeness/inspection, but it is NOT used to train any
+    model in this repo: it is a different 103-row experiment from a different lab
+    than the 1030-row strength corpus ``load_data()`` returns, and mixing the two is a
+    data-provenance decision with its own validation burden -- explicitly out of scope
+    for R8.1. Callers that want the strength model use ``load_data()`` /
+    ``StrengthPredictor``, never this column.
+    """
+    if not os.path.exists(SLUMP_LOCAL_FILE):
+        raise FileNotFoundError(
+            f"{SLUMP_LOCAL_FILE} not found. This corpus is committed to the repo (see "
+            "data/slump_test.PROVENANCE.md); it is not downloaded at runtime, so a "
+            "missing file means the checkout is incomplete, not that a fetch is needed."
+        )
+    df = pd.read_csv(SLUMP_LOCAL_FILE)
+    df = df.drop(columns=["No"])
+    df = df.rename(columns=_SLUMP_COLUMN_MAP)
+    return df[_SLUMP_COLUMN_ORDER]
+
 
 def append_experimental_results(results_df: pd.DataFrame):
     """Appends new lab results to the local overlay."""
