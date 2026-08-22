@@ -11,7 +11,9 @@ import streamlit as st
 from src.exotics import EXOTIC_STRENGTH_DISCLAIMER
 from src.materials import validate_epd_json, carbon_provenance
 from src.chemistry_advanced import FUEL_EF, GRID_EF, clinker_scope_split
+from src.compliance import load_packs
 from ui.context import AppContext
+from ui.state import EXPOSURE_NONE
 
 
 def render_config(predictor, bayesian, presets) -> AppContext:
@@ -227,6 +229,48 @@ def render_config(predictor, bayesian, presets) -> AppContext:
         )
         if exotic_strength_enabled:
             st.warning(EXOTIC_STRENGTH_DISCLAIMER)
+
+        st.divider()
+        st.subheader("Exposure compliance (advisory)")
+        st.caption(
+            "Check this mix against a jurisdiction's exposure-class deemed-to-"
+            "satisfy limits (water/binder, minimum cement, minimum strength "
+            "class, SCM fraction). ADVISORY ONLY — indicative values from "
+            "unverified secondary sources (see each pack's own disclosure "
+            "below), never a substitute for checking the published standard. "
+            f"Leave both selectors at \"{EXPOSURE_NONE}\" to leave this feature off."
+        )
+        # Options built from load_packs() ONLY -- never a hardcoded jurisdiction
+        # list (R8.2's honesty contract: a pack is a JSON drop-in). load_packs()
+        # already excludes the `_fixture` test pack from this listing.
+        exposure_packs = load_packs()
+        exposure_pack_choice = st.selectbox(
+            "Exposure pack (jurisdiction)",
+            [EXPOSURE_NONE] + sorted(exposure_packs),
+            key="cfg_exposure_pack",
+            help="Selecting a pack here does not certify anything by itself -- "
+                 "pick a class below to run the check.",
+        )
+        exposure_class_choice = EXPOSURE_NONE
+        if exposure_pack_choice != EXPOSURE_NONE:
+            pack = exposure_packs[exposure_pack_choice]
+            class_options = [EXPOSURE_NONE] + sorted(pack["classes"])
+            # Guard: a class id left over from a DIFFERENTLY-chosen pack (still in
+            # session state from before the user switched packs) is not a member
+            # of THIS pack's classes -- reset to "none" before the widget below
+            # instantiates, rather than letting Streamlit raise on a stale value
+            # that is not among this run's options.
+            if st.session_state.get("cfg_exposure_class") not in class_options:
+                st.session_state["cfg_exposure_class"] = EXPOSURE_NONE
+            exposure_class_choice = st.selectbox(
+                "Exposure class", class_options, key="cfg_exposure_class",
+            )
+            if exposure_class_choice != EXPOSURE_NONE:
+                st.caption(
+                    f"Advisory only — NOT a certification. Check against "
+                    f"{pack['source'].get('standard', '?')} before any structural "
+                    f"use. {pack['source'].get('verification_note', '')}"
+                )
 
     ticket_config = {
         **carbon_kwargs, "advanced": use_advanced_chemistry, "costs": st.session_state.costs,

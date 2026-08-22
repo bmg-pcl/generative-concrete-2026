@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 
 from src.cli import (main, load_mix, load_project_config, CliError, validate_clinker_source,
-                     validate_waste_factor, DEFAULT_RUN_CONFIG)
+                     validate_waste_factor, DEFAULT_RUN_CONFIG, parse_exposure_arg,
+                     validate_exposure)
 from src.models import StrengthPredictor
 from src.ui_logic import PARAM_NAMES, compute_metrics
 
@@ -431,6 +432,10 @@ def test_cli_ticket_carries_disclosure_rows(tmp_path, capsys):
     assert any(line.startswith("allocation,cement,") for line in lines)
     # No new run-config keys: no per-material transport disclosure by default.
     assert not any(line.startswith("transport_detail,") for line in lines)
+    # R8.1 WP-3: slump rows reach the CLI ticket automatically too (no CLI wiring
+    # needed -- mix_ticket adds them unconditionally, same as the WP-E rows above).
+    assert any(line.startswith("prediction,slump_cm_") for line in lines)
+    assert any(line.startswith("note,slump_interval,") for line in lines)
 
 
 def test_cli_design_ticket_also_carries_disclosure_rows(tmp_path, capsys):
@@ -443,3 +448,88 @@ def test_cli_design_ticket_also_carries_disclosure_rows(tmp_path, capsys):
     lines = ticket.read_text().splitlines()
     assert any(line.startswith("carbon_kgCO2,interval_lo,") for line in lines)
     assert any(line.startswith("thermal,delta_t_adiabatic_C,") for line in lines)
+
+
+# --- R8.2 WP-3: --exposure boundary validation and wiring --------------------------
+# validate_clinker_source's style: parse the '<pack>:<class>' shape, then check the
+# ids against the live registry (load_packs() -- never a hardcoded list), turning
+# an unresolvable id into a clean exit-1 CliError naming the valid ids, not an
+# uncaught KeyError/traceback from deep inside check_compliance.
+
+def test_parse_exposure_arg_splits_pack_and_class():
+    assert parse_exposure_arg("en206:XC4") == ("en206", "XC4")
+
+
+def test_parse_exposure_arg_rejects_malformed_strings():
+    for bad in ("en206", "en206:", ":XC4", "en206:XC4:extra"):
+        with pytest.raises(CliError):
+            parse_exposure_arg(bad)
+
+
+def test_validate_exposure_valid_pack_and_class():
+    assert validate_exposure("en206", "XC4") is None
+
+
+def test_validate_exposure_unknown_pack_names_valid_packs():
+    err = validate_exposure("nope", "XC4")
+    assert err is not None
+    assert "nope" in err
+    assert "en206" in err and "aci318" in err
+
+
+def test_validate_exposure_unknown_class_names_valid_classes():
+    err = validate_exposure("en206", "ZZ9")
+    assert err is not None
+    assert "ZZ9" in err
+    assert "XC4" in err  # a real class of THIS pack is actually named
+
+
+def test_cli_exposure_valid_pack_class_works(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    ticket = tmp_path / "ticket.csv"
+    rc = main(["predict", "--mix", str(mixp), "--exposure", "en206:XC4",
+               "--ticket", str(ticket)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["compliance"] is not None
+    assert out["compliance"]["pack_id"] == "en206"
+    assert out["compliance"]["class"] == "XC4"
+    lines = ticket.read_text().splitlines()
+    assert any(line.startswith("compliance,en206.XC4,") for line in lines)
+    assert any(line.startswith("compliance,advisory,") for line in lines)
+
+
+def test_cli_exposure_unknown_pack_exits_1_no_traceback(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp), "--exposure", "nope:XC4"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "nope" in err
+    assert "en206" in err  # valid ids actually named
+    assert "Traceback" not in err
+
+
+def test_cli_exposure_unknown_class_exits_1_no_traceback(tmp_path, capsys):
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp), "--exposure", "en206:ZZ9"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "ZZ9" in err
+    assert "Traceback" not in err
+
+
+def test_cli_predict_without_exposure_flag_has_no_compliance_block(tmp_path, capsys):
+    """No --exposure -> compute_metrics's compliance block is inert, same as the
+    UI's default "none selected" -- the CLI output must show `compliance: null`,
+    not an empty dict or a missing key."""
+    mixp = tmp_path / "mix.json"
+    mixp.write_text(json.dumps(MIX))
+    rc = main(["predict", "--mix", str(mixp)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["compliance"] is None

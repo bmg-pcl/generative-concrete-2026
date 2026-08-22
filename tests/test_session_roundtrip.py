@@ -82,6 +82,8 @@ def test_pure_round_trip_every_field():
     src["cfg_waste_factor"] = 0.08  # R8.0 WP-A A2
     src["cfg_site_temp_c"] = 32.0        # R8.0 WP-E Decision 1
     src["cfg_transport_detail"] = True   # R8.0 WP-E Decision 2
+    src["cfg_exposure_pack"] = "en206"   # R8.2 WP-3
+    src["cfg_exposure_class"] = "XC4"    # R8.2 WP-3
 
     exported = export_session(src)
     dst = _fresh_state()
@@ -105,6 +107,8 @@ def test_pure_round_trip_every_field():
     assert dst["cfg_waste_factor"] == 0.08
     assert dst["cfg_site_temp_c"] == 32.0
     assert dst["cfg_transport_detail"] is True
+    assert dst["cfg_exposure_pack"] == "en206"    # R8.2 WP-3
+    assert dst["cfg_exposure_class"] == "XC4"     # R8.2 WP-3
     # And the whole export re-exports identically (idempotent round trip).
     assert export_session(dst) == exported
 
@@ -129,6 +133,11 @@ def test_apptest_round_trip_survives_widget_state():
     at.number_input(key="cfg_site_temp_c").set_value(32.0).run()   # R8.0 WP-E Decision 1
     default_transport_detail = at.toggle(key="cfg_transport_detail").value
     at.toggle(key="cfg_transport_detail").set_value(not default_transport_detail).run()  # Decision 2
+    # R8.2 WP-3: the exposure pack/class selectboxes. The class selectbox only
+    # renders once a real pack is chosen (its options depend on that pack's own
+    # classes), so this needs the extra .run() between the two set_value calls.
+    at.selectbox(key="cfg_exposure_pack").set_value("en206").run()
+    at.selectbox(key="cfg_exposure_class").set_value("XC4").run()
     exported = export_session(at.session_state)
     assert exported["mix_a"][0] == 444
     assert exported["carbon_factors"]["cement"] == 0.5
@@ -137,6 +146,8 @@ def test_apptest_round_trip_survives_widget_state():
     assert exported["ui_config"]["cfg_waste_factor"] == 0.08
     assert exported["ui_config"]["cfg_site_temp_c"] == 32.0
     assert exported["ui_config"]["cfg_transport_detail"] == (not default_transport_detail)
+    assert exported["ui_config"]["cfg_exposure_pack"] == "en206"
+    assert exported["ui_config"]["cfg_exposure_class"] == "XC4"
 
     # Session 2 (fresh): widgets have their own (default) state; the import must win.
     at2 = AppTest.from_file(APP, default_timeout=240).run()
@@ -144,6 +155,7 @@ def test_apptest_round_trip_survives_widget_state():
     assert at2.number_input(key="cfg_transport_km").value != 150
     assert at2.slider(key="cfg_waste_factor").value != 0.08
     assert at2.number_input(key="cfg_site_temp_c").value != 32.0
+    assert at2.selectbox(key="cfg_exposure_pack").value != "en206"
     apply_session(exported, at2.session_state)
     at2.run()
     assert not at2.exception
@@ -154,6 +166,8 @@ def test_apptest_round_trip_survives_widget_state():
     assert at2.slider(key="cfg_waste_factor").value == 0.08
     assert at2.number_input(key="cfg_site_temp_c").value == 32.0
     assert at2.toggle(key="cfg_transport_detail").value == (not default_transport_detail)
+    assert at2.selectbox(key="cfg_exposure_pack").value == "en206"
+    assert at2.selectbox(key="cfg_exposure_class").value == "XC4"
     # The derived dict must agree after the rerun (the keyed widgets did not
     # overwrite the imported factor — the exact live-session bug this guards).
     assert at2.session_state["carbon_factors"]["cement"] == 0.5

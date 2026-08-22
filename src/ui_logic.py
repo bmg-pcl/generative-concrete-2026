@@ -6,7 +6,7 @@ so it can be unit-tested without a browser. Keeping it here also guarantees the 
 *coherent*: there is exactly ONE carbon path, ONE metrics path, and ONE fitness path,
 so the "Chemistry Mode" toggle and the exotics switch affect every tab identically.
 """
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,8 @@ from .thermal import (
     curing_days_at_temperature,
     carbonation_co2_bound_kg_m3,
 )
+from .compliance import check_compliance, compare_jurisdictions, load_packs
+from .properties import slump_estimate
 from .generative_ga import PARAM_NAMES  # single source of the 8-parameter order
 
 # R8.0 WP-E: the disclosure fields compute_metrics computes once and mix_ticket
@@ -53,6 +55,96 @@ DISCLOSURE_KEYS = (
     "delta_t_adiabatic_C", "mass_pour_flag",
     "carbonation_uptake_bound_kg_m3", "curing_maturity_days",
 )
+
+# R8.1 WP-3 (Wave B): the slump fields compute_metrics computes (via
+# properties.slump_estimate) once and mix_ticket either reads straight off
+# `metrics` or -- for a metrics dict that predates this wave (e.g.
+# recommend_recipe's own dict) -- rebuilds fresh via slump_estimate(mix), same
+# "prefer the caller's metrics, else derive" fallback shape as DISCLOSURE_KEYS.
+SLUMP_KEYS = ("slump_cm", "slump_lo", "slump_hi", "slump_basis", "slump_in_support")
+
+
+def slump_caveat(lo: Optional[float], hi: Optional[float]) -> str:
+    """R8.1 WP-1b's honesty finding, in one shared sentence: split-conformal (the
+    shipped default) and CV+ both span 83-86% of the corpus's 0-29 cm range, so the
+    interval barely constrains anything. Used verbatim by BOTH the Compare tab
+    caption and the ticket's `note,slump_interval` row so the two surfaces can
+    never say different things about the same number. NEVER phrase this as a
+    bound/guarantee -- see docs/specs/R8.1-workability-from-data.md, "WP-1b -- CV+
+    was tried and it did not work", "Consequence for Wave B"."""
+    if lo is None or hi is None:
+        return ("No measured interval for this mix (heuristic fallback -- see the "
+                "basis label and reason).")
+    width = hi - lo
+    return (f"±{width / 2:.1f} cm at 90% (interval width {width:.1f} cm on a "
+            f"0-29 cm corpus range) -- the 103-row slump corpus makes this wide by "
+            f"construction (see R8.1 WP-1b). This is a POINT ESTIMATE with a width "
+            f"caveat, NOT a guaranteed bound.")
+
+
+# R8.2 WP-3 (Wave B): the optional compliance block. `exposure_pack`/`exposure_class`
+# are plain string ids (never a pack dict) so callers -- the UI's config-tab
+# selectors and the CLI's --exposure flag alike -- pass exactly what the user
+# picked; this function resolves them via load_packs() (never a hardcoded
+# jurisdiction list, per R8.2's honesty contract) and degrades to inert (None)
+# rather than raising on an unresolvable id, since this is an ADVISORY UI feature,
+# not a validated boundary -- src.cli.validate_exposure is the validated boundary
+# for the CLI's own --exposure flag.
+def _compliance_block(mix: Dict[str, float], exposure_pack: Optional[str],
+                      exposure_class: Optional[str], strength_lo: float,
+                      air_pct: Optional[float]) -> Optional[dict]:
+    if not exposure_pack or not exposure_class:
+        return None
+    pack = load_packs().get(exposure_pack)
+    if pack is None or exposure_class not in pack.get("classes", {}):
+        return None
+    return check_compliance(mix, pack, exposure_class, strength_lo=strength_lo, air_pct=air_pct)
+
+
+def compliance_advisory_text(source: dict) -> str:
+    """The mandatory advisory disclosure (R8.2 "honesty problem", point 3: every
+    user-facing surface must say advisory AND name the standard to check against).
+    Shared verbatim by the ticket's `compliance,advisory` row and the Compare tab's
+    advisory banner so the two can never drift apart."""
+    standard = source.get("standard", "the named standard")
+    note = source.get("verification_note", "")
+    return f"Advisory only -- NOT a certification. Check against {standard} before any structural use. {note}".strip()
+
+
+def compliance_matrix(mix: Dict[str, float], strength_lo: Optional[float] = None,
+                      air_pct: Optional[float] = None,
+                      highlight_pack: Optional[str] = None,
+                      highlight_class: Optional[str] = None,
+                      packs: Optional[Dict[str, dict]] = None) -> List[dict]:
+    """The cross-jurisdiction compliance table -- R8.2's headline feature ("makes
+    national variation visible"). One row per known pack (via `load_packs()`,
+    never a hardcoded jurisdiction list), each checked against ITS OWN
+    alphabetically-first class id, UNLESS `highlight_pack` names a pack the caller
+    wants checked against `highlight_class` instead (e.g. the Compare tab's own
+    pack/class selection) -- that pack contributes `highlight_class`'s row instead
+    of its default. Built on `compare_jurisdictions` (compliance.py, frozen).
+
+    Each pack contributes exactly one row because no two shipped packs share a
+    class taxonomy (EN 206's XC/XD/XS/XF/XA vs ACI 318's F/S/W/C -- see
+    compliance.py's module docstring), so there is no single class id meaningful
+    across every jurisdiction at once; a representative class per pack is the
+    honest way to show the same mix's standing across jurisdictions at a glance.
+
+    `packs` overrides the registry (default `load_packs()`, the public non-hidden
+    set) -- tests use this to supply a small, deterministic pack set instead of
+    depending on the shipped real packs' completeness.
+    """
+    packs = packs if packs is not None else load_packs()
+    class_map: Dict[str, str] = {}
+    for pid, pack in packs.items():
+        classes = sorted(pack.get("classes", {}))
+        if not classes:
+            continue
+        if pid == highlight_pack and highlight_class in pack["classes"]:
+            class_map[pid] = highlight_class
+        else:
+            class_map[pid] = classes[0]
+    return compare_jurisdictions(mix, class_map, packs=packs, strength_lo=strength_lo, air_pct=air_pct)
 
 
 def mix_dict(mix) -> Dict[str, float]:
@@ -209,6 +301,9 @@ def compute_metrics(
     waste_factor: float = 0.0,
     transport_detail: bool = False,
     site_temp_c: float = 20.0,
+    exposure_pack: Optional[str] = None,
+    exposure_class: Optional[str] = None,
+    air_pct: Optional[float] = None,
 ) -> dict:
     """
     All performance metrics for one mix, on the selected chemistry tier.
@@ -246,6 +341,22 @@ def compute_metrics(
     docstring) and disagreeing is information, not a bug. `curing_maturity_days`
     is `None` whenever the hydration chain is unavailable for `cement_type` (e.g.
     LC3) -- see `_disclosure_metrics`.
+
+    R8.1 WP-3 adds five slump/workability fields, ALWAYS computed (not gated by any
+    toggle, same as `workability`): `slump_cm`/`slump_lo`/`slump_hi` (None on the
+    heuristic path -- never a confident model number outside the slump corpus's OWN
+    support envelope, which is distinct from the strength model's), `slump_basis`
+    ("model" or "heuristic"), `slump_in_support`, and `slump_reason` (populated only
+    on the heuristic path). The interval is NOT a bound -- see `slump_caveat` and
+    docs/specs/R8.1's WP-1b section before displaying it as one.
+
+    R8.2 WP-3 adds an optional `compliance` field (`None` when `exposure_pack`/
+    `exposure_class` is not given or does not resolve to a real pack/class --
+    inert by default, so an existing caller that never passes these keeps every
+    other number bit-identical): the mix checked against ONE exposure class,
+    strength checked against the conformal LOWER bound (`interval_lo` above, which
+    already includes any exotic strength delta) per R8.2's "you do not certify on
+    a mean" design, never the point estimate.
     """
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
@@ -253,17 +364,20 @@ def compute_metrics(
     delta = exotic_strength_delta(exotic, enabled=exotic_strength)
     strength = base_strength + delta
     lo, _, hi = predictor.predict_interval(arr)
+    interval_lo = float(lo[0]) + delta
     novelty = float(predictor.novelty(arr)[0])
     carbon = (carbon_for_mode(d, advanced, exotic=exotic, transport_detail=transport_detail,
                               **(carbon_kwargs or {}))
              + exotic_carbon(exotic))
     cost = calculate_mix_cost(d, costs) + exotic_cost(exotic)
     disclosure = _disclosure_metrics(d, exotic, carbon_kwargs, carbon, site_temp_c=site_temp_c)
+    slump = slump_estimate(d)
+    compliance = _compliance_block(d, exposure_pack, exposure_class, interval_lo, air_pct)
     return {
         "strength": strength,
         "exotic_strength": delta,
         "tensile": tensile_estimate(strength),  # EC2 correlation (derived)
-        "interval_lo": float(lo[0]) + delta,   # 90% prediction interval, shifted by
+        "interval_lo": interval_lo,   # 90% prediction interval, shifted by
         "interval_hi": float(hi[0]) + delta,   # any exotic strength estimate
         "novelty": novelty,
         "in_support": bool(novelty <= predictor.support_threshold()),
@@ -275,6 +389,13 @@ def compute_metrics(
         "cost_as_placed": cost * (1.0 + waste_factor),
         "curing": estimate_curing_time(d),
         "uncertainty": float(uncertainty_fn(arr)) if uncertainty_fn else None,
+        "slump_cm": slump["slump_cm"],
+        "slump_lo": slump["lo"],
+        "slump_hi": slump["hi"],
+        "slump_basis": slump["basis"],
+        "slump_in_support": slump["in_support"],
+        "slump_reason": slump["reason"],
+        "compliance": compliance,
         **disclosure,
     }
 
@@ -483,6 +604,17 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict,
     a secondary UNCALIBRATED maturity-based curing estimate alongside (not instead
     of) the primary heuristic (C2/Decision 1), and -- when `config["transport_detail"]`
     is on (Decision 2) -- per-material transport mode/km disclosure.
+
+    R8.1 WP-3 (unconditional, like the WP-E rows above): a slump point estimate
+    row (`prediction,slump_cm_<basis>`), its interval width (`slump_interval_width_cm`,
+    model basis only), and a `note,slump_interval` row stating the width caveat --
+    see `slump_caveat`; the interval is NEVER presented as a bound.
+
+    R8.2 WP-3 (conditional on `metrics["compliance"]` being truthy -- i.e. a real
+    pack/class was selected, INERT/absent otherwise): a `compliance,<pack>.<class>`
+    verdict row, one `compliance,rule_<name>` row per FAIL/UNKNOWN rule, and the
+    MANDATORY `compliance,advisory` disclosure row naming the standard to check
+    against (present whenever any compliance row is).
     """
     cfg_carbon = {k: config[k] for k in ("advanced", "transport_km", "cement_type",
                                          "factors", "clinker_source")
@@ -557,6 +689,28 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict,
     maturity_str = f"{maturity:.1f}" if maturity is not None else ""
     rows.append(f"prediction,curing_maturity_days_uncalibrated,{maturity_str}")
 
+    # R8.1 WP-3: slump/workability. Prefer compute_metrics's own values; recompute
+    # fresh via slump_estimate(mix) for a metrics dict that predates this wave
+    # (e.g. recommend_recipe's), same fallback shape as the disclosure block above.
+    if "slump_basis" in metrics:
+        slump_cm = metrics.get("slump_cm")
+        slump_lo, slump_hi = metrics.get("slump_lo"), metrics.get("slump_hi")
+        slump_basis, slump_reason = metrics.get("slump_basis"), metrics.get("slump_reason")
+    else:
+        _slump = slump_estimate(mix)
+        slump_cm, slump_lo, slump_hi = _slump["slump_cm"], _slump["lo"], _slump["hi"]
+        slump_basis, slump_reason = _slump["basis"], _slump["reason"]
+    if slump_cm is not None:
+        rows.append(f"prediction,slump_cm_{slump_basis},{slump_cm:.1f}")
+        rows.append(f"prediction,slump_interval_width_cm,{(slump_hi - slump_lo):.1f}")
+    else:
+        reason_text = (slump_reason or "no measured estimate available for this region").replace('"', "'")
+        rows.append(f'prediction,slump_cm_{slump_basis},"n/a -- {reason_text}"')
+    # WP-1b's non-negotiable: the interval (when present) is a width caveat, NEVER
+    # a bound -- this note row and the Compare tab's caption share the exact same
+    # wording (`slump_caveat`) so the two surfaces can never say different things.
+    rows.append(f'note,slump_interval,"{slump_caveat(slump_lo, slump_hi)}"')
+
     for k, c in costs.items():
         rows.append(f"cost_usd,{k},{mix.get(k, 0.0) * c:.2f}")
     # Provenance: what each factor rests on (epd:REF / database:REF / user-override).
@@ -617,6 +771,38 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict,
              "transport_detail", "site_temp_c"):
         if k in config:
             rows.append(f"config,{k},{config[k]}")
+
+    # R8.2 WP-3: compliance verdict + failing/unknown rules + the MANDATORY
+    # advisory row -- present whenever this ticket carries a verdict at all
+    # (i.e. `metrics["compliance"]` is truthy), absent entirely otherwise (inert
+    # default: no pack/class selected -> no compliance,* rows, bit-identical to
+    # before this feature existed). UNKNOWN is never silently dropped or folded
+    # into PASS -- it gets its own row here exactly like FAIL.
+    def _fmt_rule_value(v):
+        # Numeric values (a rule's `required`/`actual`) get fixed readable
+        # precision -- without this, an `actual` sourced from the model's raw
+        # float32 prediction (e.g. min_strength_MPa's conformal lower bound)
+        # would print 15 spurious digits. None -> blank; a string passes through.
+        if v is None:
+            return ""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return f"{float(v):.4g}"
+        return v
+
+    compliance = metrics.get("compliance")
+    if compliance:
+        rows.append(f"compliance,{compliance['pack_id']}.{compliance['class']},{compliance['verdict']}")
+        for r in compliance["rules"]:
+            if r["result"] in ("FAIL", "UNKNOWN"):
+                required = _fmt_rule_value(r["required"])
+                actual = _fmt_rule_value(r["actual"])
+                reason = f" reason={r['reason']}" if r["reason"] else ""
+                rows.append(f'compliance,rule_{r["rule"]},"{r["result"]}: '
+                           f'required={required} actual={actual}{reason}"')
+        rows.append(f'compliance,advisory,"{compliance_advisory_text(compliance.get("source", {}))}"')
+
     rows.append('disclaimer,,"Design exploration only — validate physically (ASTM/EN) '
                 'before any structural use."')
     return "\n".join(rows)

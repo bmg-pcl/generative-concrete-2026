@@ -51,6 +51,34 @@ def test_mix_slider_state_propagates():
     assert strength1 != strength0, "Mix A strength metric did not track the slider change"
 
 
+def test_exposure_compliance_widgets_render_and_verdict_shows():
+    """R8.2 WP-3: the Config-tab pack/class selectors and the Compare tab's
+    compliance panel + cross-jurisdiction table render without exception, both
+    before and after a real selection is made. UNKNOWN/PASS/FAIL render via
+    visually distinct elements (st.warning/st.success/st.error)."""
+    at = AppTest.from_file(APP, default_timeout=240).run()
+    assert not at.exception
+
+    # Inert by default: no compliance verdict banner yet, but the headline
+    # cross-jurisdiction table section is always present.
+    assert any("Cross-jurisdiction" in h.value for h in at.subheader)
+    assert not any("Compliance (A):" in s.value for s in at.success) \
+        and not any("Compliance (A):" in s.value for s in at.error) \
+        and not any("Compliance (A):" in s.value for s in at.warning)
+
+    at.selectbox(key="cfg_exposure_pack").set_value("en206").run()
+    assert not at.exception
+    at.selectbox(key="cfg_exposure_class").set_value("XC4").run()
+    assert not at.exception
+
+    verdict_alerts = list(at.success) + list(at.error) + list(at.warning)
+    verdict_texts = [a.value for a in verdict_alerts]
+    assert any("Compliance (A): en206.XC4" in t for t in verdict_texts)
+    assert any("Compliance (B): en206.XC4" in t for t in verdict_texts)
+    # The advisory disclosure names the standard, on a real caption surface.
+    assert any("EN 206" in c.value for c in at.caption)
+
+
 def test_preset_load_callback_sets_sliders():
     """R4.1: the preset on_change callback writes the keyed sliders (the shared load
     mechanism). After selecting a dataset preset, the sliders reflect that preset."""

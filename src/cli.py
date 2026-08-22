@@ -30,6 +30,7 @@ from .chemistry_simple import UNIT_COSTS, CARBON_FACTORS
 from .chemistry_advanced import FUEL_EF, GRID_EF
 from .exotics import EXOTIC_ADMIXTURES
 from .materials import validate_epd_json, carbon_provenance
+from .compliance import load_packs
 
 DEFAULT_RUN_CONFIG = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
                       "robust": True, "age": None, "clinker_source": None,
@@ -87,6 +88,39 @@ def validate_waste_factor(value) -> str | None:
         return f"waste_factor must be numeric; got {value!r}."
     if not (0.0 <= value < 0.5):
         return f"waste_factor must be numeric in [0, 0.5); got {value!r}."
+    return None
+
+
+def parse_exposure_arg(value: str) -> tuple[str, str]:
+    """Split a '--exposure <pack>:<class>' string into (pack_id, class_id).
+
+    Boundary syntax validation only (R8.2 WP-3) -- whether the ids actually name
+    a real pack/class is `validate_exposure`'s job below, mirroring
+    `validate_clinker_source`'s two-step shape (parse the shape, then check the
+    values against the live registry)."""
+    if ":" not in value or value.count(":") != 1:
+        raise CliError(f"--exposure must be '<pack>:<class>' (exactly one ':'); got '{value}'.")
+    pack_id, cls = value.split(":", 1)
+    if not pack_id or not cls:
+        raise CliError(f"--exposure must be '<pack>:<class>'; got '{value}'.")
+    return pack_id, cls
+
+
+def validate_exposure(pack_id: str, cls: str) -> str | None:
+    """Return None if `pack_id`/`cls` resolve to a real pack/class, else an error
+    message naming the valid ids -- `validate_clinker_source`'s style, and the
+    same reason: an unknown id must become a clean CliError at the boundary, not
+    an uncaught KeyError from `check_compliance` deep inside `compute_metrics`.
+    Never a hardcoded jurisdiction list -- `load_packs()` is the live registry
+    (R8.2's honesty contract: a pack is a JSON drop-in, not a code change)."""
+    packs = load_packs()
+    if pack_id not in packs:
+        return (f"Unknown exposure pack '{pack_id}'. Valid packs: "
+                f"{', '.join(sorted(packs)) or '(none available)'}.")
+    classes = packs[pack_id].get("classes", {})
+    if cls not in classes:
+        return (f"Unknown exposure class '{cls}' in pack '{pack_id}'. Valid "
+                f"classes: {', '.join(sorted(classes))}.")
     return None
 
 
@@ -204,12 +238,19 @@ def cmd_predict(args) -> int:
     from .ui_logic import compute_metrics
     cfg = load_project_config(args.config, epd_path=args.epd)
     mix, exotic = load_mix(args.mix)
+    exposure_pack = exposure_class = None
+    if args.exposure:
+        exposure_pack, exposure_class = parse_exposure_arg(args.exposure)
+        err = validate_exposure(exposure_pack, exposure_class)
+        if err:
+            raise CliError(err)
     predictor = StrengthPredictor()
     metrics = compute_metrics(mix, exotic, cfg["costs"], predictor,
                               advanced=bool(cfg["run"]["advanced"]),
                               exotic_strength=False,
                               carbon_kwargs=_carbon_kwargs(cfg),
-                              waste_factor=float(cfg["run"]["waste_factor"]))
+                              waste_factor=float(cfg["run"]["waste_factor"]),
+                              exposure_pack=exposure_pack, exposure_class=exposure_class)
     out = {"mix": dict(zip(PARAM_NAMES, mix)), **metrics}
     print(json.dumps(_jsonable(out), indent=2))
     if args.ticket:
@@ -285,6 +326,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mix", required=True, help="Mix JSON (named params or 8-vector).")
     p.add_argument("--config", default=None, help="Project config JSON (session-export schema).")
     p.add_argument("--epd", default=None, help='Supplier EPD JSON ({"epds": {"cement": {"value": ...}}}).')
+    p.add_argument("--exposure", default=None,
+                   help="Exposure class to check, '<pack>:<class>' (e.g. 'en206:XC4'). "
+                        "Advisory only, never a certification -- see docs/specs/R8.2.")
     p.add_argument("--ticket", default=None, help="Also write a mix-ticket CSV here.")
     p.set_defaults(fn=cmd_predict)
 

@@ -20,11 +20,16 @@ from src.ui_logic import (
     tensile_estimate,
     carbon_breakdown,
     mix_ticket,
+    slump_caveat,
+    compliance_advisory_text,
+    compliance_matrix,
 )
 from src.chemistry_simple import calculate_embodied_carbon, calculate_mix_cost
 from src.chemistry_advanced import embodied_carbon_advanced
 from src.exotics import exotic_strength_delta
 from src.models import StrengthPredictor
+from src.properties import slump_estimate
+from src.compliance import set_packs_path
 
 MIX = [350, 100, 0, 175, 5, 1000, 750, 28]
 COSTS = {"cement": 0.15, "slag": 0.08, "ash": 0.05, "water": 0.002,
@@ -701,3 +706,321 @@ def test_mix_ticket_disclosure_falls_back_for_metrics_missing_new_fields(predict
     assert any(line.startswith("carbon_kgCO2,interval_lo,") for line in lines)
     assert any(line.startswith("thermal,delta_t_adiabatic_C,") for line in lines)
     assert any(line.startswith("prediction,curing_maturity_days_uncalibrated,") for line in lines)
+
+
+# ===================================================================================
+# R8.1 WP-3 (Wave B): slump display -- compute_metrics + mix_ticket integration.
+# The two non-negotiable display rules (see docs/specs/R8.1's WP-1b section): show
+# the POINT ESTIMATE, state the interval width as a plain caveat, and NEVER render
+# it as a bound/guarantee. Out-of-support mixes show basis="heuristic", never a
+# bare model number.
+# ===================================================================================
+
+# A row drawn straight from the committed slump corpus (data/slump_test.data row
+# 10) -- genuinely IN-SUPPORT for the slump model, unlike MIX above (which is
+# in-support for STRENGTH but sits outside the slump corpus's envelope -- see
+# tests/test_properties.py::test_strength_in_support_slump_out_of_support, the
+# same per-property-gate finding R8.1 WP-1 exhibited).
+IN_SUPPORT_SLUMP_MIX = [145, 106, 136, 208, 10, 751, 883, 28]
+
+
+def test_mix_out_of_slump_support_is_in_strength_support(predictor):
+    """Exhibits the per-property-gate finding this integration relies on: the
+    everyday MIX used throughout this file is comfortably in-support for
+    STRENGTH but outside the slump model's OWN envelope (every slump-corpus row
+    used SP >= 4.4 kg/m3; MIX's SP=5 is fine on that axis, but the full 7-D kNN
+    distance still lands it outside -- see docs/specs/R8.1)."""
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    assert m["in_support"] is True          # strength: in-support
+    assert m["slump_basis"] == "heuristic"  # slump: NOT in-support -- its own gate
+
+
+def test_compute_metrics_slump_model_basis_when_in_support(predictor):
+    m = compute_metrics(IN_SUPPORT_SLUMP_MIX, _no_exotics(), COSTS, predictor)
+    assert m["slump_basis"] == "model"
+    assert m["slump_in_support"] is True
+    assert m["slump_cm"] is not None
+    # WP-1's coherence gate, reused at the integration layer: lo <= point <= hi.
+    assert m["slump_lo"] <= m["slump_cm"] <= m["slump_hi"]
+    assert m["slump_reason"] is None
+    # Cross-check against calling slump_estimate directly on the same mix.
+    direct = slump_estimate(mix_dict(IN_SUPPORT_SLUMP_MIX))
+    assert m["slump_cm"] == pytest.approx(direct["slump_cm"])
+
+
+def test_compute_metrics_slump_heuristic_basis_when_out_of_support(predictor):
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    assert m["slump_basis"] == "heuristic"
+    assert m["slump_in_support"] is False
+    # Never a confident model number outside the trained envelope.
+    assert m["slump_cm"] is None
+    assert m["slump_lo"] is None and m["slump_hi"] is None
+    assert m["slump_reason"] is not None
+
+
+def test_slump_caveat_never_phrases_the_interval_as_a_bound():
+    text = slump_caveat(10.0, 22.0)
+    assert "NOT a guaranteed bound" in text
+    assert "guarantee" not in text.lower().replace("not a guaranteed", "")
+    # Width and half-width are both stated plainly.
+    assert "12.0 cm" in text   # interval width (22 - 10)
+    assert "±6.0 cm" in text   # half-width, the "at 90%" figure
+    # The heuristic (no-interval) path states plainly that there is nothing to bound.
+    assert "No measured interval" in slump_caveat(None, None)
+
+
+def test_mix_ticket_slump_rows_model_basis(predictor):
+    d = mix_dict(IN_SUPPORT_SLUMP_MIX)
+    m = compute_metrics(IN_SUPPORT_SLUMP_MIX, _no_exotics(), COSTS, predictor)
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    cm_row = next(line for line in lines if line.startswith("prediction,slump_cm_model,"))
+    assert float(cm_row.split(",")[2]) == pytest.approx(m["slump_cm"], abs=0.05)
+    width_row = next(line for line in lines if line.startswith("prediction,slump_interval_width_cm,"))
+    assert float(width_row.split(",")[2]) == pytest.approx(m["slump_hi"] - m["slump_lo"], abs=0.05)
+    note_row = next(line for line in lines if line.startswith("note,slump_interval,"))
+    assert "NOT a guaranteed bound" in note_row
+    # Never rendered as an interval90-style bound row (that phrasing is reserved
+    # for the strength interval, which genuinely is conformalised as a bound).
+    assert not any("slump_interval90" in line for line in lines)
+
+
+def test_mix_ticket_slump_rows_heuristic_basis(predictor):
+    d = mix_dict(MIX)
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    cm_row = next(line for line in lines if line.startswith("prediction,slump_cm_heuristic,"))
+    assert "n/a" in cm_row
+    # No numeric model interval width row on the heuristic path.
+    assert not any(line.startswith("prediction,slump_interval_width_cm,") for line in lines)
+    note_row = next(line for line in lines if line.startswith("note,slump_interval,"))
+    assert "heuristic fallback" in note_row.lower()
+
+
+def test_mix_ticket_slump_fallback_for_metrics_missing_new_fields(predictor):
+    """A metrics dict predating this wave (e.g. recommend_recipe's own dict, which
+    carries no slump_* keys at all) must still get every slump row -- recomputed
+    fresh via slump_estimate(mix), same fallback shape as DISCLOSURE_KEYS."""
+    d = mix_dict(IN_SUPPORT_SLUMP_MIX)
+    m = compute_metrics(IN_SUPPORT_SLUMP_MIX, _no_exotics(), COSTS, predictor)
+    legacy_metrics = {k: v for k, v in m.items() if not k.startswith("slump_")}
+    csv = mix_ticket(d, legacy_metrics, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    assert any(line.startswith("prediction,slump_cm_model,") for line in lines)
+    assert any(line.startswith("prediction,slump_interval_width_cm,") for line in lines)
+    assert any(line.startswith("note,slump_interval,") for line in lines)
+
+
+# ===================================================================================
+# R8.2 WP-3 (Wave B): compliance integration -- compute_metrics + mix_ticket +
+# compliance_matrix (the cross-jurisdiction headline). Defaults must be INERT
+# (bit-identical to every pre-existing number); UNKNOWN must never upgrade to
+# PASS; the advisory row is mandatory whenever a verdict exists.
+# ===================================================================================
+
+# A small, fully-specified pack (every rule present on both classes) so a plain
+# PASS/FAIL is actually reachable -- unlike the shipped real packs, which (per
+# WP-2's own honest "omit rather than guess" discipline) omit max_scm_fraction
+# on EVERY class, so a real-pack verdict is always at least UNKNOWN. Mirrors
+# compliance.py's own `_fixture` pack in spirit (full-coverage + gap classes),
+# built inline here so this integration layer's tests do not depend on the
+# real packs' completeness (which is honestly out of WP-3's control).
+_TEST_PACK = {
+    "pack_id": "testpack", "name": "WP-3 integration test pack",
+    "jurisdiction": "N/A (src/ui_logic.py test fixture)",
+    "source": {"standard": "TEST-STD-1", "table": "T.1", "verified": False,
+              "verification_note": "Synthetic, not a real standard."},
+    "strength_basis": "conformal_lower_bound",
+    "classes": {
+        "T1": {"max_w_b": 0.50, "min_cement_kg_m3": 300, "min_strength_MPa": 30,
+              "min_air_pct": None, "max_scm_fraction": {"ash": 0.33, "slag": 0.80}},
+        "T2": {"max_w_b": 0.30, "min_cement_kg_m3": 500, "min_strength_MPa": 60,
+              "min_air_pct": None, "max_scm_fraction": {"ash": 0.33, "slag": 0.80}},
+        "GAP": {"max_w_b": 0.50},   # every other rule absent -> always UNKNOWN
+    },
+}
+
+
+@pytest.fixture()
+def test_pack_dir(tmp_path):
+    """Drop `_TEST_PACK` into a temp registry dir and point compliance.py at it
+    for the duration of one test -- the same `set_packs_path` pluggability WP-1
+    gates on ("a jurisdiction is a JSON drop-in, not a code change"). Restores the
+    default registry afterward so this file cannot poison other test modules."""
+    import json
+    (tmp_path / "testpack.json").write_text(json.dumps(_TEST_PACK))
+    set_packs_path(str(tmp_path))
+    try:
+        yield str(tmp_path)
+    finally:
+        set_packs_path(None)
+
+
+def test_compute_metrics_compliance_inert_by_default(predictor):
+    """The Wave B gate: no pack selected -> every pre-existing number/key is
+    bit-identical to calling compute_metrics with none of the new kwargs, and
+    the new `compliance` key is exactly None (not an empty dict, not omitted)."""
+    exotic = _no_exotics()
+    implicit = compute_metrics(MIX, exotic, COSTS, predictor)
+    explicit = compute_metrics(MIX, exotic, COSTS, predictor,
+                               exposure_pack=None, exposure_class=None, air_pct=None)
+    assert implicit["compliance"] is None
+    assert explicit["compliance"] is None
+    pre_existing_keys = [k for k in implicit if k not in
+                         ("compliance",) and not k.startswith("slump_")]
+    for k in pre_existing_keys:
+        assert implicit[k] == explicit[k], k
+
+
+def test_compute_metrics_compliance_unresolvable_ids_are_inert(predictor):
+    """An exposure_pack/exposure_class that does not resolve to a real pack/class
+    degrades to inert (None), never raises -- this is an advisory UI feature, not
+    a validated boundary (the CLI's --exposure flag is the validated boundary)."""
+    exotic = _no_exotics()
+    m1 = compute_metrics(MIX, exotic, COSTS, predictor, exposure_pack="does_not_exist",
+                         exposure_class="XC4")
+    assert m1["compliance"] is None
+    m2 = compute_metrics(MIX, exotic, COSTS, predictor, exposure_pack="en206",
+                         exposure_class="ZZ9")
+    assert m2["compliance"] is None
+    m3 = compute_metrics(MIX, exotic, COSTS, predictor, exposure_pack="en206",
+                         exposure_class=None)
+    assert m3["compliance"] is None
+
+
+def test_compute_metrics_compliance_pass_at_exact_limit(predictor, test_pack_dir):
+    """The Wave B gate: a mix exactly AT a limit PASSES (deemed-to-satisfy limits
+    are inclusive)."""
+    exotic = _no_exotics()
+    # w/b = 150/300 = 0.50 exactly (T1's max_w_b); cement=300 exactly (T1's
+    # min_cement_kg_m3); strength lower bound comfortably clears 30 MPa for a
+    # 300 kg/m3 OPC mix at this w/b.
+    mix = [300, 0, 0, 150, 5, 1000, 750, 28]
+    m = compute_metrics(mix, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T1")
+    c = m["compliance"]
+    assert c is not None
+    assert c["pack_id"] == "testpack" and c["class"] == "T1"
+    w_b_rule = next(r for r in c["rules"] if r["rule"] == "max_w_b")
+    assert w_b_rule["actual"] == pytest.approx(0.50)
+    assert w_b_rule["result"] == "PASS"
+    cement_rule = next(r for r in c["rules"] if r["rule"] == "min_cement_kg_m3")
+    assert cement_rule["actual"] == pytest.approx(300.0)
+    assert cement_rule["result"] == "PASS"
+    assert c["verdict"] == "PASS"
+
+
+def test_compute_metrics_compliance_fails_a_weak_mix(predictor, test_pack_dir):
+    exotic = _no_exotics()
+    weak_mix = [150, 0, 0, 180, 0, 1000, 750, 3]  # low cement, high w/b, age 3d
+    m = compute_metrics(weak_mix, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T2")
+    assert m["compliance"]["verdict"] == "FAIL"
+
+
+def test_compute_metrics_compliance_unknown_rule_never_upgrades_to_pass(predictor, test_pack_dir):
+    """T2's GAP-adjacent class 'GAP' only declares max_w_b -- every other rule is
+    ABSENT (not null), so the verdict must be UNKNOWN even for an otherwise-
+    excellent mix, never silently PASS."""
+    exotic = _no_exotics()
+    strong_mix = [500, 0, 0, 140, 10, 1000, 750, 90]
+    m = compute_metrics(strong_mix, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="GAP")
+    c = m["compliance"]
+    assert c["verdict"] == "UNKNOWN"
+    assert c["unknown_count"] >= 1
+
+
+def test_compute_metrics_compliance_uses_conformal_lower_bound_not_mean(predictor, test_pack_dir):
+    """R8.2's central design decision: strength is checked against interval_lo
+    (the conformal LOWER bound, already inclusive of any exotic delta), never the
+    point-estimate mean."""
+    exotic = _no_exotics()
+    m = compute_metrics(MIX, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T1")
+    rule = next(r for r in m["compliance"]["rules"] if r["rule"] == "min_strength_MPa")
+    assert rule["actual"] == pytest.approx(m["interval_lo"])
+    assert rule["actual"] < m["strength"]   # the lower bound is strictly below the mean
+    assert "lower_bound" in rule["basis"]
+
+
+def test_mix_ticket_compliance_rows_absent_when_inert(predictor):
+    d = mix_dict(MIX)
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    assert not any(line.startswith("compliance,") for line in csv.splitlines())
+
+
+def test_mix_ticket_compliance_rows_and_mandatory_advisory(predictor, test_pack_dir):
+    d = mix_dict([300, 0, 0, 150, 5, 1000, 750, 28])
+    m = compute_metrics([300, 0, 0, 150, 5, 1000, 750, 28], _no_exotics(), COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T1")
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    verdict_row = next(line for line in lines if line.startswith("compliance,testpack.T1,"))
+    assert verdict_row.endswith(",PASS")
+    advisory_row = next(line for line in lines if line.startswith("compliance,advisory,"))
+    assert "TEST-STD-1" in advisory_row          # names the standard
+    assert "NOT a certification" in advisory_row
+
+
+def test_mix_ticket_compliance_unknown_rows_present_per_failing_rule(predictor, test_pack_dir):
+    d = mix_dict([500, 0, 0, 140, 10, 1000, 750, 90])
+    m = compute_metrics([500, 0, 0, 140, 10, 1000, 750, 90], _no_exotics(), COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="GAP")
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    assert any(line.startswith("compliance,testpack.GAP,UNKNOWN") for line in lines)
+    # One row per UNKNOWN/FAIL rule -- min_cement_kg_m3, min_strength_MPa,
+    # min_air_pct, max_scm_fraction are all absent from GAP.
+    unknown_rule_rows = [line for line in lines if line.startswith("compliance,rule_")]
+    assert len(unknown_rule_rows) == 4
+    assert any("UNKNOWN" in line for line in unknown_rule_rows)
+
+
+def test_compliance_advisory_text_names_the_standard():
+    source = {"standard": "EN 206:2013+A2:2021", "verification_note": "check it"}
+    text = compliance_advisory_text(source)
+    assert "EN 206:2013+A2:2021" in text
+    assert "NOT a certification" in text
+    assert "check it" in text
+
+
+def test_compliance_matrix_shows_pass_and_fail_across_jurisdictions():
+    """The R8.2 WP-3 headline gate: the cross-jurisdiction table shows at least
+    one mix passing in one jurisdiction and failing/unknown in another, via
+    compliance_matrix (built on compliance.compare_jurisdictions)."""
+    mix = {"cement": 300, "slag": 0, "ash": 0, "water": 150, "superplasticizer": 5,
+          "coarse_agg": 1000, "fine_agg": 750}
+    packs = {"testpack": _TEST_PACK}
+    rows = compliance_matrix(mix, strength_lo=35.0, highlight_pack="testpack",
+                             highlight_class="T1", packs=packs)
+    verdicts = {r["class"]: r["verdict"] for r in rows}
+    assert verdicts["T1"] == "PASS"
+    # T1's row is here because highlight_pack/highlight_class asked for it; add a
+    # second, independent pack with a class this same mix FAILS to exhibit real
+    # cross-jurisdiction variation.
+    strict_pack = {
+        **_TEST_PACK, "pack_id": "strictpack",
+        "classes": {"S1": {"max_w_b": 0.30, "min_cement_kg_m3": 500,
+                          "min_strength_MPa": 60, "min_air_pct": None,
+                          "max_scm_fraction": {"ash": 0.33, "slag": 0.80}}},
+    }
+    packs2 = {"testpack": _TEST_PACK, "strictpack": strict_pack}
+    rows2 = compliance_matrix(mix, strength_lo=35.0, highlight_pack="testpack",
+                              highlight_class="T1", packs=packs2)
+    verdicts2 = {(r["pack_id"], r["class"]): r["verdict"] for r in rows2}
+    assert verdicts2[("testpack", "T1")] == "PASS"
+    assert verdicts2[("strictpack", "S1")] == "FAIL"
+
+
+def test_compliance_matrix_default_representative_class_per_pack():
+    """Without a highlight, each pack contributes its own alphabetically-first
+    class -- deterministic, and never a hardcoded jurisdiction list (built from
+    whatever `packs` names)."""
+    mix = {"cement": 300, "slag": 0, "ash": 0, "water": 150, "superplasticizer": 5,
+          "coarse_agg": 1000, "fine_agg": 750}
+    rows = compliance_matrix(mix, strength_lo=35.0, packs={"testpack": _TEST_PACK})
+    assert len(rows) == 1
+    assert rows[0]["class"] == "GAP"   # alphabetically first of {T1, T2, GAP}
