@@ -190,9 +190,12 @@ def render_compare(ctx: AppContext):
     st.divider()
     st.subheader("Cross-jurisdiction compliance (advisory)")
     st.caption(
-        "The same two mixes checked against a representative exposure class from "
-        "every known jurisdiction pack — this is what makes national variation "
-        "visible. Always advisory; check the named standard before any structural "
+        "The same two mixes checked against each jurisdiction pack's own "
+        "representative exposure class (named in every row). **The classes are "
+        "not equivalent requirements** — EN 206 and ACI 318 use different "
+        "taxonomies, so a differing verdict reflects a difference in what was "
+        "checked, not necessarily a regulatory difference. Pick a pack and class "
+        "above to check one deliberately. Always advisory; check the named standard before any structural "
         "use (see each pack's own disclosure above)."
     )
     rows_a = compliance_matrix(

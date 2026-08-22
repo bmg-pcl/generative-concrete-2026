@@ -1016,11 +1016,21 @@ def test_compliance_matrix_shows_pass_and_fail_across_jurisdictions():
 
 
 def test_compliance_matrix_default_representative_class_per_pack():
-    """Without a highlight, each pack contributes its own alphabetically-first
-    class -- deterministic, and never a hardcoded jurisdiction list (built from
-    whatever `packs` names)."""
+    """Without a highlight, each pack contributes the class that STATES the most
+    rules -- deterministic, and never a hardcoded jurisdiction list (built from
+    whatever `packs` names).
+
+    This deliberately replaces an earlier alphabetical rule. Alphabetical picked
+    ACI 318's real "C0" (concrete dry or protected from moisture -- the
+    not-exposed category, every rule null by construction), so the shipped table
+    paired EN 206's XA1, a genuine chemical-attack requirement, against a class
+    that imposes nothing to fail. It rendered as "en206: UNKNOWN / aci318: PASS"
+    and invited precisely the wrong reading. Here the same degenerate case is
+    "GAP" (every rule but one absent); the rule must not choose it."""
     mix = {"cement": 300, "slag": 0, "ash": 0, "water": 150, "superplasticizer": 5,
           "coarse_agg": 1000, "fine_agg": 750}
     rows = compliance_matrix(mix, strength_lo=35.0, packs={"testpack": _TEST_PACK})
     assert len(rows) == 1
-    assert rows[0]["class"] == "GAP"   # alphabetically first of {T1, T2, GAP}
+    assert rows[0]["class"] != "GAP", "must not represent a pack by a rule-less class"
+    assert rows[0]["class"] in ("T1", "T2")   # both state 4 rules; ties break alphabetically
+    assert rows[0]["class"] == "T1"

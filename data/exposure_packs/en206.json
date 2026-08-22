@@ -6,7 +6,7 @@
     "standard": "EN 206:2013+A2:2021",
     "table": "Table F.1 (informative Annex F — recommended limiting values for composition and properties of concrete)",
     "verified": false,
-    "verification_note": "Indicative values for design exploration, reconstructed from secondary-source summaries of Table F.1, NOT transcribed from a purchased copy of the standard. National annexes vary (see bs8500.json for one). Check against the published standard before any structural or tender use."
+    "verification_note": "Indicative values for design exploration, reconstructed from secondary-source summaries of Table F.1, NOT transcribed from a purchased copy of the standard. National annexes vary and are NOT modelled here (no national-annex pack ships: see docs/specs/R8.2's gate-defect note). Check against the published standard before any structural or tender use."
   },
   "strength_basis": "conformal_lower_bound",
   "classes": {
@@ -20,7 +20,7 @@
     },
     "XC2": {
       "description": "Corrosion induced by carbonation — wet, rarely dry",
-      "max_w_b": 0.60,
+      "max_w_b": 0.6,
       "min_cement_kg_m3": 280,
       "min_strength_MPa": 25,
       "min_air_pct": null,
@@ -36,7 +36,7 @@
     },
     "XC4": {
       "description": "Corrosion induced by carbonation — cyclic wet and dry",
-      "max_w_b": 0.50,
+      "max_w_b": 0.5,
       "min_cement_kg_m3": 300,
       "min_strength_MPa": 30,
       "min_air_pct": null,
@@ -68,7 +68,7 @@
     },
     "XS1": {
       "description": "Corrosion induced by chlorides from seawater — airborne salt, no direct contact",
-      "max_w_b": 0.50,
+      "max_w_b": 0.5,
       "min_cement_kg_m3": 300,
       "min_strength_MPa": 30,
       "min_air_pct": null,
@@ -106,7 +106,7 @@
     },
     "XF3": {
       "description": "Freeze/thaw attack — high water saturation, no de-icing agent",
-      "max_w_b": 0.50,
+      "max_w_b": 0.5,
       "min_cement_kg_m3": 320,
       "min_strength_MPa": 30,
       "notes": "min_air_pct intentionally omitted (not null); see XF1 note."
@@ -128,7 +128,7 @@
     },
     "XA2": {
       "description": "Chemical attack — moderately aggressive environment",
-      "max_w_b": 0.50,
+      "max_w_b": 0.5,
       "min_cement_kg_m3": 320,
       "min_air_pct": null,
       "notes": "min_strength_MPa intentionally omitted: secondary sources for Table F.1 disagree between C25/30 and C30/37 for XA2, so this is left UNKNOWN rather than guessed."

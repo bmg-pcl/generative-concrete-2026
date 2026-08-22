@@ -40,7 +40,9 @@ from .thermal import (
     curing_days_at_temperature,
     carbonation_co2_bound_kg_m3,
 )
-from .compliance import check_compliance, compare_jurisdictions, load_packs
+from .compliance import (
+    check_compliance, compare_jurisdictions, load_packs, CLASS_NUMERIC_FIELDS,
+)
 from .properties import slump_estimate
 from .generative_ga import PARAM_NAMES  # single source of the 8-parameter order
 
@@ -119,7 +121,7 @@ def compliance_matrix(mix: Dict[str, float], strength_lo: Optional[float] = None
     """The cross-jurisdiction compliance table -- R8.2's headline feature ("makes
     national variation visible"). One row per known pack (via `load_packs()`,
     never a hardcoded jurisdiction list), each checked against ITS OWN
-    alphabetically-first class id, UNLESS `highlight_pack` names a pack the caller
+    representative class (see `_representative_class`), UNLESS `highlight_pack` names a pack the caller
     wants checked against `highlight_class` instead (e.g. the Compare tab's own
     pack/class selection) -- that pack contributes `highlight_class`'s row instead
     of its default. Built on `compare_jurisdictions` (compliance.py, frozen).
@@ -127,8 +129,11 @@ def compliance_matrix(mix: Dict[str, float], strength_lo: Optional[float] = None
     Each pack contributes exactly one row because no two shipped packs share a
     class taxonomy (EN 206's XC/XD/XS/XF/XA vs ACI 318's F/S/W/C -- see
     compliance.py's module docstring), so there is no single class id meaningful
-    across every jurisdiction at once; a representative class per pack is the
-    honest way to show the same mix's standing across jurisdictions at a glance.
+    across every jurisdiction at once. Each row therefore answers "how does this
+    mix stand against THIS jurisdiction's named class" -- the classes are NOT
+    equivalent requirements and the rendered table must say so, or a reader will
+    mistake differing verdicts for a regulatory difference rather than a
+    difference in what was checked.
 
     `packs` overrides the registry (default `load_packs()`, the public non-hidden
     set) -- tests use this to supply a small, deterministic pack set instead of
@@ -137,14 +142,37 @@ def compliance_matrix(mix: Dict[str, float], strength_lo: Optional[float] = None
     packs = packs if packs is not None else load_packs()
     class_map: Dict[str, str] = {}
     for pid, pack in packs.items():
-        classes = sorted(pack.get("classes", {}))
+        classes = pack.get("classes", {})
         if not classes:
             continue
-        if pid == highlight_pack and highlight_class in pack["classes"]:
+        if pid == highlight_pack and highlight_class in classes:
             class_map[pid] = highlight_class
         else:
-            class_map[pid] = classes[0]
+            class_map[pid] = _representative_class(classes)
     return compare_jurisdictions(mix, class_map, packs=packs, strength_lo=strength_lo, air_pct=air_pct)
+
+
+def _representative_class(classes: Dict[str, dict]) -> str:
+    """Pick a class that actually STATES requirements, for the cross-jurisdiction
+    default. Never a null-exposure category.
+
+    Choosing alphabetically would pick ACI 318's "C0" (concrete dry or protected
+    from moisture -- the not-exposed category, whose every rule is null by
+    construction). A table pairing EN 206's XA1 (a real chemical-attack
+    requirement) against ACI's C0 renders as "en206: UNKNOWN / aci318: PASS" and
+    invites exactly the wrong reading -- that the mix is acceptable in one regime
+    and doubtful in the other -- when C0 simply imposes nothing to fail.
+
+    So: prefer the class stating the MOST rules (ties broken alphabetically),
+    which is both non-degenerate and a consistent "most demanding stated
+    requirement" default. Falls back to alphabetical only if no class states
+    anything at all."""
+    def stated(rec: dict) -> int:
+        stated_numeric = sum(1 for k in CLASS_NUMERIC_FIELDS if rec.get(k) is not None)
+        return stated_numeric + (1 if rec.get('max_scm_fraction') is not None else 0)
+
+    ranked = sorted(classes, key=lambda cid: (-stated(classes[cid]), cid))
+    return ranked[0]
 
 
 def mix_dict(mix) -> Dict[str, float]:
