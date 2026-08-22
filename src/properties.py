@@ -542,16 +542,31 @@ class PropertyModel:
 # PropertyModel docstring and docs/specs/R8.1 for why. random_state=42 matches the
 # convention used everywhere else in this repo (src/models.py, src/generative_ga.py).
 #
-# strategy="cv+" is the R8.1 WP-1b default (see docs/specs/R8.1's "Implementation
-# outcome" + this module's PropertyModel docstring): split-conformal spent ~25% of
-# the 103-row corpus on a calibration-only slice and still estimated the 90%
-# quantile from ~25 points, which the WP-1 measurement showed leaves the interval
-# nearly uninformative and coverage noisy across seeds. cv_folds=10 is the sensible
-# K for ~82 training rows after the outer 80/20 split -- see PropertyModel.__init__.
+# strategy="split" is the shipped default, and R8.1 WP-1b is why -- a NEGATIVE result
+# worth reading before anyone "upgrades" this again. WP-1b implemented CV+/Jackknife+
+# on the hypothesis that split-conformal's ~25-row calibration slice was what made the
+# slump interval nearly uninformative. Measured, held-out, at the repo's random_state=42:
+#
+#                       split        cv+
+#   median width        23.99 cm     24.91 cm   (CV+ is WIDER)
+#   % of 0-29 range     83%          86%
+#   coverage            0.952        1.000      (over-covering, not better)
+#   8-seed coverage     0.81-1.00    0.81-1.00  (identical instability)
+#   fit time            ~0.07 s      ~0.65 s
+#   saved artifact      1.26 MB      14.0 MB    (10 boosters + per-row residuals)
+#
+# The hypothesis was wrong: the per-fold quantile models already span ~20 cm of q05-q95
+# BEFORE any conformal correction, so width is dominated by genuine model uncertainty on
+# 103 rows, not by calibration-slice size. The seed swing is driven by the 21-row OUTER
+# fold used to *measure* coverage (quantized in ~4.8pp steps), which both strategies
+# share -- CV+ changes what happens inside the training fold, not the fold grading it.
+# So CV+ is kept available and tested (the comparison stays reproducible rather than
+# anecdotal) but is NOT the default: it costs 11x the artifact size and 9x the fit time
+# to be marginally worse. The real limit is the 103-row corpus; more data is the fix.
 SLUMP_HYPERPARAMS = dict(
     n_estimators=150, max_depth=3, support_k=5,
     test_size=0.2, cal_size=0.3, random_state=42,
-    strategy="cv+", cv_folds=10,
+    strategy="split", cv_folds=10,
 )
 
 

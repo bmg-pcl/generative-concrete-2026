@@ -74,24 +74,18 @@ def test_measured_coverage_in_loose_gate(slump_model):
     """103 rows cannot pin coverage tightly -- the gate is deliberately loose;
     report whatever is measured, never tune toward 0.90.
 
-    R8.1 WP-1b honesty note: at the repo's mandated random_state=42, the
-    committed CV+ model's held-out coverage measures 1.000 (21/21 on the outer
-    test fold) -- ABOVE the [0.80, 0.98] band the WP-1b spec targets. This is
-    not seed-shopped away (the spec forbids it) and not tuned away (the
-    Honesty rules forbid narrowing the interval just to move this number): a
-    21-row held-out fold is quantized in steps of 1/21 ~= 0.048, split's own
-    coverage at the SAME seed/SAME test rows is 0.952 (20/21), and CV+'s median
-    width is only ~1cm wider than split's (24.91 vs 23.99cm) -- enough to flip
-    exactly one row from "missed" to "covered". An 8-seed sweep (see
-    tests/test_properties.py::test_seed_stability_sweep_cv_plus and the WP-1b
-    commit message) shows CV+ coverage ranging 0.81-1.00 across seeds, the SAME
-    range split shows over the same seeds -- both strategies share the same
-    noise floor because it comes from the 21-row MEASURING fold, not from
-    which calibration mechanism ran inside the training fold. The band below
-    is therefore widened to admit the honestly-measured value rather than
-    silently failing or being gamed back into a narrower band."""
+    The shipped model uses strategy="split" and measures 0.952 (20/21 on the
+    outer test fold), inside the band. Note the band is only meaningful loosely:
+    a 21-row fold is quantized in steps of 1/21 ~= 0.048, so a single row
+    flipping moves coverage ~5pp. The 8-seed sweep spans 0.81-1.00 -- that noise
+    floor comes from the size of the fold used to MEASURE coverage, not from the
+    calibration mechanism (R8.1 WP-1b confirmed CV+ shows the identical spread).
+
+    If a future change makes this assert fail, the honest responses are to
+    report the number or to get more data -- never to widen the band or narrow
+    the interval to move it."""
     cov = slump_model.held_out_["coverage"]
-    assert 0.80 <= cov <= 1.0, f"measured held-out coverage was {cov:.3f}"
+    assert 0.80 <= cov <= 0.98, f"measured held-out coverage was {cov:.3f}"
 
 
 def test_median_interval_width_is_reported(slump_model):
@@ -237,9 +231,19 @@ def test_invalid_strategy_rejected():
         PropertyModel(name="x", feature_names=["a"], strategy="bogus")
 
 
-def test_cv_plus_is_default_strategy_for_committed_slump_model(slump_model):
-    """R8.1 WP-1b: CV+ is the default calibration strategy for the slump model."""
-    assert slump_model.strategy == "cv+"
+def test_split_is_default_strategy_for_committed_slump_model(slump_model):
+    """R8.1 WP-1b outcome: split-conformal stays the shipped default.
+
+    CV+ was implemented and measured on the hypothesis that split's ~25-row
+    calibration slice caused the uninformative interval. It did not: CV+ came
+    out marginally WIDER (24.91 vs 23.99cm), over-covering at 1.000, with the
+    identical 8-seed instability, an 11x larger artifact and 9x the fit time.
+    So CV+ stays available and tested but is not the default -- see
+    SLUMP_HYPERPARAMS' comment in src/properties.py for the full table.
+
+    This test pins the decision so an "upgrade" back to CV+ has to argue with
+    the measurement rather than the intuition."""
+    assert slump_model.strategy == "split"
 
 
 def test_split_strategy_still_selectable_and_reproduces_wp1_numbers():
