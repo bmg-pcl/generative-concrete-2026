@@ -16,7 +16,6 @@ PACKS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "ex
 
 PACK_FILES = {
     "en206": "en206.json",
-    "bs8500": "bs8500.json",
     "aci318": "aci318.json",
 }
 
@@ -123,30 +122,33 @@ def test_aci_taxonomy_is_not_the_en_set():
         assert class_id[0] in "FSWC", f"unexpected ACI category letter in '{class_id}'"
 
 
-def test_bs8500_diverges_from_en206_on_a_shared_class():
-    """The whole point of shipping a national annex: at least one class the
-    two packs share must carry a genuinely different limit. Identical packs
-    would mean one was copied rather than sourced (spec, WP-2 gates)."""
-    en = _load("en206")
-    bs = _load("bs8500")
-    shared = set(en["classes"]) & set(bs["classes"])
-    assert shared, "en206 and bs8500 share no class ids to compare"
+def test_no_pack_is_a_copy_of_another():
+    """No shipped pack may carry numerically identical limits to another across
+    every class they share.
 
-    differences = []
-    for class_id in sorted(shared):
-        en_rec, bs_rec = en["classes"][class_id], bs["classes"][class_id]
-        for key in RULE_KEYS:
-            if key in en_rec and key in bs_rec and en_rec[key] != bs_rec[key]:
-                differences.append((class_id, key, en_rec[key], bs_rec[key]))
-    assert differences, "bs8500 is identical to en206 on every shared class/rule -- must genuinely differ"
-
-
-def test_packs_are_not_wholesale_identical():
-    """Sanity check distinct from the rule-level divergence above: the two
-    packs must not be byte-identical after removing pack-identity fields."""
-    en = _load("en206")
-    bs = _load("bs8500")
-    assert en["classes"] != bs["classes"]
+    This REPLACES an earlier gate that asserted two named packs must differ. That
+    framing was actively harmful: it rewarded manufacturing a difference to satisfy
+    the assertion, which is exactly how a fabricated limit entered (and was removed
+    from) this suite -- a bs8500 pack that was EN 206 values plus one invented XD3
+    w/b figure. The honest inversion is to detect COPYING rather than demand
+    divergence: a jurisdiction with no independently sourced values should not be
+    shipped at all, and this gate now says so without offering a shortcut."""
+    packs = {name: _load(name) for name in PACK_FILES}
+    names = sorted(packs)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            ca, cb = packs[a]["classes"], packs[b]["classes"]
+            shared = set(ca) & set(cb)
+            if not shared:
+                continue          # genuinely different taxonomies cannot be copies
+            identical = all(
+                {k: ca[cid].get(k) for k in RULE_KEYS} == {k: cb[cid].get(k) for k in RULE_KEYS}
+                for cid in shared
+            )
+            assert not identical, (
+                f"'{b}' carries limits identical to '{a}' on every shared class -- it is a "
+                f"copy, not a sourced jurisdiction. Omit the pack rather than relabel another."
+            )
 
 
 @pytest.mark.parametrize("name", list(PACK_FILES))
