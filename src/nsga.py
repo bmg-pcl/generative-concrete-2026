@@ -14,15 +14,27 @@ The two approaches compose (see docs/WORKFLOW.md):
 
 Built on pymoo (https://pymoo.org). Imported lazily-guarded so the rest of the app
 works without it.
+
+Optional compliance constraint (spec docs/specs/R8.2-exposure-compliance.md, WP-3
+item 5): `run_nsga(..., compliance=(pack_id, class_id))` (default `None` -- off)
+adds ONE pymoo inequality constraint -- not a fourth objective, which would
+change the front's dimensionality and invalidate every existing hypervolume
+number. The constraint reuses `generative_ga.compliance_violation()` verbatim
+(the same scoring `generative_ga`'s GA penalty uses -- one mechanism, not two),
+and the front is always checked against the conformal LOWER bound of strength
+(R8.2's core design decision), independent of `robust`. See
+`generative_ga`'s module docstring for the UNKNOWN-handling decision this
+constraint inherits (UNKNOWN counts as a violation).
 """
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .generative_ga import PARAM_NAMES, data_envelope
+from .generative_ga import PARAM_NAMES, data_envelope, resolve_compliance_target, compliance_violation
 from .ui_logic import mix_dict, carbon_for_mode
 from .chemistry_simple import calculate_mix_cost
 from .physical import volume_error, VOLUME_TOLERANCE
+from .compliance import check_compliance
 
 try:
     from pymoo.core.problem import Problem
@@ -49,9 +61,14 @@ if _PYMOO_AVAILABLE:
         8 mix parameters, box-bounded to the training-data envelope.
         """
 
-        def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None, robust=False):
-            # Constraints: volume balance (always) + in-support (robust only).
-            super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=(2 if robust else 1),
+        def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None, robust=False,
+                     compliance_pack=None, compliance_cls=None):
+            # Constraints: volume balance (always) + in-support (robust only)
+            # + compliance (only when a compliance target is given). This is a
+            # CONSTRAINT, not a 4th objective -- deliberately, so front
+            # dimensionality (and every existing hypervolume number) is unchanged.
+            n_constr = 1 + (1 if robust else 0) + (1 if compliance_pack is not None else 0)
+            super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=n_constr,
                              xl=bounds[:, 0], xu=bounds[:, 1])
             self.predictor = predictor
             self.advanced = advanced
@@ -59,6 +76,8 @@ if _PYMOO_AVAILABLE:
             self.carbon_kwargs = carbon_kwargs or {}
             self.robust = robust
             self.threshold = predictor.support_threshold() if robust else None
+            self.compliance_pack = compliance_pack
+            self.compliance_cls = compliance_cls
 
         def _evaluate(self, X, out, *args, **kwargs):
             if self.robust:
@@ -72,10 +91,25 @@ if _PYMOO_AVAILABLE:
             # Physical-validity constraint (<=0 feasible): the front is batchable by
             # construction. In robust mode, also require in-support.
             g_vol = np.array([volume_error(mix_dict(x)) for x in X]) - VOLUME_TOLERANCE
+            constraints = [g_vol]
             if self.robust:
-                out["G"] = np.column_stack([g_vol, self.predictor.novelty(X) - self.threshold])
-            else:
-                out["G"] = g_vol
+                constraints.append(self.predictor.novelty(X) - self.threshold)
+            if self.compliance_pack is not None:
+                # Compliance is always checked against the conformal LOWER bound
+                # (R8.2's core design decision), independent of `robust` -- so
+                # recompute the interval here even when the objective above used
+                # the mean (non-robust mode).
+                if self.robust:
+                    strength_lo = strength  # already the lower bound above
+                else:
+                    strength_lo, _, _ = self.predictor.predict_interval(X)
+                g_compliance = np.array([
+                    compliance_violation(mix_dict(x), self.compliance_pack, self.compliance_cls,
+                                          float(slo))
+                    for x, slo in zip(X, strength_lo)
+                ])
+                constraints.append(g_compliance)
+            out["G"] = np.column_stack(constraints) if len(constraints) > 1 else constraints[0]
 
     class _FrontHistory(Callback):
         """Record the best value of each objective per generation for a convergence view."""
@@ -122,6 +156,7 @@ def run_nsga(
     carbon_kwargs: Optional[dict] = None,
     robust: bool = False,
     age: Optional[float] = None,
+    compliance: Optional[Tuple[str, str]] = None,
 ) -> Dict:
     """
     Run NSGA-II or NSGA-III and return the Pareto front.
@@ -131,9 +166,17 @@ def run_nsga(
         seed_population: optional (m, 8) array of warm-start mixes (e.g. from the
             amortized flow at a target strength).
         n_partitions: NSGA-III reference-direction resolution (more = denser front).
+        compliance: optional `(pack_id, class_id)` pair (default `None` -- off).
+            When given, front members are constrained (not scored as a 4th
+            objective -- the front stays 3-objective strength/carbon/cost) to
+            satisfy that exposure class, checked against the conformal LOWER
+            bound of strength. See the module docstring.
 
     Returns dict with the front mixes and their objective values (natural units),
-    plus a per-generation convergence history.
+    plus a per-generation convergence history. When `compliance` is given, also
+    includes a `"compliance"` block reporting, per front member, the real
+    `check_compliance()` verdict -- never inferred from the optimizer's soft
+    constraint alone -- and an honest `"all_pass"` flag.
     """
     if not _PYMOO_AVAILABLE:
         raise ImportError("pymoo is not installed. `pip install pymoo` to use NSGA-II/III.")
@@ -142,8 +185,10 @@ def run_nsga(
     if age is not None:  # pin age as a fixed design condition (not a free variable)
         bounds = bounds.copy()
         bounds[param_names.index("age")] = (float(age), float(age))
+    compliance_pack, compliance_cls = resolve_compliance_target(compliance)
     problem = MixDesignProblem(predictor, bounds, advanced, costs,
-                               carbon_kwargs=carbon_kwargs, robust=robust)
+                               carbon_kwargs=carbon_kwargs, robust=robust,
+                               compliance_pack=compliance_pack, compliance_cls=compliance_cls)
     sampling = _seed_sampling(seed_population, pop_size, bounds)
 
     if algorithm.lower() == "nsga3":
@@ -172,7 +217,7 @@ def run_nsga(
     strength = predictor.predict_batch(X)
     order = np.argsort(strength)  # sort the front by strength for display
     hist = callback.data
-    return {
+    out = {
         "algorithm": algo_name,
         "mixes": X[order],
         "strength": strength[order],
@@ -184,7 +229,32 @@ def run_nsga(
             "min_cost": hist["min_cost"],
         },
         "front_size": len(X),
+        "compliance": None,
     }
+    if compliance_pack is not None:
+        # Verify HONESTLY with the real engine -- the constraint above pulled the
+        # search toward compliance but pymoo can still return an infeasible front
+        # (e.g. no feasible region was found within n_gen), so this must not be
+        # inferred from the constraint alone. Always checked against the
+        # conformal LOWER bound, per R8.2.
+        X_ordered = X[order]
+        strength_lo, _, _ = predictor.predict_interval(X_ordered)
+        results = []
+        all_pass = True
+        for x, slo in zip(X_ordered, strength_lo):
+            r = check_compliance(mix_dict(x), compliance_pack, compliance_cls,
+                                 strength_lo=float(slo))
+            results.append(r)
+            if r["verdict"] != "PASS":
+                all_pass = False
+        out["compliance"] = {
+            "pack_id": compliance_pack["pack_id"],
+            "class": compliance_cls,
+            "strength_basis": "conformal_lower_bound",
+            "all_pass": all_pass,
+            "results": results,
+        }
+    return out
 
 
 if __name__ == "__main__":

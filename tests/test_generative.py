@@ -19,9 +19,13 @@ from src.generative_ga import (
     AntColonyInverseDesigner,
     data_envelope,
     PARAM_NAMES,
+    compliance_violation,
+    resolve_compliance_target,
 )
 from src.bayesian import BayesFlowExplorer
 from src.chemistry_advanced import inverse_plan_mix
+from src.compliance import load_packs, check_compliance
+from src.models import StrengthPredictor
 
 
 @pytest.fixture(scope="module")
@@ -119,3 +123,118 @@ def test_explorer_aco_backend():
     assert samples.shape == (200, len(PARAM_NAMES))
     mean_strength = explorer.predictor.predict_batch(samples).mean()
     assert abs(mean_strength - 50.0) < 12.0
+
+
+# --- WP-3b: optional compliance constraint (spec R8.2, WP-3 item 5) ---------
+#
+# Uses the `_fixture` pack (data/exposure_packs/_fixture.json, owned by WP-1)
+# via `load_packs(include_hidden=True)` -- its class "A1" has every rule
+# present with real numeric values, so it can actually reach a PASS verdict
+# (unlike en206/aci318, whose classes omit at least one rule everywhere and so
+# can only ever reach UNKNOWN or FAIL through this honesty-preserving engine).
+
+def test_default_path_is_bit_identical_to_no_compliance():
+    """compliance=None (the default) must exercise none of the new code paths.
+
+    Independently verified (see the WP-3b report) by running the pre-change
+    generative_ga.py (git HEAD, before this feature) and the current module
+    side by side under the same seeds: mixes/errors/samples came back
+    `np.array_equal` -- exactly, not approximately. This test is the
+    in-repo regression guard for that finding: `compliance=None` explicit vs.
+    omitted must always be the same call.
+    """
+    np.random.seed(4242)
+    d1 = PopulationInverseDesigner()
+    np.random.seed(99)
+    mixes1, errors1 = d1.design(45.0, generations=15, pop_size=30)
+
+    np.random.seed(4242)
+    d2 = PopulationInverseDesigner()
+    np.random.seed(99)
+    mixes2, errors2 = d2.design(45.0, generations=15, pop_size=30, compliance=None)
+
+    assert np.array_equal(mixes1, mixes2)
+    assert np.array_equal(errors1, errors2)
+
+
+def test_compliance_penalty_biases_ga_toward_target_class():
+    """A GA run with a compliance target set should find a mix whose real,
+    independently-recomputed `check_compliance()` verdict is PASS -- the
+    penalty is soft, so this confirms it's effective, not just present."""
+    designer = PopulationInverseDesigner()
+    pack = load_packs(include_hidden=True)["_fixture"]
+    mixes, _ = designer.design(45.0, generations=25, pop_size=40, compliance=("_fixture", "A1"))
+    best = mixes[0]
+    mix = dict(zip(PARAM_NAMES, best))
+    lo, _, _ = designer.predictor.predict_interval(best)
+    result = check_compliance(mix, pack, "A1", strength_lo=float(lo[0]))
+    assert result["verdict"] == "PASS"
+    assert compliance_violation(mix, pack, "A1", float(lo[0])) == 0.0
+
+
+def test_design_compliant_finds_a_passing_mix_or_reports_honestly():
+    """Gate: a constrained GA run returns designs that pass the requested class,
+    or reports honestly that none were found -- never a silent non-compliant
+    'pass'."""
+    designer = PopulationInverseDesigner()
+    report = designer.design_compliant(45.0, ("_fixture", "A1"), generations=30, pop_size=50)
+    assert report["strength_basis"] == "conformal_lower_bound"
+    if report["found"]:
+        assert report["result"]["verdict"] == "PASS"
+        # Independently re-verify with the real engine -- the wrapper must not
+        # be trusted on its own say-so.
+        pack = load_packs(include_hidden=True)["_fixture"]
+        lo, _, _ = designer.predictor.predict_interval(
+            np.array([report["mix"][p] for p in PARAM_NAMES]))
+        recheck = check_compliance(report["mix"], pack, "A1", strength_lo=float(lo[0]))
+        assert recheck["verdict"] == "PASS"
+    else:
+        assert report["mix"] is None
+        assert report["result"] is None
+        assert len(report["checked"]) > 0
+
+
+def test_compliance_uses_lower_bound_not_point_estimate():
+    """The compliance term must be computed against strength_lo, never the mean
+    (R8.2's core design decision). A young (age=7d), moderate-cement mix has a
+    conformal lower bound (~18.9 MPa) below the fixture's 30 MPa min_strength_MPa
+    rule while its mean (~34.8 MPa) is above it -- proving the basis matters,
+    not just that using either would agree."""
+    mix_vec = np.array([300, 0, 0, 150, 5, 1000, 750, 7], dtype=float)
+    pred = StrengthPredictor()
+    lo, med, hi = pred.predict_interval(mix_vec)
+    assert lo[0] < 30.0 <= med[0], "fixture assumes this mix straddles the 30 MPa rule"
+    pack = load_packs(include_hidden=True)["_fixture"]
+    mix = dict(zip(PARAM_NAMES, mix_vec))
+    viol_lo = compliance_violation(mix, pack, "A1", float(lo[0]))
+    viol_med = compliance_violation(mix, pack, "A1", float(med[0]))
+    assert viol_lo > 0.0   # FAILs min_strength_MPa on the lower bound
+    assert viol_med == 0.0  # would (wrongly) PASS on the mean
+
+
+def test_unknown_rule_counts_as_violation_by_default():
+    """WP-3b's UNKNOWN-handling decision: for the optimizer, UNKNOWN counts as
+    VIOLATED, not satisfied -- see the module docstring. Fixture class "A2" has
+    only max_w_b present; the other four rules are absent (UNKNOWN). A mix that
+    satisfies max_w_b must still carry a nonzero violation from those four
+    UNKNOWN rules, and the opt-out flag must exist and do what it says."""
+    pack = load_packs(include_hidden=True)["_fixture"]
+    mix = {"cement": 320.0, "slag": 0.0, "ash": 0.0, "water": 140.0,
+           "superplasticizer": 5.0, "coarse_agg": 1000.0, "fine_agg": 750.0, "age": 28.0}
+    # w/b = 140/320 = 0.4375 <= 0.45 -> max_w_b PASSes on its own.
+    viol = compliance_violation(mix, pack, "A2", strength_lo=40.0)
+    assert viol == 4.0  # exactly the 4 absent (UNKNOWN) rules, unit-penalised
+    viol_lenient = compliance_violation(mix, pack, "A2", strength_lo=40.0,
+                                         unknown_counts_as_violation=False)
+    assert viol_lenient == 0.0  # the opt-out path exists and behaves as documented
+
+
+def test_resolve_compliance_target_resolves_hidden_fixture_and_rejects_unknown():
+    pack, cls = resolve_compliance_target(("_fixture", "A1"))
+    assert pack["pack_id"] == "_fixture"
+    assert cls == "A1"
+    assert resolve_compliance_target(None) == (None, None)
+    with pytest.raises(KeyError):
+        resolve_compliance_target(("_fixture", "no-such-class"))
+    with pytest.raises(KeyError):
+        resolve_compliance_target(("no-such-pack", "A1"))
