@@ -11,7 +11,7 @@ from src.nsga import run_nsga, pymoo_available
 from src.chemistry_simple import calculate_mix_cost
 from src.ui_logic import PARAM_NAMES, scalarized_fitness, carbon_for_mode, pareto_front_mask
 from ui.context import AppContext
-from ui.state import load_mix_into
+from ui.state import load_mix_into, EXPOSURE_NONE
 
 param_names = list(PARAM_NAMES)
 
@@ -40,6 +40,13 @@ def render_pareto(ctx: AppContext):
         algorithm = st.selectbox("Optimization Algorithm", algo_options)
         is_nsga = "NSGA" in algorithm
 
+        # R8.5 P4 compliance state, defined on every path (only meaningfully set
+        # on the NSGA branch below -- GA/SA have no compliance-aware objective).
+        require_compliance = False
+        allow_unknown = False
+        exposure_pack_id = exposure_class_id = EXPOSURE_NONE
+        exposure_selected = False
+
         if algorithm == "Genetic Algorithm (GA)":
             pop_size = st.number_input("Population Size", 20, 200, 50)
             n_gens = st.number_input("Generations", 10, 100, 30)
@@ -56,6 +63,54 @@ def render_pareto(ctx: AppContext):
                      "target strength, so NSGA converges faster and stays in-distribution.",
             )
             warm_target = st.number_input("Warm-start target (MPa)", 10, 100, 45) if warm else None
+
+            # --- R8.5 P4: compliance constraint (NSGA already has native
+            # support -- run_nsga(..., compliance=(pack_id, class_id)) -- unlike
+            # the inverse tab, no design_compliant() workaround needed here).
+            exposure_pack_id = st.session_state.get("cfg_exposure_pack", EXPOSURE_NONE)
+            exposure_class_id = st.session_state.get("cfg_exposure_class", EXPOSURE_NONE)
+            exposure_selected = (exposure_pack_id != EXPOSURE_NONE
+                                 and exposure_class_id != EXPOSURE_NONE)
+            # Distinct keys from the Inverse Design tab's identically-purposed
+            # toggle (cfg_require_compliance/cfg_compliance_allow_unknown):
+            # Streamlit runs every tab's code on each script run (see
+            # tests/test_app_smoke.py's docstring), so two tabs instantiating a
+            # widget under the SAME key in the same run raises a duplicate-ID
+            # error -- these need their own state, and a user reasonably wants
+            # compliance required in one tab but not the other anyway.
+            require_compliance = st.checkbox(
+                "Require compliance (selected exposure class)",
+                key="cfg_require_compliance_pareto", disabled=not exposure_selected,
+                help=(
+                    f"ON: front members are constrained toward "
+                    f"{exposure_pack_id}.{exposure_class_id} during the search, "
+                    "then every member is independently RE-VERIFIED with the "
+                    "real check_compliance() engine — never inferred from the "
+                    "search constraint alone."
+                    if exposure_selected else
+                    "Select an exposure pack AND class on the Config tab to "
+                    "enable this."
+                ),
+            )
+            allow_unknown = False
+            if require_compliance and exposure_selected:
+                allow_unknown = st.checkbox(
+                    "Allow UNKNOWN rules", key="cfg_compliance_allow_unknown_pareto",
+                    help="OFF (strict, default): a front member must verify PASS "
+                         "on every rule. ON: a member whose evaluable rules all "
+                         "PASS also counts, even if some rules are UNKNOWN "
+                         "(unsourced by the pack).",
+                )
+            if require_compliance and exposure_selected and not allow_unknown:
+                st.info(
+                    f"**Strict compliance mode.** {exposure_pack_id}.{exposure_class_id} "
+                    "omits one or more deemed-to-satisfy rules this model cannot "
+                    "source (e.g. the SCM cap) — those are UNKNOWN, and strict "
+                    "mode counts UNKNOWN as a violation. A front with zero "
+                    "verified-PASS members may reflect that ceiling, not a "
+                    "broken search — check \"Allow UNKNOWN rules\" to see "
+                    "members passing every rule this pack actually sources."
+                )
 
         if is_nsga:
             st.caption("NSGA maps the whole strength / carbon / cost trade-off surface — no scalar weights needed.")
@@ -82,17 +137,57 @@ def render_pareto(ctx: AppContext):
                 seed = bayesian.sample_posterior(float(warm_target), n_samples=int(nsga_pop),
                                                  method="auto", age=design_age)
         algo_key = "nsga3" if "III" in algorithm else "nsga2"
+        compliance_arg = (exposure_pack_id, exposure_class_id) \
+            if (require_compliance and exposure_selected) else None
         with st.spinner(f"Running {algorithm} — mapping the trade-off surface…"):
             st.session_state.nsga_out = run_nsga(
                 predictor, advanced=use_advanced_chemistry, costs=st.session_state.costs,
                 algorithm=algo_key, pop_size=int(nsga_pop), n_gen=int(nsga_gen),
                 seed_population=seed, carbon_kwargs=carbon_kwargs, robust=robust_mode,
-                age=design_age,
+                age=design_age, compliance=compliance_arg,
             )
+            # R8.5 P4: the strict/allow-unknown choice, disclosed alongside the
+            # existing "compliance" block in the same output dict (run_nsga
+            # itself has no such concept -- its own "all_pass" is always strict;
+            # we apply the allow-unknown relaxation ourselves below).
+            st.session_state.nsga_out["compliance_mode"] = \
+                "allow_unknown" if allow_unknown else "strict"
 
     if is_nsga and st.session_state.get("nsga_out") is not None:
         nsga_out = st.session_state.nsga_out
         st.success(f"{nsga_out['algorithm']}: {nsga_out['front_size']} non-dominated mixes on the Pareto front.")
+
+        # R8.5 P4: honest compliance disclosure. run_nsga's own "all_pass" is
+        # always the STRICT reading (every rule PASS); when allow-unknown is
+        # selected we count our own acceptance criterion (verdict != "FAIL") over
+        # the same per-member `results`, never a laxer verdict than
+        # check_compliance itself computed -- see ui/inverse.py's `_pick_compliant`
+        # for the identical rule, applied here to a whole front instead of one pick.
+        c = nsga_out.get("compliance")
+        if c:
+            mode = nsga_out.get("compliance_mode", "strict")
+            if mode == "allow_unknown":
+                accepted = sum(1 for r in c["results"] if r["verdict"] != "FAIL")
+            else:
+                accepted = sum(1 for r in c["results"] if r["verdict"] == "PASS")
+            label = (f"Compliance ({mode}): {accepted}/{len(c['results'])} front "
+                     f"members verify against {c['pack_id']}.{c['class']}")
+            if accepted == len(c["results"]):
+                st.success(label)
+            elif accepted > 0:
+                st.warning(label)
+            else:
+                st.error(label)
+            if mode == "strict" and accepted < len(c["results"]):
+                st.info(
+                    f"**Strict compliance mode.** {c['pack_id']}.{c['class']} omits "
+                    "one or more deemed-to-satisfy rules this model cannot source "
+                    "(e.g. the SCM cap) — those are UNKNOWN, and strict mode "
+                    "counts UNKNOWN as a violation. Zero (or few) verified-PASS "
+                    "members here may reflect that ceiling, not a broken search — "
+                    "check \"Allow UNKNOWN rules\" above to see members passing "
+                    "every rule this pack actually sources."
+                )
 
         h = nsga_out["history"]
         conv = go.Figure()

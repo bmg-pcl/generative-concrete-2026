@@ -79,6 +79,82 @@ def test_exposure_compliance_widgets_render_and_verdict_shows():
     assert any("EN 206" in c.value for c in at.caption)
 
 
+def test_p1_transport_detail_reaches_the_inverse_design_optimizer():
+    """R8.5 P1: `ui/config.py`'s `carbon_kwargs` (what `recommend_recipe`
+    consumes) must carry `transport_detail`, not just `ticket_config` (what
+    `compute_metrics`/Compare consumes) -- before the fix, the Inverse Design
+    tab's recommended-recipe carbon figure was completely insensitive to this
+    toggle even though the Compare tab's carbon already tracked it. Locate the
+    Inverse Design tab's own "Carbon" metric by its neighbor ("Predicted
+    Strength" is a label unique to that tab's recommended-recipe metrics row),
+    so this doesn't depend on Compare's metric count/ordering."""
+    at = AppTest.from_file(APP, default_timeout=240).run()
+    assert not at.exception
+
+    def inverse_carbon():
+        labels = [m.label for m in at.metric]
+        idx = labels.index("Predicted Strength")
+        assert at.metric[idx + 1].label == "Carbon"
+        return at.metric[idx + 1].value
+
+    carbon_off = inverse_carbon()
+    at.toggle(key="cfg_transport_detail").set_value(True).run()
+    assert not at.exception
+    carbon_on = inverse_carbon()
+    assert carbon_on != carbon_off, (
+        "Inverse Design's recommended-recipe carbon did not move when "
+        "cfg_transport_detail was toggled -- ctx.carbon_kwargs is not "
+        "carrying transport_detail to the optimizer (the P1 defect)."
+    )
+
+
+def test_r85_optimizer_options_render_and_defaults_are_inert():
+    """R8.5 P2/P3/P4 gate: with nothing toggled, the new Inverse Design and
+    Pareto widgets render without exception, and the golden recommended-recipe
+    numbers (Predicted Strength/Carbon/Cost) are bit-identical to a run that
+    never touches them at all -- proving the new code paths are no-ops at
+    their defaults, not merely absent."""
+    at = AppTest.from_file(APP, default_timeout=240).run()
+    assert not at.exception
+    # The new widgets exist (default False/unchecked; disabled where gated).
+    assert at.toggle(key="cfg_robust_carbon").value is False
+    assert at.checkbox(key="cfg_slump_target_enabled").value is False
+    assert at.toggle(key="cfg_require_compliance").value is False
+    assert at.toggle(key="cfg_require_compliance").proto.disabled is True  # no pack/class selected yet
+
+    labels = [m.label for m in at.metric]
+    idx = labels.index("Predicted Strength")
+    baseline = (at.metric[idx].value, at.metric[idx + 1].value, at.metric[idx + 2].value)
+
+    # A second, untouched run must reproduce the same numbers -- confirms this
+    # isn't a false-positive from a single lucky search, since GA is stochastic
+    # but the widget defaults never change what's searched for.
+    at2 = AppTest.from_file(APP, default_timeout=240).run()
+    assert not at2.exception
+    labels2 = [m.label for m in at2.metric]
+    idx2 = labels2.index("Predicted Strength")
+    rerun = (at2.metric[idx2].value, at2.metric[idx2 + 1].value, at2.metric[idx2 + 2].value)
+    assert rerun == baseline
+
+
+def test_r85_pareto_compliance_toggle_gated_and_distinct_from_inverse():
+    """R8.5 P4: the Pareto tab's compliance toggle is a SEPARATE widget/key from
+    the Inverse Design tab's (Streamlit runs every tab's code every run, so a
+    shared key across two tabs would raise a duplicate-widget-ID error --
+    exactly the bug this test would have caught)."""
+    at = AppTest.from_file(APP, default_timeout=240).run()
+    assert not at.exception
+    # Select an NSGA algorithm so the Pareto-tab compliance checkbox renders.
+    algo_box = next(sb for sb in at.selectbox if set(sb.options) >= {"Genetic Algorithm (GA)"})
+    if "NSGA-II (multi-objective)" in algo_box.options:
+        algo_box.set_value("NSGA-II (multi-objective)").run()
+        assert not at.exception
+        assert at.checkbox(key="cfg_require_compliance_pareto").value is False
+        assert at.checkbox(key="cfg_require_compliance_pareto").proto.disabled is True
+        # Both toggles exist independently and both start False -- no collision.
+        assert at.toggle(key="cfg_require_compliance").value is False
+
+
 def test_preset_load_callback_sets_sliders():
     """R4.1: the preset on_change callback writes the keyed sliders (the shared load
     mechanism). After selecting a dataset preset, the sliders reflect that preset."""

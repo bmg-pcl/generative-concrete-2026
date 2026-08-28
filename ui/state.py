@@ -79,6 +79,30 @@ CONFIG_DEFAULTS = {
     # no SESSION_FIELDS edit, no SESSION_VERSION bump.
     "cfg_exposure_pack": EXPOSURE_NONE,
     "cfg_exposure_class": EXPOSURE_NONE,
+    # R8.5 P2: robust carbon (optimize the +1.96*sigma upper bound instead of the
+    # point total), rendered on the Inverse Design tab. Default False -- inert,
+    # bit-identical to before this flag existed. Persisted like cfg_robust (its
+    # strength-side mirror) -- same single-place-add pattern as the keys above,
+    # no SESSION_FIELDS edit, no SESSION_VERSION bump.
+    "cfg_robust_carbon": False,
+    # R8.5 P3: workability (slump) target, rendered on the Inverse Design tab.
+    # `cfg_slump_target_enabled` gates the whole feature (default False -- ambient,
+    # inert); `cfg_slump_target_cm` only takes effect when enabled.
+    "cfg_slump_target_enabled": False,
+    "cfg_slump_target_cm": 10.0,
+    # R8.5 P4: "require compliance" constraint, rendered on the Inverse Design and
+    # Pareto tabs (gated on the Config tab's cfg_exposure_pack/cfg_exposure_class
+    # naming a real pair). Default strict (`cfg_compliance_allow_unknown*` False) --
+    # the spec's honest-ceiling default: an UNKNOWN (unsourced) rule counts as a
+    # violation unless the user explicitly opts into "allow UNKNOWN rules".
+    # Two independent pairs, not one shared pair: Streamlit runs every tab's code
+    # on each script run, so a widget under the SAME key rendered on both tabs
+    # would raise a duplicate-widget-ID error -- and a user may reasonably want
+    # compliance required in one tab but not the other.
+    "cfg_require_compliance": False,
+    "cfg_compliance_allow_unknown": False,
+    "cfg_require_compliance_pareto": False,
+    "cfg_compliance_allow_unknown_pareto": False,
 }
 
 

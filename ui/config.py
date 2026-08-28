@@ -158,11 +158,24 @@ def render_config(predictor, bayesian, presets) -> AppContext:
                 )
 
         # One carbon config threaded to every carbon computation across the tabs.
+        #
+        # R8.5 P1 (coherence repair): `transport_detail` MUST be here, not only in
+        # `ticket_config` below -- this dict (`ctx.carbon_kwargs`) is what
+        # `recommend_recipe`, `scalarized_fitness`, and `run_nsga` consume, so
+        # omitting it here meant the optimizer always minimized the global-km
+        # transport path even with the per-material toggle ON, while the ticket
+        # (compute_metrics, fed from `ticket_config`) showed per-material
+        # transport -- a real ranking divergence (SCM substitution economics
+        # differ between the two paths), not just a display mismatch. See
+        # docs/specs/R8.5-optimizer-capability-integration.md §P1 and
+        # `ui_logic.compute_metrics`'s R8.5 P1 note (the collision guard that
+        # makes this dict safe to carry the key).
         carbon_kwargs = {
             "transport_km": float(transport_km),
             "cement_type": cement_type,
             "factors": st.session_state.carbon_factors,
             "clinker_source": clinker_source,
+            "transport_detail": bool(transport_detail),
         }
 
         # R8.0 WP-A A2: batched material isn't all placed. Applied at the metrics/
@@ -275,11 +288,13 @@ def render_config(predictor, bayesian, presets) -> AppContext:
     ticket_config = {
         **carbon_kwargs, "advanced": use_advanced_chemistry, "costs": st.session_state.costs,
         "robust": robust_mode, "waste_factor": float(waste_factor),
-        # R8.0 WP-E Decisions 1 & 2: UI-session concerns only (the CLI's run
-        # config deliberately gains neither key — see src/cli.py), so they ride
-        # only on the app's own ticket_config, not carbon_kwargs (carbon_kwargs
-        # feeds every carbon call site, including the optimizers, which must keep
-        # targeting today's batched figures unchanged).
+        # R8.0 WP-E Decision 1 (site_temp_c): a UI-session concern only (the CLI's
+        # run config deliberately gains no such key — see src/cli.py), so it rides
+        # only on the app's own ticket_config, not carbon_kwargs. `transport_detail`
+        # below used to get the same treatment, but R8.5 P1 moved it INTO
+        # carbon_kwargs above (the optimizers need it too) -- the spread already
+        # carries it here, so this explicit entry is now a harmless redundant
+        # override with the identical value, kept for readability at the call site.
         "transport_detail": bool(transport_detail),
         "site_temp_c": float(site_temp_c),
         "carbon_provenance": carbon_provenance(st.session_state.carbon_factors,

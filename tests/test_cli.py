@@ -13,7 +13,7 @@ import pytest
 
 from src.cli import (main, load_mix, load_project_config, CliError, validate_clinker_source,
                      validate_waste_factor, DEFAULT_RUN_CONFIG, parse_exposure_arg,
-                     validate_exposure)
+                     validate_exposure, validate_slump_target)
 from src.models import StrengthPredictor
 from src.ui_logic import PARAM_NAMES, compute_metrics
 
@@ -533,3 +533,136 @@ def test_cli_predict_without_exposure_flag_has_no_compliance_block(tmp_path, cap
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["compliance"] is None
+
+
+# --- R8.5 WP-2: design gains --robust-carbon/--slump-target/--exposure ------------
+# The design (default) path with none of the new flags touched must remain
+# bit-identical -- WP-1's recommend_recipe already defaults robust_carbon=False,
+# slump_target=None, so passing them through explicitly at their defaults changes
+# nothing. The --exposure path bypasses recommend_recipe entirely (it has no
+# `compliance` kwarg) via design_compliant(); see src.cli._pick_compliant.
+
+def test_design_default_path_unaffected_by_new_flags(capsys):
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28"])
+    assert rc == 0
+    base = json.loads(capsys.readouterr().out)
+    assert "compliance_mode" not in base
+    assert base["carbon_basis"] == "point"
+    assert set(base.keys()) == {
+        "params", "strength", "interval_lo", "interval_hi", "novelty", "in_support",
+        "workability", "tensile", "curing", "carbon", "carbon_basis", "cost",
+        "delta_t_adiabatic_C", "mass_pour_flag",
+    }
+
+
+def test_design_robust_carbon_flag_swaps_basis(capsys):
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28"])
+    assert rc == 0
+    base = json.loads(capsys.readouterr().out)
+
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28", "--robust-carbon"])
+    assert rc == 0
+    robust = json.loads(capsys.readouterr().out)
+    assert robust["carbon_basis"] == "upper_95"
+    assert base["carbon_basis"] == "point"
+
+
+def test_design_slump_target_reports_in_support_recipe(capsys):
+    # Same (target=45, slump=15) combination test_ui_logic.py's own
+    # test_p3_recommend_recipe_reachable_slump_target_found_true_in_support
+    # pins as reliably reachable, seeded the same way for determinism (the GA
+    # search is stochastic; an unseeded run can occasionally land just outside
+    # slump support even for a reachable target).
+    np.random.seed(0)
+    rc = main(["design", "--target", "45", "--backend", "ga", "--slump-target", "15"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["slump_target"] == pytest.approx(15.0)
+    assert out["slump_basis"] == "model"
+    assert out["slump_in_support"] is True
+    assert out["found"] is True
+    assert "slump_note" in out
+
+
+def test_validate_slump_target_accepts_boundary_and_typical_values():
+    assert validate_slump_target(0.01) is None
+    assert validate_slump_target(10.0) is None
+    assert validate_slump_target(29.0) is None
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, 29.1, 40.0, "ten", True])
+def test_validate_slump_target_rejects_out_of_range_and_non_numeric(bad):
+    assert validate_slump_target(bad) is not None
+
+
+def test_design_bad_slump_target_exits_1_names_bounds(capsys):
+    rc = main(["design", "--target", "45", "--backend", "ga", "--slump-target", "40"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "(0, 29]" in err
+    assert "Traceback" not in err
+
+
+def test_design_exposure_strict_pins_found_false_for_real_pack(capsys):
+    """The honest-ceiling gate: en206/aci318 both omit max_scm_fraction (unsourced
+    -> UNKNOWN), and strict mode counts UNKNOWN as a violation, so a verified
+    PASS is unreachable -- `found: False`, not an error, and no traceback."""
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28",
+               "--exposure", "en206:XC4"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["found"] is False
+    assert out["mix"] is None
+    assert out["pack_id"] == "en206"
+    assert out["class"] == "XC4"
+    assert out["compliance_mode"] == "strict"
+
+
+def test_design_exposure_allow_unknown_finds_a_design(capsys):
+    """allow-unknown mode accepts a design whose evaluable rules all PASS even
+    with max_scm_fraction UNKNOWN -- pins the flip side of the honest-ceiling gate."""
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28",
+               "--exposure", "en206:XC4", "--allow-unknown"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["compliance_mode"] == "allow_unknown"
+    assert out["compliance"]["pack_id"] == "en206"
+    assert out["compliance"]["class"] == "XC4"
+    assert out["compliance"]["verdict"] == "UNKNOWN"  # not PASS -- the SCM cap is unsourced
+    assert not any(r["result"] == "FAIL" for r in out["compliance"]["rules"])
+    assert out["params"] is not None
+
+
+def test_design_exposure_mode_disclosed_in_ticket(tmp_path, capsys):
+    """P4 gate: the strict/allow-unknown choice is visibly disclosed in the
+    ticket, alongside the existing compliance,advisory row -- never silently."""
+    ticket = tmp_path / "ticket.csv"
+    rc = main(["design", "--target", "45", "--backend", "ga", "--age", "28",
+               "--exposure", "en206:XC4", "--allow-unknown", "--ticket", str(ticket)])
+    assert rc == 0
+    lines = ticket.read_text().splitlines()
+    assert lines[0] == "section,key,value"  # existing header row never displaced
+    assert "config,compliance_mode,allow_unknown" in lines
+    assert any(line.startswith("compliance,advisory,") for line in lines)
+
+
+def test_design_exposure_unknown_pack_exits_1_no_traceback(capsys):
+    rc = main(["design", "--target", "45", "--backend", "ga", "--exposure", "nope:XC4"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "nope" in err
+    assert "en206" in err
+    assert "Traceback" not in err
+
+
+def test_design_exposure_downgrades_flow_backend_with_a_note(capsys):
+    """--exposure has no compliance-aware search on the flow/auto backends --
+    the CLI falls back to GA (same graceful downgrade the UI performs) and
+    discloses it on stderr, never silently."""
+    rc = main(["design", "--target", "45", "--backend", "flow", "--age", "28",
+               "--exposure", "en206:XC4", "--allow-unknown"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "'ga'" in err or "ga" in err

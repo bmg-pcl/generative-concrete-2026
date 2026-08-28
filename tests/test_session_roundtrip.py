@@ -84,6 +84,12 @@ def test_pure_round_trip_every_field():
     src["cfg_transport_detail"] = True   # R8.0 WP-E Decision 2
     src["cfg_exposure_pack"] = "en206"   # R8.2 WP-3
     src["cfg_exposure_class"] = "XC4"    # R8.2 WP-3
+    # R8.5 WP-2: the new optimizer-capability toggles/values.
+    src["cfg_robust_carbon"] = True
+    src["cfg_slump_target_enabled"] = True
+    src["cfg_slump_target_cm"] = 12.5
+    src["cfg_require_compliance"] = True
+    src["cfg_compliance_allow_unknown"] = True
 
     exported = export_session(src)
     dst = _fresh_state()
@@ -109,6 +115,12 @@ def test_pure_round_trip_every_field():
     assert dst["cfg_transport_detail"] is True
     assert dst["cfg_exposure_pack"] == "en206"    # R8.2 WP-3
     assert dst["cfg_exposure_class"] == "XC4"     # R8.2 WP-3
+    # R8.5 WP-2
+    assert dst["cfg_robust_carbon"] is True
+    assert dst["cfg_slump_target_enabled"] is True
+    assert dst["cfg_slump_target_cm"] == 12.5
+    assert dst["cfg_require_compliance"] is True
+    assert dst["cfg_compliance_allow_unknown"] is True
     # And the whole export re-exports identically (idempotent round trip).
     assert export_session(dst) == exported
 
@@ -138,6 +150,17 @@ def test_apptest_round_trip_survives_widget_state():
     # classes), so this needs the extra .run() between the two set_value calls.
     at.selectbox(key="cfg_exposure_pack").set_value("en206").run()
     at.selectbox(key="cfg_exposure_class").set_value("XC4").run()
+    # R8.5 WP-2: the Inverse Design tab's new optimizer-capability widgets.
+    # cfg_require_compliance only becomes interactive once a real pack/class is
+    # selected above (same gating as the Config-tab pair itself), and
+    # cfg_slump_target_cm/cfg_compliance_allow_unknown only render once their
+    # own enabling checkbox/toggle is on -- each needs the extra .run() between
+    # set_value calls, same shape as the exposure pair above.
+    at.toggle(key="cfg_robust_carbon").set_value(True).run()
+    at.checkbox(key="cfg_slump_target_enabled").set_value(True).run()
+    at.number_input(key="cfg_slump_target_cm").set_value(15.0).run()
+    at.toggle(key="cfg_require_compliance").set_value(True).run()
+    at.checkbox(key="cfg_compliance_allow_unknown").set_value(True).run()
     exported = export_session(at.session_state)
     assert exported["mix_a"][0] == 444
     assert exported["carbon_factors"]["cement"] == 0.5
@@ -148,6 +171,11 @@ def test_apptest_round_trip_survives_widget_state():
     assert exported["ui_config"]["cfg_transport_detail"] == (not default_transport_detail)
     assert exported["ui_config"]["cfg_exposure_pack"] == "en206"
     assert exported["ui_config"]["cfg_exposure_class"] == "XC4"
+    assert exported["ui_config"]["cfg_robust_carbon"] is True
+    assert exported["ui_config"]["cfg_slump_target_enabled"] is True
+    assert exported["ui_config"]["cfg_slump_target_cm"] == 15.0
+    assert exported["ui_config"]["cfg_require_compliance"] is True
+    assert exported["ui_config"]["cfg_compliance_allow_unknown"] is True
 
     # Session 2 (fresh): widgets have their own (default) state; the import must win.
     at2 = AppTest.from_file(APP, default_timeout=240).run()
@@ -168,6 +196,11 @@ def test_apptest_round_trip_survives_widget_state():
     assert at2.toggle(key="cfg_transport_detail").value == (not default_transport_detail)
     assert at2.selectbox(key="cfg_exposure_pack").value == "en206"
     assert at2.selectbox(key="cfg_exposure_class").value == "XC4"
+    assert at2.toggle(key="cfg_robust_carbon").value is True
+    assert at2.checkbox(key="cfg_slump_target_enabled").value is True
+    assert at2.number_input(key="cfg_slump_target_cm").value == 15.0
+    assert at2.toggle(key="cfg_require_compliance").value is True
+    assert at2.checkbox(key="cfg_compliance_allow_unknown").value is True
     # The derived dict must agree after the rerun (the keyed widgets did not
     # overwrite the imported factor — the exact live-session bug this guards).
     assert at2.session_state["carbon_factors"]["cement"] == 0.5
