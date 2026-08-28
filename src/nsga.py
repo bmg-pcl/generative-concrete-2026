@@ -52,6 +52,16 @@ slump_estimate` (never inferred from the soft constraint alone), same
 "never present the constraint's own bookkeeping as a verified answer"
 discipline as the compliance block above -- see the `"slump"` key in
 `run_nsga`'s return dict.
+
+R8.5 P5 (thermal advisory, POST-HOC ONLY -- considered as a constraint and
+REJECTED): every front member gains `delta_t_adiabatic_C`/`mass_pour_flag`
+(`src.thermal`, the same UNCALIBRATED planning-signal figures
+`ui_logic.compute_metrics`'s disclosure already shows), computed ONCE per
+returned design after the search, unconditionally (no flag -- reuses the WP-E
+disclosure path). These NEVER enter the objective or a constraint: the
+hydration layer is UNCALIBRATED (see thermal.py's module docstring), so a ΔT
+cap would be a cement cap wearing false precision. The sanctioned workaround
+for mass-pour safety is a direct cement-content bounds edit, not this figure.
 """
 from typing import Dict, List, Optional, Tuple
 
@@ -66,6 +76,7 @@ from .chemistry_simple import calculate_mix_cost
 from .physical import volume_error, VOLUME_TOLERANCE
 from .compliance import check_compliance
 from .properties import get_slump_model, slump_estimate, SLUMP_FEATURES
+from .thermal import adiabatic_temperature_rise, mass_pour_flag
 
 try:
     from pymoo.core.problem import Problem
@@ -288,9 +299,17 @@ def run_nsga(
     strength = predictor.predict_batch(X)
     order = np.argsort(strength)  # sort the front by strength for display
     hist = callback.data
+    X_ordered = X[order]
+    # R8.5 P5: post-hoc-only thermal advisory, ONE call per front member,
+    # never fed back into the objective or a constraint -- see the module
+    # docstring's "R8.5 P5" note. None-safe on LC3 (no Bogue-valid record).
+    cement_type = (carbon_kwargs or {}).get("cement_type", "OPC")
+    delta_t_list = [adiabatic_temperature_rise(mix_dict(x), cement_type=cement_type)
+                    for x in X_ordered]
+    mass_pour_list = [mass_pour_flag(dt) for dt in delta_t_list]
     out = {
         "algorithm": algo_name,
-        "mixes": X[order],
+        "mixes": X_ordered,
         "strength": strength[order],
         "carbon": F[order, 1],
         "cost": F[order, 2],
@@ -300,6 +319,8 @@ def run_nsga(
             "min_cost": hist["min_cost"],
         },
         "front_size": len(X),
+        "delta_t_adiabatic_C": delta_t_list,
+        "mass_pour_flag": mass_pour_list,
         "compliance": None,
         # R8.5 P2: discloses what the "carbon" column above IS -- the point
         # total, or (robust_carbon=True) its +1.96*sigma upper bound.

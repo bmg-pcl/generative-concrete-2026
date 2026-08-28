@@ -909,6 +909,67 @@ def test_p3_recommend_recipe_auto_method_slump_disclosure_is_internally_consiste
         assert "slump_note" not in rec
 
 
+# --- R8.5 P5: thermal -- post-hoc advisory only (no objective/constraint use) -----
+#
+# `adiabatic_temperature_rise` inherits the hydration layer's UNCALIBRATED
+# status (thermal.py's module docstring) -- a ΔT cap would be a cement cap
+# wearing false precision, so P5 is explicitly a DISCLOSURE-only addition,
+# unconditional (no flag), reusing the same figures `compute_metrics`'s own
+# WP-E disclosure already computes.
+
+def test_p5_recommend_recipe_discloses_thermal_advisory():
+    """Always present (no flag) and reproducible independently via
+    `thermal.adiabatic_temperature_rise`/`mass_pour_flag` on the SAME
+    returned mix/cement_type."""
+    from src.bayesian import BayesFlowExplorer
+    from src.thermal import adiabatic_temperature_rise, mass_pour_flag
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS)
+    expected_dt = adiabatic_temperature_rise(rec["params"], cement_type="OPC")
+    assert rec["delta_t_adiabatic_C"] == pytest.approx(expected_dt)
+    assert rec["mass_pour_flag"] == mass_pour_flag(expected_dt)
+
+
+def test_p5_recommend_recipe_thermal_respects_cement_type_from_carbon_kwargs():
+    """The advisory reads `cement_type` off `carbon_kwargs`, same as every
+    other carbon/thermal figure in this file -- ONE config surface."""
+    from src.bayesian import BayesFlowExplorer
+    from src.thermal import adiabatic_temperature_rise
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS,
+                           carbon_kwargs={"cement_type": "LC3"})
+    assert rec["delta_t_adiabatic_C"] == pytest.approx(
+        adiabatic_temperature_rise(rec["params"], cement_type="LC3")
+    )
+
+
+def test_p5_recommend_recipe_thermal_none_safe_on_lc3():
+    """No Bogue-valid record for LC3 -> None, never a raised exception or a
+    fabricated number."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS,
+                           carbon_kwargs={"cement_type": "LC3"})
+    assert rec["delta_t_adiabatic_C"] is None
+    assert rec["mass_pour_flag"] is None
+
+
+def test_p5_recommend_recipe_thermal_matches_compute_metrics_disclosure():
+    """The SAME figure a reader would see on the Compare tab for this exact
+    mix -- compute_metrics's own WP-E disclosure path, not a second,
+    potentially-diverging computation."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS)
+    m = compute_metrics(rec["mix"], {}, COSTS, explorer.predictor)
+    assert rec["delta_t_adiabatic_C"] == pytest.approx(m["delta_t_adiabatic_C"])
+    assert rec["mass_pour_flag"] == m["mass_pour_flag"]
+
+
 # --- D1/D2/D3/C1/C3 ticket rows -----------------------------------------------------
 
 def test_mix_ticket_carbon_interval_rows_bracket_total(predictor):

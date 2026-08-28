@@ -651,6 +651,17 @@ def recommend_recipe(
     d = mix_dict(arr)
     lo, _, hi = predictor.predict_interval(arr)
     novelty = float(predictor.novelty(arr)[0])
+    # R8.5 P5: post-hoc-only thermal advisory (spec explicitly REJECTS a ΔT
+    # objective/constraint -- the hydration layer is UNCALIBRATED, see
+    # thermal.py's module docstring, so a ΔT cap would be a cement cap wearing
+    # false precision; the sanctioned workaround for mass-pour safety is a
+    # direct cement-content bounds edit, not this figure). Computed ONCE on
+    # the FINAL chosen mix, unconditionally (no flag -- reuses the same
+    # WP-E disclosure path `compute_metrics`'s `_disclosure_metrics` already
+    # uses, so a reader sees the identical figure on both surfaces for the
+    # same mix/cement_type). None-safe on LC3 (no Bogue-valid record).
+    cement_type = (carbon_kwargs or {}).get("cement_type", "OPC")
+    delta_t = adiabatic_temperature_rise(d, cement_type=cement_type)
     result = {
         "mix": arr,
         "params": d,
@@ -665,6 +676,8 @@ def recommend_recipe(
         "carbon": carbon_term(d, advanced, carbon_kwargs, robust_carbon=robust_carbon),
         "carbon_basis": "upper_95" if robust_carbon else "point",
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
+        "delta_t_adiabatic_C": delta_t,
+        "mass_pour_flag": mass_pour_flag(delta_t),
     }
     if slump_target is not None:
         s = slump_estimate(d)

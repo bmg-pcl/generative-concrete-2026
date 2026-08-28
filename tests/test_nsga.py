@@ -299,3 +299,38 @@ def test_p3_mixdesignproblem_slump_constraint_feasible_for_in_support_mix():
     g_slump = out["G"][:, -1]  # slump constraint is always appended last
     assert g_slump[0] <= 0.0
     assert g_slump[1] > 0.0
+
+
+# --- R8.5 P5: thermal -- post-hoc advisory only (no objective/constraint use) -----
+
+def test_p5_nsga_front_members_get_thermal_advisory(predictor):
+    """Always present (no flag), one entry per front member, reproducible
+    independently via `thermal.adiabatic_temperature_rise`/`mass_pour_flag`."""
+    from src.thermal import adiabatic_temperature_rise, mass_pour_flag
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10)
+    assert len(out["delta_t_adiabatic_C"]) == len(out["mass_pour_flag"]) == out["front_size"]
+    for x, dt, flag in zip(out["mixes"], out["delta_t_adiabatic_C"], out["mass_pour_flag"]):
+        expected_dt = adiabatic_temperature_rise(mix_dict(x), cement_type="OPC")
+        assert dt == pytest.approx(expected_dt)
+        assert flag == mass_pour_flag(expected_dt)
+
+
+def test_p5_nsga_thermal_none_safe_on_lc3(predictor):
+    """No Bogue-valid record for LC3 -> None for every front member, never a
+    raised exception."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10,
+                   carbon_kwargs={"cement_type": "LC3"})
+    assert all(dt is None for dt in out["delta_t_adiabatic_C"])
+    assert all(flag is None for flag in out["mass_pour_flag"])
+
+
+def test_p5_nsga_thermal_does_not_change_dimensionality_or_constraints(predictor):
+    """The thermal advisory must not enter the objective or a constraint --
+    front dimensionality and constraint count are unaffected by whatever
+    cement_type/carbon_kwargs is passed."""
+    opc = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10)
+    lc3 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10,
+                   carbon_kwargs={"cement_type": "LC3"})
+    assert opc["mixes"].shape[1] == lc3["mixes"].shape[1] == len(PARAM_NAMES)
+    assert opc["strength"].shape == opc["carbon"].shape == opc["cost"].shape
+    assert lc3["strength"].shape == lc3["carbon"].shape == lc3["cost"].shape
