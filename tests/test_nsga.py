@@ -11,9 +11,10 @@ pytest.importorskip("pymoo")
 
 from src.nsga import run_nsga, MixDesignProblem  # noqa: E402
 from src.models import StrengthPredictor  # noqa: E402
-from src.generative_ga import PARAM_NAMES, data_envelope  # noqa: E402
+from src.generative_ga import PARAM_NAMES, data_envelope, SLUMP_SP_DOSING_NOTE  # noqa: E402
 from src.ui_logic import pareto_front_mask, mix_dict, compute_metrics  # noqa: E402
 from src.compliance import load_packs, check_compliance  # noqa: E402
+from src.properties import slump_estimate  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -241,3 +242,60 @@ def test_nsga_compliance_uses_lower_bound_not_point_estimate(predictor):
     for r in out["compliance"]["results"]:
         strength_rule = next(x for x in r["rules"] if x["rule"] == "min_strength_MPa")
         assert strength_rule["basis"] == "conformal_lower_bound (strength_lo supplied)"
+
+
+# --- R8.5 P3: workability -- slump-support constraint, NSGA leg -------------------
+
+def test_p3_nsga_slump_default_bit_identical(predictor):
+    """slump_target=None (the default) -> identical front, same seed."""
+    out1 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3)
+    out2 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3,
+                    slump_target=None)
+    assert np.array_equal(out1["mixes"], out2["mixes"])
+    assert out1["slump"] is None and out2["slump"] is None
+
+
+def test_p3_nsga_slump_target_constrains_front_to_slump_support(predictor):
+    """Gate: every front member must be in slump support, verified
+    independently with `properties.slump_estimate` -- never inferred from the
+    constraint's own bookkeeping alone."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=20, slump_target=15.0)
+    assert out["slump"] is not None
+    assert out["slump"]["target"] == 15.0
+    assert out["slump"]["basis"] == "model"
+    for x in out["mixes"]:
+        s = slump_estimate(mix_dict(x))
+        assert s["in_support"], s["reason"]
+    assert out["slump"]["all_in_support"] is True
+    assert out["slump"]["in_support_count"] == out["slump"]["front_size"] == out["front_size"]
+    assert out["slump"]["note"] == SLUMP_SP_DOSING_NOTE
+
+
+def test_p3_nsga_slump_dimensionality_unchanged(predictor):
+    """Gate: the slump constraint does not change front dimensionality --
+    still 3-objective strength/carbon/cost, same shape as the unconstrained
+    front."""
+    baseline = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15)
+    slump_constrained = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15,
+                                 slump_target=15.0)
+    assert slump_constrained["mixes"].shape[1] == baseline["mixes"].shape[1] == len(PARAM_NAMES)
+    assert (slump_constrained["strength"].shape == slump_constrained["carbon"].shape
+           == slump_constrained["cost"].shape)
+
+
+def test_p3_mixdesignproblem_slump_constraint_feasible_for_in_support_mix():
+    """Direct unit check on the constraint's arithmetic: a mix well inside the
+    slump corpus's envelope must score <= 0 (feasible) on the slump
+    constraint row; a mix far outside it (e.g. water below the slump corpus's
+    160 kg/m3 minimum) must score > 0 (infeasible)."""
+    predictor = StrengthPredictor()
+    bounds = data_envelope()
+    problem = MixDesignProblem(predictor, bounds, False, costs=None,
+                               slump_target=15.0)
+    in_support_mix = np.array([300.0, 50.0, 0.0, 180.0, 8.0, 1000.0, 750.0, 28.0])
+    out_of_support_mix = np.array([300.0, 0.0, 0.0, 120.0, 0.0, 1000.0, 750.0, 28.0])
+    out = {}
+    problem._evaluate(np.vstack([in_support_mix, out_of_support_mix]), out)
+    g_slump = out["G"][:, -1]  # slump constraint is always appended last
+    assert g_slump[0] <= 0.0
+    assert g_slump[1] > 0.0

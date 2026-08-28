@@ -31,6 +31,7 @@ from src.exotics import exotic_strength_delta
 from src.models import StrengthPredictor
 from src.properties import slump_estimate
 from src.compliance import set_packs_path
+from src.generative_ga import SLUMP_SP_DOSING_NOTE
 
 MIX = [350, 100, 0, 175, 5, 1000, 750, 28]
 COSTS = {"cement": 0.15, "slag": 0.08, "ash": 0.05, "water": 0.002,
@@ -821,6 +822,91 @@ def test_p2_recommend_recipe_robust_carbon_default_bit_identical():
                                       robust_carbon=False)
     assert np.array_equal(omitted["mix"], explicit_false["mix"])
     assert omitted["carbon"] == explicit_false["carbon"]
+
+
+# --- R8.5 P3: workability -- a slump target the model can honestly support --------
+#
+# Only active when the caller REQUESTS a slump target -- never ambient (spec's
+# opening line for P3). `recommend_recipe`'s honesty contract: never a confident
+# slump number for a target the search could not reach in slump support -- see
+# `properties.slump_estimate`'s own None-outside-support rule, which this layer
+# relies on rather than re-implementing.
+
+def test_p3_recommend_recipe_default_bit_identical():
+    """slump_target omitted vs explicit None -> identical mix AND no new keys
+    in the returned dict (additive-only, same discipline as robust_carbon)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    omitted = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS)
+    np.random.seed(0)
+    explorer2 = BayesFlowExplorer()
+    explicit_none = recommend_recipe(explorer2, 40.0, method="ga", costs=COSTS,
+                                     slump_target=None)
+    assert np.array_equal(omitted["mix"], explicit_none["mix"])
+    assert omitted["carbon"] == explicit_none["carbon"]
+    assert "found" not in omitted and "slump_cm" not in omitted
+    assert "found" not in explicit_none and "slump_cm" not in explicit_none
+
+
+def test_p3_recommend_recipe_reachable_slump_target_found_true_in_support():
+    """A reachable joint target (strength=45, slump=15, both well inside their
+    respective corpora) must be found, with basis 'model' and the SP-dosing
+    note attached -- and the disclosed slump number must be independently
+    reproducible via `properties.slump_estimate` on the SAME returned mix
+    (never a number invented separately from the honest per-mix gate)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS, slump_target=15.0)
+    assert rec["found"] is True
+    assert rec["slump_basis"] == "model"
+    assert rec["slump_in_support"] is True
+    assert rec["slump_cm"] is not None
+    assert rec["slump_note"] == SLUMP_SP_DOSING_NOTE
+    independent = slump_estimate(rec["params"])
+    assert rec["slump_cm"] == independent["slump_cm"]
+    assert rec["slump_lo"] == independent["lo"] and rec["slump_hi"] == independent["hi"]
+
+
+def test_p3_recommend_recipe_unreachable_joint_target_reports_found_false():
+    """An extreme strength target (80 MPa) pulls the search toward a low w/c
+    mix that drifts outside the (narrower) slump corpus's material envelope
+    even while remaining in the (wider) strength corpus's envelope -- the
+    R8.1 finding P3 is built on. The result must report `found: False` and
+    carry NO confident slump number (never `slump_note` either -- that
+    disclosure is conditional on `found`)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(1)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 80.0, method="ga", costs=COSTS, slump_target=15.0)
+    assert rec["found"] is False
+    assert rec["slump_cm"] is None
+    assert rec["slump_basis"] == "heuristic"
+    assert "slump_note" not in rec
+    assert rec["slump_reason"]  # a human-readable reason is always populated on this path
+
+
+def test_p3_recommend_recipe_auto_method_slump_disclosure_is_internally_consistent():
+    """The sampling backend ("auto"/"flow"/"amortized") must not crash with a
+    slump target, and whatever it returns must be internally honest: `found`
+    true implies an in-support model number, `found` false implies None --
+    never a confident number attached to an out-of-support pick. (The
+    fallback GA `sample_posterior` uses when no amortized weights are
+    installed does not itself know about slump -- bayesian.py is outside this
+    package's ownership -- so this backend is NOT asserted to succeed, only
+    to degrade honestly when it doesn't.)"""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 40.0, method="auto", costs=COSTS, slump_target=12.0)
+    assert "found" in rec
+    if rec["found"]:
+        assert rec["slump_cm"] is not None and rec["slump_basis"] == "model"
+        assert rec["slump_note"] == SLUMP_SP_DOSING_NOTE
+    else:
+        assert rec["slump_cm"] is None and rec["slump_basis"] == "heuristic"
+        assert "slump_note" not in rec
 
 
 # --- D1/D2/D3/C1/C3 ticket rows -----------------------------------------------------

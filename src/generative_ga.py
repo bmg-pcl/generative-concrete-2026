@@ -82,6 +82,45 @@ VOLUME_PENALTY_WEIGHT = 200.0
 # extrapolated territory, not exclude it outright.
 COMPLIANCE_PENALTY_WEIGHT = 150.0
 
+# R8.5 P3 -- slump-target workability. Only active when a caller explicitly
+# requests `slump_target` (never ambient); see `_InverseDesignerBase._make_objective`.
+#
+# Slump-SUPPORT penalty weight -- MIRRORS OOS_PENALTY_WEIGHT (10.0) exactly:
+# same role (a smooth, always-computable nudge away from a property's
+# extrapolated region, not a hard exclusion), same MPa-scale additive regime
+# as the strength-match error this objective already sums. It is deliberately
+# NOT in COMPLIANCE_PENALTY_WEIGHT's dominant regime (150): a requested slump
+# target is the caller's OWN preference, not an externally-imposed
+# certification requirement the way an exposure class is, and R8.1 WP-1b's
+# finding (the slump model's 90% interval already spans 83% of the physical
+# 0-29 cm range) means its novelty signal is comparatively noisy -- weighting
+# it as heavily as COMPLIANCE would let a single noisy slump-novelty reading
+# override an otherwise-excellent strength/carbon match. 10.0 mirrors the
+# out-of-support role at the out-of-support scale.
+SLUMP_OOS_PENALTY_WEIGHT = 10.0
+# Slump target-match penalty weight (applied to |slump_point - slump_target|,
+# in cm, added directly into the same MPa-scale additive objective as the
+# strength-match error). Deliberately SMALL and unscaled (not multiplied up
+# like the weights above): per spec P3 this is a SOFT preference on the point
+# estimate, not a hard requirement -- the load-bearing gate is
+# SLUMP_OOS_PENALTY_WEIGHT above. At 1.0, a 10 cm slump miss costs as much as
+# a 10 MPa strength miss: enough to break ties among mixes that already hit
+# the strength target well, without ever dominating a genuinely large
+# strength error the way the hard-constraint weights above are meant to.
+SLUMP_TARGET_PENALTY_WEIGHT = 1.0
+
+# R8.1's corpus finding, surfaced wherever a slump-constrained design is
+# actually returned (recommend_recipe, run_nsga): every row in the 103-row
+# slump corpus used superplasticizer >= 4.4 kg/m3 (see docs/specs/R8.1 WP-1b),
+# so a design honestly IN slump support will be SP-dosed -- that is the corpus
+# speaking, not an optimizer preference, and callers must disclose it rather
+# than let it look like an arbitrary optimizer choice.
+SLUMP_SP_DOSING_NOTE = (
+    "Slump-constrained designs are superplasticizer-dosed because every row in "
+    "the 103-row slump corpus used SP >= 4.4 kg/m3 (R8.1 WP-1b) -- the corpus "
+    "speaking, not an optimizer preference."
+)
+
 
 def data_envelope(param_names: List[str] = PARAM_NAMES) -> np.ndarray:
     """
@@ -181,7 +220,8 @@ class _InverseDesignerBase:
     # -- objective -----------------------------------------------------------
     def _make_objective(self, target_strength: float, carbon_target: Optional[float],
                         robust: bool = False, compliance_pack: Optional[dict] = None,
-                        compliance_cls: Optional[str] = None):
+                        compliance_cls: Optional[str] = None,
+                        slump_target: Optional[float] = None):
         """
         Returns a scalar error to MINIMISE:
 
@@ -190,6 +230,10 @@ class _InverseDesignerBase:
                   + OOS_PENALTY_WEIGHT·max(0, novelty - thresh)          (robust only)
                   + COMPLIANCE_PENALTY_WEIGHT·compliance_violation(...)  (only if a
                                                                            compliance target given)
+                  + SLUMP_OOS_PENALTY_WEIGHT·max(0, slump_novelty-thresh) (only if a
+                                                                           slump target given)
+                  + SLUMP_TARGET_PENALTY_WEIGHT·|slump_point-slump_target| (only if a
+                                                                           slump target given)
 
         With `robust=True`, `strength` is the conformal lower bound (the guaranteed
         strength) rather than the mean, and an out-of-support penalty pulls the search
@@ -202,8 +246,30 @@ class _InverseDesignerBase:
         is to never certify a spec-relevant pass on a mean prediction, so even a
         non-robust run (whose primary strength term above uses the mean) recomputes
         the interval for the compliance check specifically.
+
+        R8.5 P3: when `slump_target` is given (default `None` -- this whole branch
+        is skipped in that case, same bit-identical-by-default shape as compliance
+        above), two terms are added, using the SLUMP model's OWN support gate (R8.1
+        -- distinct from the strength model's `threshold` above, never conflated):
+        a smooth out-of-(slump-)support penalty mirroring the robust-strength one
+        (principle 2 of this spec -- the slump support gate is the load-bearing
+        constraint, so it gets the same always-on-when-active penalty machinery as
+        strength's own OOS term), and a soft, modest penalty pulling the point
+        estimate toward the requested target. The slump model's `predict`/`novelty`
+        are well-defined regardless of support (the model can extrapolate a number),
+        so both terms are always computable here; `properties.slump_estimate`'s
+        higher-level None-outside-support honesty rule is enforced by the CALLER
+        (recommend_recipe) when it decides whether to disclose a confident number
+        for whatever candidate this search returns -- this objective only shapes
+        the search, it never itself decides "found".
         """
         threshold = self.predictor.support_threshold() if robust else None
+        slump_model = slump_features = None
+        if slump_target is not None:
+            from .properties import get_slump_model, SLUMP_FEATURES  # lazy: avoids a
+            # module-level cycle (properties.py imports PARAM_NAMES from this module).
+            slump_model = get_slump_model()
+            slump_features = SLUMP_FEATURES
 
         def objective(theta: np.ndarray) -> float:
             if robust:
@@ -228,6 +294,13 @@ class _InverseDesignerBase:
                     strength_lo_c = float(lo_c[0])
                 viol = compliance_violation(mix, compliance_pack, compliance_cls, strength_lo_c)
                 error += COMPLIANCE_PENALTY_WEIGHT * viol
+            if slump_model is not None:
+                x_slump = np.array([mix.get(f, 0.0) for f in slump_features], dtype=float)
+                slump_nov = float(slump_model.novelty(x_slump)[0])
+                error += SLUMP_OOS_PENALTY_WEIGHT * max(
+                    0.0, slump_nov - slump_model.support_threshold())
+                slump_point = float(slump_model.predict(x_slump))
+                error += SLUMP_TARGET_PENALTY_WEIGHT * abs(slump_point - slump_target)
             return float(error)
 
         return objective
@@ -370,15 +443,20 @@ class PopulationInverseDesigner(_InverseDesignerBase):
         robust: bool = False,
         age: Optional[float] = None,
         compliance: Optional[Tuple[str, str]] = None,
+        slump_target: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run the GA and return the final population sorted best-first.
 
         `compliance=(pack_id, class_id)` (default None -- off) adds a penalty
         term biasing the search toward that exposure class; see the module
-        docstring and `design_compliant()`."""
+        docstring and `design_compliant()`.
+
+        `slump_target` (R8.5 P3, default None -- off) adds the slump-support
+        penalty and target-match penalty described in `_make_objective`."""
         pack, cls = resolve_compliance_target(compliance)
         objective = self._make_objective(target_strength, carbon_target, robust=robust,
-                                          compliance_pack=pack, compliance_cls=cls)
+                                          compliance_pack=pack, compliance_cls=cls,
+                                          slump_target=slump_target)
         optimizer = GeneticOptimizer(
             objective_fn=objective,
             bounds=self._effective_bounds(age).tolist(),
@@ -406,18 +484,23 @@ class AntColonyInverseDesigner(_InverseDesignerBase):
         robust: bool = False,
         age: Optional[float] = None,
         compliance: Optional[Tuple[str, str]] = None,
+        slump_target: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run ACO_R and return the final solution archive sorted best-first.
 
         `compliance=(pack_id, class_id)` (default None -- off) adds a penalty
         term biasing the search toward that exposure class; see the module
-        docstring and `design_compliant()`."""
+        docstring and `design_compliant()`.
+
+        `slump_target` (R8.5 P3, default None -- off) adds the slump-support
+        penalty and target-match penalty described in `_make_objective`."""
         # Imported lazily so importing this module doesn't require the ACO engine.
         from .aco import AntColonyOptimizer
 
         pack, cls = resolve_compliance_target(compliance)
         objective = self._make_objective(target_strength, carbon_target, robust=robust,
-                                          compliance_pack=pack, compliance_cls=cls)
+                                          compliance_pack=pack, compliance_cls=cls,
+                                          slump_target=slump_target)
         optimizer = AntColonyOptimizer(
             objective_fn=objective,
             bounds=self._effective_bounds(age).tolist(),

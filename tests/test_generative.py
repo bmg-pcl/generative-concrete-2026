@@ -21,11 +21,15 @@ from src.generative_ga import (
     PARAM_NAMES,
     compliance_violation,
     resolve_compliance_target,
+    OOS_PENALTY_WEIGHT,
+    SLUMP_OOS_PENALTY_WEIGHT,
+    SLUMP_SP_DOSING_NOTE,
 )
 from src.bayesian import BayesFlowExplorer
 from src.chemistry_advanced import inverse_plan_mix
 from src.compliance import load_packs, check_compliance
 from src.models import StrengthPredictor
+from src.properties import slump_estimate
 
 
 @pytest.fixture(scope="module")
@@ -238,3 +242,89 @@ def test_resolve_compliance_target_resolves_hidden_fixture_and_rejects_unknown()
         resolve_compliance_target(("_fixture", "no-such-class"))
     with pytest.raises(KeyError):
         resolve_compliance_target(("no-such-pack", "A1"))
+
+
+# --- R8.5 P3: slump-target workability (only active when explicitly requested) ---
+#
+# Principle 2 of docs/specs/R8.5-optimizer-capability-integration.md: the slump
+# support gate is the load-bearing constraint (R8.1's finding that the slump
+# envelope != the strength envelope is exactly why); the target value itself is
+# only a SOFT preference. `slump_target=None` (the default) must exercise none
+# of this code, same "whole branch skipped" discipline as `compliance` above.
+
+def test_slump_oos_penalty_weight_mirrors_oos_penalty_weight():
+    """The spec's explicit instruction: SLUMP_OOS_PENALTY_WEIGHT mirrors
+    OOS_PENALTY_WEIGHT -- same role (a smooth nudge away from a property's own
+    extrapolated region), same numeric value."""
+    assert SLUMP_OOS_PENALTY_WEIGHT == OOS_PENALTY_WEIGHT == 10.0
+
+
+def test_slump_default_bit_identical_to_no_slump_target():
+    """slump_target=None (the default) must exercise none of the new code paths
+    -- same in-repo regression-guard shape as compliance's matching test."""
+    np.random.seed(4242)
+    d1 = PopulationInverseDesigner()
+    np.random.seed(99)
+    mixes1, errors1 = d1.design(45.0, generations=15, pop_size=30)
+
+    np.random.seed(4242)
+    d2 = PopulationInverseDesigner()
+    np.random.seed(99)
+    mixes2, errors2 = d2.design(45.0, generations=15, pop_size=30, slump_target=None)
+
+    assert np.array_equal(mixes1, mixes2)
+    assert np.array_equal(errors1, errors2)
+
+
+def test_slump_target_penalty_biases_ga_toward_reachable_target(designer):
+    """A GA run with a reachable slump target should find a mix that is BOTH
+    in slump support and reasonably close to the requested value -- verified
+    independently with `properties.slump_estimate`, not just trusted from the
+    optimizer's own soft penalty."""
+    target = 15.0
+    mixes, _ = designer.design(45.0, generations=30, pop_size=60, slump_target=target)
+    best = dict(zip(PARAM_NAMES, mixes[0]))
+    s = slump_estimate(best)
+    assert s["in_support"], s["reason"]
+    assert s["basis"] == "model"
+    assert abs(s["slump_cm"] - target) < 6.0  # soft penalty, not exact -- reasonably close
+
+
+def test_slump_target_penalty_biases_aco_toward_reachable_target(aco_designer):
+    """Same gate as the GA test above, for the ACO variant -- confirms the
+    penalty is inherited via `_InverseDesignerBase._make_objective`, not a
+    GA-only fork (this spec's cross-cutting 'shared helpers' rule)."""
+    target = 15.0
+    mixes, _ = aco_designer.design(45.0, generations=30, slump_target=target)
+    best = dict(zip(PARAM_NAMES, mixes[0]))
+    s = slump_estimate(best)
+    assert s["in_support"], s["reason"]
+    assert abs(s["slump_cm"] - target) < 8.0
+
+
+def test_slump_target_penalty_pulls_point_estimate_toward_different_targets():
+    """The soft target-match term must actually move the search: two GA runs
+    with different slump targets (same strength target, same seed) should
+    land on different achieved slump points, both closer to their OWN target
+    than to the other's."""
+    np.random.seed(7)
+    d_lo = PopulationInverseDesigner()
+    mixes_lo, _ = d_lo.design(45.0, generations=30, pop_size=60, slump_target=8.0)
+    np.random.seed(7)
+    d_hi = PopulationInverseDesigner()
+    mixes_hi, _ = d_hi.design(45.0, generations=30, pop_size=60, slump_target=25.0)
+
+    slump_lo = slump_estimate(dict(zip(PARAM_NAMES, mixes_lo[0])))["slump_cm"]
+    slump_hi = slump_estimate(dict(zip(PARAM_NAMES, mixes_hi[0])))["slump_cm"]
+    assert slump_lo is not None and slump_hi is not None
+    assert slump_hi > slump_lo  # the higher-target run should land higher
+
+
+def test_slump_sp_dosing_note_matches_corpus_finding():
+    """R8.1 WP-1b's corpus finding, verified directly against the committed
+    slump corpus rather than just trusted as a string: every row used
+    superplasticizer >= 4.4 kg/m3."""
+    from src.data_fetcher import load_slump_data
+    df = load_slump_data()
+    assert df["superplasticizer"].min() >= 4.4
+    assert "4.4" in SLUMP_SP_DOSING_NOTE  # the disclosure names the actual figure

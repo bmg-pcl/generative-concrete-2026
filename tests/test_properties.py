@@ -305,3 +305,46 @@ def test_seed_stability_sweep_cv_plus():
         coverages.append(model.held_out_["coverage"])
     assert len(coverages) == 6
     assert all(0.0 <= c <= 1.0 for c in coverages)
+
+
+# --- R8.5 P3: the interface contract the optimizer's slump constraint relies on ---
+#
+# src/properties.py is frozen for this package (owned by R8.1's WP-1). These
+# tests pin the EXACT `get_slump_model()`/`PropertyModel`/`SLUMP_FEATURES`
+# shape `src/generative_ga.py`'s `_InverseDesignerBase._make_objective` and
+# `src/nsga.py`'s `MixDesignProblem` depend on (a single 7-feature row, no
+# "age"; `.novelty`/`.predict`/`.in_support` all batchable; `.support_threshold()`
+# a plain float) -- so a future properties.py change that silently breaks this
+# shape fails here first, in the file R8.5 assigns this package for slump-
+# constraint tests, rather than as an opaque failure deep inside a GA run.
+
+def test_slump_features_match_what_generative_ga_and_nsga_assume(slump_model):
+    from src.generative_ga import PARAM_NAMES
+    assert SLUMP_FEATURES == PARAM_NAMES[:7]  # the "no age" feature set both consume
+    assert len(SLUMP_FEATURES) == 7
+
+
+def test_slump_model_single_row_contract_used_by_the_ga_penalty(slump_model):
+    """`_make_objective`'s slump penalty calls exactly this shape, once per GA
+    candidate: `float(model.novelty(x)[0])`, `float(model.predict(x))`,
+    `model.support_threshold()`."""
+    x = IN_DIST
+    nov = slump_model.novelty(x)
+    assert nov.shape == (1,)
+    assert isinstance(float(nov[0]), float)
+    point = slump_model.predict(x)
+    assert isinstance(point, float)
+    thresh = slump_model.support_threshold()
+    assert isinstance(thresh, float)
+
+
+def test_slump_model_batched_contract_used_by_nsga(slump_model):
+    """`MixDesignProblem._evaluate` calls `model.novelty(X)` once per
+    generation on an (n, 7) batch -- one novelty value per row, not a
+    reduction to a scalar."""
+    X = np.vstack([IN_DIST, OUT_DIST])
+    nov = slump_model.novelty(X)
+    assert nov.shape == (2,)
+    in_sup = slump_model.in_support(X)
+    assert in_sup.shape == (2,)
+    assert bool(in_sup[0]) != bool(in_sup[1])  # IN_DIST/OUT_DIST are the fixture's own contrast

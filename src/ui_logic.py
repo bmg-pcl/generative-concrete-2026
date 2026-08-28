@@ -43,8 +43,8 @@ from .thermal import (
 from .compliance import (
     check_compliance, compare_jurisdictions, load_packs, CLASS_NUMERIC_FIELDS,
 )
-from .properties import slump_estimate
-from .generative_ga import PARAM_NAMES  # single source of the 8-parameter order
+from .properties import slump_estimate, get_slump_model, SLUMP_FEATURES
+from .generative_ga import PARAM_NAMES, SLUMP_SP_DOSING_NOTE  # single source of the 8-parameter order
 
 # R8.0 WP-E: the disclosure fields compute_metrics computes once and mix_ticket
 # either reads straight off `metrics` (compute_metrics call sites) or -- when
@@ -564,6 +564,7 @@ def recommend_recipe(
     robust: bool = False,
     age: Optional[float] = None,
     robust_carbon: bool = False,
+    slump_target: Optional[float] = None,
 ) -> dict:
     """
     Return a single recommended mix for a target strength, via the chosen backend.
@@ -592,6 +593,21 @@ def recommend_recipe(
     does not change what `carbon_target` means. `carbon_basis` in the returned
     dict discloses which ("point" or "upper_95"). Default False is bit-identical
     to before this flag existed.
+
+    R8.5 P3: `slump_target` (default None -- OFF, ambient calls are unaffected
+    and this whole branch is skipped, keeping the default path bit-identical)
+    requests a workable design. For "ga"/"aco", the designer's own objective
+    gains the slump-support and target-match penalties (`generative_ga.
+    _make_objective`) so the search is biased toward a reachable, in-support
+    mix; for the sampling backends, draws are re-scored to prefer ones the
+    SLUMP model (not the strength model) considers in-support. Either way, the
+    slump fields attached to the result come from `properties.slump_estimate`
+    on the FINAL chosen mix -- the honest per-mix gate, not the search bias --
+    so a mix the search could not land in slump support reports `slump_cm: None`
+    and `found: False` (the `design_compliant` pattern) rather than a
+    confident number for a target the search could not honestly reach. When
+    `found` is True, `"slump_note"` carries the R8.1 WP-1b SP-dosing disclosure
+    (every corpus row used superplasticizer >= 4.4 kg/m3).
     """
     predictor = explorer.predictor
     if method in ("ga", "aco"):
@@ -602,7 +618,8 @@ def recommend_recipe(
         best_arr, best_err = None, np.inf
         for _ in range(3):
             ranked, errors = designer.design(target_strength, carbon_target=carbon_target,
-                                             robust=robust, age=age)
+                                             robust=robust, age=age,
+                                             slump_target=slump_target)
             if errors[0] < best_err:
                 best_err, best_arr = float(errors[0]), ranked[0]
         arr = best_arr
@@ -616,15 +633,25 @@ def recommend_recipe(
             nov = predictor.novelty(samples)
             in_sup = nov <= predictor.support_threshold()
             score = np.abs(lo - target_strength) + np.where(in_sup, 0.0, 1e3)
-            arr = samples[int(np.argmin(score))]
         else:
             preds = predictor.predict_batch(samples)
-            arr = samples[int(np.argmin(np.abs(preds - target_strength)))]
+            score = np.abs(preds - target_strength)
+        if slump_target is not None:
+            # Post-hoc re-scoring, not a change to sample_posterior (bayesian.py
+            # is outside this package's ownership and knows nothing about slump):
+            # prefer draws the SLUMP model's OWN support gate accepts, mirroring
+            # the `robust` in-support preference above but against the slump
+            # envelope, which R8.1 established is NOT the strength envelope.
+            slump_model = get_slump_model()
+            x_slump = samples[:, [PARAM_NAMES.index(f) for f in SLUMP_FEATURES]]
+            slump_in_sup = slump_model.in_support(x_slump)
+            score = score + np.where(slump_in_sup, 0.0, 1e3)
+        arr = samples[int(np.argmin(score))]
 
     d = mix_dict(arr)
     lo, _, hi = predictor.predict_interval(arr)
     novelty = float(predictor.novelty(arr)[0])
-    return {
+    result = {
         "mix": arr,
         "params": d,
         "strength": float(predictor.predict(arr)),
@@ -639,6 +666,19 @@ def recommend_recipe(
         "carbon_basis": "upper_95" if robust_carbon else "point",
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
     }
+    if slump_target is not None:
+        s = slump_estimate(d)
+        result["found"] = bool(s["in_support"])
+        result["slump_target"] = float(slump_target)
+        result["slump_cm"] = s["slump_cm"]
+        result["slump_lo"] = s["lo"]
+        result["slump_hi"] = s["hi"]
+        result["slump_basis"] = s["basis"]
+        result["slump_in_support"] = s["in_support"]
+        result["slump_reason"] = s["reason"]
+        if result["found"]:
+            result["slump_note"] = SLUMP_SP_DOSING_NOTE
+    return result
 
 
 def pareto_front_mask(strength, carbon, cost) -> np.ndarray:

@@ -34,16 +34,38 @@ for that mix under the identical config, `transport_detail` included whenever
 `carbon_kwargs` carries it (`self.carbon_kwargs` is forwarded unmodified via
 `**`, never filtered to a subset of keys). See tests/test_nsga.py's parametrized
 `test_p1_coherence_*` tests, this spec's durable artifact.
+
+Optional slump-support constraint (spec docs/specs/R8.5-optimizer-capability-
+integration.md, P3): `run_nsga(..., slump_target=<float>)` (default `None` --
+off) adds ONE pymoo inequality constraint requiring every front member to lie
+within the SLUMP model's OWN support envelope (R8.1 -- distinct from, and
+narrower than, the strength envelope every other constraint here uses) --
+mirroring the shape of the existing robust in-support constraint exactly
+(novelty minus threshold, feasible <= 0). Unlike the GA/ACO objective in
+`generative_ga._make_objective`, this constraint does NOT also add a soft
+"match this cm value" term: NSGA is a targetless, whole-front search by
+design (see the module docstring above -- "no target and no scalarization
+weights"), so `slump_target`'s role here is only to SWITCH the constraint on;
+the numeric value is not otherwise used inside the search. What the front
+actually looks like at the end is verified honestly with `properties.
+slump_estimate` (never inferred from the soft constraint alone), same
+"never present the constraint's own bookkeeping as a verified answer"
+discipline as the compliance block above -- see the `"slump"` key in
+`run_nsga`'s return dict.
 """
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .generative_ga import PARAM_NAMES, data_envelope, resolve_compliance_target, compliance_violation
+from .generative_ga import (
+    PARAM_NAMES, data_envelope, resolve_compliance_target, compliance_violation,
+    SLUMP_SP_DOSING_NOTE,
+)
 from .ui_logic import mix_dict, carbon_term
 from .chemistry_simple import calculate_mix_cost
 from .physical import volume_error, VOLUME_TOLERANCE
 from .compliance import check_compliance
+from .properties import get_slump_model, slump_estimate, SLUMP_FEATURES
 
 try:
     from pymoo.core.problem import Problem
@@ -71,12 +93,15 @@ if _PYMOO_AVAILABLE:
         """
 
         def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None, robust=False,
-                     compliance_pack=None, compliance_cls=None, robust_carbon=False):
+                     compliance_pack=None, compliance_cls=None, robust_carbon=False,
+                     slump_target=None):
             # Constraints: volume balance (always) + in-support (robust only)
-            # + compliance (only when a compliance target is given). This is a
+            # + compliance (only when a compliance target is given) + slump
+            # support (only when a slump target is given). This is a
             # CONSTRAINT, not a 4th objective -- deliberately, so front
             # dimensionality (and every existing hypervolume number) is unchanged.
-            n_constr = 1 + (1 if robust else 0) + (1 if compliance_pack is not None else 0)
+            n_constr = (1 + (1 if robust else 0) + (1 if compliance_pack is not None else 0)
+                       + (1 if slump_target is not None else 0))
             super().__init__(n_var=len(bounds), n_obj=3, n_ieq_constr=n_constr,
                              xl=bounds[:, 0], xu=bounds[:, 1])
             self.predictor = predictor
@@ -91,6 +116,11 @@ if _PYMOO_AVAILABLE:
             # bound (ui_logic.carbon_term) -- dimensionality unchanged, still 3
             # objectives (see the module docstring). Default False -- bit-identical.
             self.robust_carbon = robust_carbon
+            # R8.5 P3: slump-support CONSTRAINT switch -- see the module docstring's
+            # "Optional slump-support constraint" note. `None` (default) adds no
+            # constraint and evaluates none of the code below -- bit-identical.
+            self.slump_target = slump_target
+            self.slump_model = get_slump_model() if slump_target is not None else None
 
         def _evaluate(self, X, out, *args, **kwargs):
             if self.robust:
@@ -123,6 +153,15 @@ if _PYMOO_AVAILABLE:
                     for x, slo in zip(X, strength_lo)
                 ])
                 constraints.append(g_compliance)
+            if self.slump_model is not None:
+                # Slump-support-ONLY constraint (see the module docstring's
+                # "Optional slump-support constraint" note): novelty minus
+                # threshold, feasible <= 0 -- same shape as the robust
+                # in-support constraint above, against the SLUMP model's own
+                # envelope (R8.1), not the strength model's.
+                x_slump = X[:, [PARAM_NAMES.index(f) for f in SLUMP_FEATURES]]
+                g_slump = self.slump_model.novelty(x_slump) - self.slump_model.support_threshold()
+                constraints.append(g_slump)
             out["G"] = np.column_stack(constraints) if len(constraints) > 1 else constraints[0]
 
     class _FrontHistory(Callback):
@@ -172,6 +211,7 @@ def run_nsga(
     age: Optional[float] = None,
     compliance: Optional[Tuple[str, str]] = None,
     robust_carbon: bool = False,
+    slump_target: Optional[float] = None,
 ) -> Dict:
     """
     Run NSGA-II or NSGA-III and return the Pareto front.
@@ -191,6 +231,11 @@ def run_nsga(
             (`ui_logic.carbon_term`) -- front dimensionality stays 3-objective
             (see the module docstring's coherence-contract note). Default False
             is bit-identical to before this flag existed.
+        slump_target: R8.5 P3 (default `None` -- off). Adds ONE inequality
+            constraint requiring every front member to lie within the SLUMP
+            model's own support envelope (R8.1) -- see the module docstring's
+            "Optional slump-support constraint" note. `None` skips the whole
+            branch (bit-identical).
 
     Returns dict with the front mixes and their objective values (natural units),
     plus a per-generation convergence history, and `"carbon_basis"` ("point" or
@@ -198,6 +243,10 @@ def run_nsga(
     When `compliance` is given, also includes a `"compliance"` block reporting,
     per front member, the real `check_compliance()` verdict -- never inferred
     from the optimizer's soft constraint alone -- and an honest `"all_pass"` flag.
+    When `slump_target` is given, also includes a `"slump"` block (same honesty
+    discipline, verified with `properties.slump_estimate` on every front member,
+    never inferred from the constraint's own bookkeeping) -- see its assembly
+    below for the exact shape.
     """
     if not _PYMOO_AVAILABLE:
         raise ImportError("pymoo is not installed. `pip install pymoo` to use NSGA-II/III.")
@@ -210,7 +259,7 @@ def run_nsga(
     problem = MixDesignProblem(predictor, bounds, advanced, costs,
                                carbon_kwargs=carbon_kwargs, robust=robust,
                                compliance_pack=compliance_pack, compliance_cls=compliance_cls,
-                               robust_carbon=robust_carbon)
+                               robust_carbon=robust_carbon, slump_target=slump_target)
     sampling = _seed_sampling(seed_population, pop_size, bounds)
 
     if algorithm.lower() == "nsga3":
@@ -255,6 +304,7 @@ def run_nsga(
         # R8.5 P2: discloses what the "carbon" column above IS -- the point
         # total, or (robust_carbon=True) its +1.96*sigma upper bound.
         "carbon_basis": "upper_95" if robust_carbon else "point",
+        "slump": None,
     }
     if compliance_pack is not None:
         # Verify HONESTLY with the real engine -- the constraint above pulled the
@@ -278,6 +328,29 @@ def run_nsga(
             "strength_basis": "conformal_lower_bound",
             "all_pass": all_pass,
             "results": results,
+        }
+    if slump_target is not None:
+        # R8.5 P3: verify HONESTLY with properties.slump_estimate (the real,
+        # per-mix support gate) -- the constraint above pulled the search
+        # toward slump support but pymoo can still return a front with
+        # infeasible members (e.g. no feasible region was found within
+        # n_gen), same "never infer from the constraint's own bookkeeping"
+        # discipline as the compliance block above. NSGA is targetless (see
+        # the module docstring), so this discloses the REACHED slump values
+        # and whether each is honestly in-support -- it does not itself
+        # decide a single "found" the way recommend_recipe's single design
+        # does; a caller wanting that can read `all_in_support` directly.
+        X_ordered = X[order]
+        slump_results = [slump_estimate(mix_dict(x)) for x in X_ordered]
+        all_in_support = all(r["in_support"] for r in slump_results)
+        out["slump"] = {
+            "target": float(slump_target),
+            "basis": "model",
+            "all_in_support": all_in_support,
+            "in_support_count": sum(1 for r in slump_results if r["in_support"]),
+            "front_size": len(X_ordered),
+            "results": slump_results,
+            "note": SLUMP_SP_DOSING_NOTE if all_in_support else None,
         }
     return out
 
