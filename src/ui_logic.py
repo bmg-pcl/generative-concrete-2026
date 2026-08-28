@@ -6,7 +6,7 @@ so it can be unit-tested without a browser. Keeping it here also guarantees the 
 *coherent*: there is exactly ONE carbon path, ONE metrics path, and ONE fitness path,
 so the "Chemistry Mode" toggle and the exotics switch affect every tab identically.
 """
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -40,7 +40,11 @@ from .thermal import (
     curing_days_at_temperature,
     carbonation_co2_bound_kg_m3,
 )
-from .generative_ga import PARAM_NAMES  # single source of the 8-parameter order
+from .compliance import (
+    check_compliance, compare_jurisdictions, load_packs, CLASS_NUMERIC_FIELDS,
+)
+from .properties import slump_estimate, get_slump_model, SLUMP_FEATURES
+from .generative_ga import PARAM_NAMES, SLUMP_SP_DOSING_NOTE  # single source of the 8-parameter order
 
 # R8.0 WP-E: the disclosure fields compute_metrics computes once and mix_ticket
 # either reads straight off `metrics` (compute_metrics call sites) or -- when
@@ -53,6 +57,122 @@ DISCLOSURE_KEYS = (
     "delta_t_adiabatic_C", "mass_pour_flag",
     "carbonation_uptake_bound_kg_m3", "curing_maturity_days",
 )
+
+# R8.1 WP-3 (Wave B): the slump fields compute_metrics computes (via
+# properties.slump_estimate) once and mix_ticket either reads straight off
+# `metrics` or -- for a metrics dict that predates this wave (e.g.
+# recommend_recipe's own dict) -- rebuilds fresh via slump_estimate(mix), same
+# "prefer the caller's metrics, else derive" fallback shape as DISCLOSURE_KEYS.
+SLUMP_KEYS = ("slump_cm", "slump_lo", "slump_hi", "slump_basis", "slump_in_support")
+
+
+def slump_caveat(lo: Optional[float], hi: Optional[float]) -> str:
+    """R8.1 WP-1b's honesty finding, in one shared sentence: split-conformal (the
+    shipped default) and CV+ both span 83-86% of the corpus's 0-29 cm range, so the
+    interval barely constrains anything. Used verbatim by BOTH the Compare tab
+    caption and the ticket's `note,slump_interval` row so the two surfaces can
+    never say different things about the same number. NEVER phrase this as a
+    bound/guarantee -- see docs/specs/R8.1-workability-from-data.md, "WP-1b -- CV+
+    was tried and it did not work", "Consequence for Wave B"."""
+    if lo is None or hi is None:
+        return ("No measured interval for this mix (heuristic fallback -- see the "
+                "basis label and reason).")
+    width = hi - lo
+    return (f"±{width / 2:.1f} cm at 90% (interval width {width:.1f} cm on a "
+            f"0-29 cm corpus range) -- the 103-row slump corpus makes this wide by "
+            f"construction (see R8.1 WP-1b). This is a POINT ESTIMATE with a width "
+            f"caveat, NOT a guaranteed bound.")
+
+
+# R8.2 WP-3 (Wave B): the optional compliance block. `exposure_pack`/`exposure_class`
+# are plain string ids (never a pack dict) so callers -- the UI's config-tab
+# selectors and the CLI's --exposure flag alike -- pass exactly what the user
+# picked; this function resolves them via load_packs() (never a hardcoded
+# jurisdiction list, per R8.2's honesty contract) and degrades to inert (None)
+# rather than raising on an unresolvable id, since this is an ADVISORY UI feature,
+# not a validated boundary -- src.cli.validate_exposure is the validated boundary
+# for the CLI's own --exposure flag.
+def _compliance_block(mix: Dict[str, float], exposure_pack: Optional[str],
+                      exposure_class: Optional[str], strength_lo: float,
+                      air_pct: Optional[float]) -> Optional[dict]:
+    if not exposure_pack or not exposure_class:
+        return None
+    pack = load_packs().get(exposure_pack)
+    if pack is None or exposure_class not in pack.get("classes", {}):
+        return None
+    return check_compliance(mix, pack, exposure_class, strength_lo=strength_lo, air_pct=air_pct)
+
+
+def compliance_advisory_text(source: dict) -> str:
+    """The mandatory advisory disclosure (R8.2 "honesty problem", point 3: every
+    user-facing surface must say advisory AND name the standard to check against).
+    Shared verbatim by the ticket's `compliance,advisory` row and the Compare tab's
+    advisory banner so the two can never drift apart."""
+    standard = source.get("standard", "the named standard")
+    note = source.get("verification_note", "")
+    return f"Advisory only -- NOT a certification. Check against {standard} before any structural use. {note}".strip()
+
+
+def compliance_matrix(mix: Dict[str, float], strength_lo: Optional[float] = None,
+                      air_pct: Optional[float] = None,
+                      highlight_pack: Optional[str] = None,
+                      highlight_class: Optional[str] = None,
+                      packs: Optional[Dict[str, dict]] = None) -> List[dict]:
+    """The cross-jurisdiction compliance table -- R8.2's headline feature ("makes
+    national variation visible"). One row per known pack (via `load_packs()`,
+    never a hardcoded jurisdiction list), each checked against ITS OWN
+    representative class (see `_representative_class`), UNLESS `highlight_pack` names a pack the caller
+    wants checked against `highlight_class` instead (e.g. the Compare tab's own
+    pack/class selection) -- that pack contributes `highlight_class`'s row instead
+    of its default. Built on `compare_jurisdictions` (compliance.py, frozen).
+
+    Each pack contributes exactly one row because no two shipped packs share a
+    class taxonomy (EN 206's XC/XD/XS/XF/XA vs ACI 318's F/S/W/C -- see
+    compliance.py's module docstring), so there is no single class id meaningful
+    across every jurisdiction at once. Each row therefore answers "how does this
+    mix stand against THIS jurisdiction's named class" -- the classes are NOT
+    equivalent requirements and the rendered table must say so, or a reader will
+    mistake differing verdicts for a regulatory difference rather than a
+    difference in what was checked.
+
+    `packs` overrides the registry (default `load_packs()`, the public non-hidden
+    set) -- tests use this to supply a small, deterministic pack set instead of
+    depending on the shipped real packs' completeness.
+    """
+    packs = packs if packs is not None else load_packs()
+    class_map: Dict[str, str] = {}
+    for pid, pack in packs.items():
+        classes = pack.get("classes", {})
+        if not classes:
+            continue
+        if pid == highlight_pack and highlight_class in classes:
+            class_map[pid] = highlight_class
+        else:
+            class_map[pid] = _representative_class(classes)
+    return compare_jurisdictions(mix, class_map, packs=packs, strength_lo=strength_lo, air_pct=air_pct)
+
+
+def _representative_class(classes: Dict[str, dict]) -> str:
+    """Pick a class that actually STATES requirements, for the cross-jurisdiction
+    default. Never a null-exposure category.
+
+    Choosing alphabetically would pick ACI 318's "C0" (concrete dry or protected
+    from moisture -- the not-exposed category, whose every rule is null by
+    construction). A table pairing EN 206's XA1 (a real chemical-attack
+    requirement) against ACI's C0 renders as "en206: UNKNOWN / aci318: PASS" and
+    invites exactly the wrong reading -- that the mix is acceptable in one regime
+    and doubtful in the other -- when C0 simply imposes nothing to fail.
+
+    So: prefer the class stating the MOST rules (ties broken alphabetically),
+    which is both non-degenerate and a consistent "most demanding stated
+    requirement" default. Falls back to alphabetical only if no class states
+    anything at all."""
+    def stated(rec: dict) -> int:
+        stated_numeric = sum(1 for k in CLASS_NUMERIC_FIELDS if rec.get(k) is not None)
+        return stated_numeric + (1 if rec.get('max_scm_fraction') is not None else 0)
+
+    ranked = sorted(classes, key=lambda cid: (-stated(classes[cid]), cid))
+    return ranked[0]
 
 
 def mix_dict(mix) -> Dict[str, float]:
@@ -115,6 +235,53 @@ def _split_transport(mix: Dict[str, float], transport_km: float,
     return transport_registry, transport_global
 
 
+def _carbon_sigma(mix: Dict[str, float], exotic: Optional[Dict[str, float]],
+                  ck: dict) -> float:
+    """Half-width (kg CO2/m3) of `materials.carbon_interval`'s 95%-ish band for
+    this mix, using the SAME merged core+exotic factor table and registry
+    uncertainties `_disclosure_metrics`'s `carbon_interval_lo/hi` re-centers on
+    the displayed carbon -- extracted so P2's `robust_carbon` (below) reuses the
+    identical sigma rather than a second, potentially-diverging computation.
+    `ck` is an already-resolved `carbon_kwargs` dict (or `{}`), read the same
+    way `_disclosure_metrics` does (`ck.get("factors")`); it is never spread,
+    so an unrelated key like `transport_detail` is harmless here."""
+    merged_factors = _merged_carbon_factors(ck.get("factors"))
+    uncertainties = factor_uncertainties_view()
+    raw_lo, raw_hi = carbon_interval(mix, merged_factors, uncertainties, exotic=exotic)
+    return (raw_hi - raw_lo) / 2.0
+
+
+def carbon_term(mix: Dict[str, float], advanced: bool,
+                carbon_kwargs: Optional[dict] = None,
+                exotic: Optional[Dict[str, float]] = None,
+                robust_carbon: bool = False) -> float:
+    """R8.5 P2: the carbon figure an optimizer should target -- `carbon_for_mode`'s
+    point total by default, or (when `robust_carbon=True`) its +1.96*sigma UPPER
+    bound, symmetric with R1's robust strength move (optimize the strength LOWER
+    bound). Sigma is `materials.carbon_interval`'s per-material uncertainty band,
+    re-centered on the point total exactly as `_disclosure_metrics`'s
+    `carbon_interval_hi` already is (`_carbon_sigma`, shared) -- so with every
+    registry uncertainty at 0, `carbon_term(..., robust_carbon=True) ==
+    carbon_term(..., robust_carbon=False)` exactly (bit-identical gate).
+
+    The incentive this creates is deliberate (spec P2): a material with a small
+    factor but a wide relative uncertainty (fly ash, +/-50%) costs more under
+    `robust_carbon` than one with a larger factor but tighter uncertainty (slag,
+    +/-30%) contributing the same point carbon -- so the optimizer is pushed
+    toward BETTER-CHARACTERIZED compositions, not just lower-carbon ones. An EPD
+    that tightens a factor's uncertainty genuinely lowers this term.
+
+    Shared by `scalarized_fitness`, `recommend_recipe`, and
+    `nsga.MixDesignProblem` (never a per-backend fork -- this spec's cross-
+    cutting rule) so ACO/annealing inherit it automatically via
+    `PopulationInverseDesigner`/`base_optimizer` reusing the same functions."""
+    ck = carbon_kwargs or {}
+    total = carbon_for_mode(mix, advanced, exotic=exotic, **ck)
+    if not robust_carbon:
+        return total
+    return total + _carbon_sigma(mix, exotic, ck)
+
+
 def _disclosure_metrics(mix: Dict[str, float], exotic: Optional[Dict[str, float]],
                         carbon_kwargs: Optional[dict], carbon_total: float,
                         site_temp_c: float = 20.0) -> dict:
@@ -145,10 +312,7 @@ def _disclosure_metrics(mix: Dict[str, float], exotic: Optional[Dict[str, float]
     ck = carbon_kwargs or {}
     cement_type = ck.get("cement_type", "OPC")
     clinker_source = ck.get("clinker_source")
-    merged_factors = _merged_carbon_factors(ck.get("factors"))
-    uncertainties = factor_uncertainties_view()
-    raw_lo, raw_hi = carbon_interval(mix, merged_factors, uncertainties, exotic=exotic)
-    sigma = (raw_hi - raw_lo) / 2.0
+    sigma = _carbon_sigma(mix, exotic, ck)
 
     delta_t = adiabatic_temperature_rise(mix, cement_type=cement_type)
     analysis = analyze_mix(mix, cement_type=cement_type, clinker_source=clinker_source)
@@ -209,6 +373,9 @@ def compute_metrics(
     waste_factor: float = 0.0,
     transport_detail: bool = False,
     site_temp_c: float = 20.0,
+    exposure_pack: Optional[str] = None,
+    exposure_class: Optional[str] = None,
+    air_pct: Optional[float] = None,
 ) -> dict:
     """
     All performance metrics for one mix, on the selected chemistry tier.
@@ -231,7 +398,9 @@ def compute_metrics(
 
     `transport_detail` (R8.0 WP-E Decision 2, default False -- bit-identical) swaps
     `carbon`'s single global-km transport term for the per-material-registry-plus-
-    partial-global-km split (see `carbon_for_mode`).
+    partial-global-km split (see `carbon_for_mode`). R8.5 P1: if `carbon_kwargs`
+    ALSO carries a `transport_detail` key, that value wins over this parameter --
+    see the ONE-SOURCE note where `carbon` is computed below.
 
     `site_temp_c` (R8.0 WP-E Decision 1, default 20.0) only feeds the disclosure-
     only `curing_maturity_days` secondary metric below -- it never touches `curing`
@@ -246,6 +415,22 @@ def compute_metrics(
     docstring) and disagreeing is information, not a bug. `curing_maturity_days`
     is `None` whenever the hydration chain is unavailable for `cement_type` (e.g.
     LC3) -- see `_disclosure_metrics`.
+
+    R8.1 WP-3 adds five slump/workability fields, ALWAYS computed (not gated by any
+    toggle, same as `workability`): `slump_cm`/`slump_lo`/`slump_hi` (None on the
+    heuristic path -- never a confident model number outside the slump corpus's OWN
+    support envelope, which is distinct from the strength model's), `slump_basis`
+    ("model" or "heuristic"), `slump_in_support`, and `slump_reason` (populated only
+    on the heuristic path). The interval is NOT a bound -- see `slump_caveat` and
+    docs/specs/R8.1's WP-1b section before displaying it as one.
+
+    R8.2 WP-3 adds an optional `compliance` field (`None` when `exposure_pack`/
+    `exposure_class` is not given or does not resolve to a real pack/class --
+    inert by default, so an existing caller that never passes these keeps every
+    other number bit-identical): the mix checked against ONE exposure class,
+    strength checked against the conformal LOWER bound (`interval_lo` above, which
+    already includes any exotic strength delta) per R8.2's "you do not certify on
+    a mean" design, never the point estimate.
     """
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
@@ -253,17 +438,36 @@ def compute_metrics(
     delta = exotic_strength_delta(exotic, enabled=exotic_strength)
     strength = base_strength + delta
     lo, _, hi = predictor.predict_interval(arr)
+    interval_lo = float(lo[0]) + delta
     novelty = float(predictor.novelty(arr)[0])
-    carbon = (carbon_for_mode(d, advanced, exotic=exotic, transport_detail=transport_detail,
-                              **(carbon_kwargs or {}))
+    # R8.5 P1: `carbon_kwargs` (the SAME dict scalarized_fitness/recommend_recipe/
+    # run_nsga consume unmodified via **carbon_kwargs) is the single source for
+    # every `carbon_for_mode` kwarg it carries, `transport_detail` included --
+    # this function's own `transport_detail` parameter is a legacy convenience for
+    # callers that don't route it through carbon_kwargs (every current call site:
+    # cli.py never sets it, ui/compare.py passes it alongside carbon_kwargs from
+    # session state). Once carbon_kwargs carries a `transport_detail` key (as
+    # ui/config.py's WP-2 fix puts there), IT wins over the explicit parameter --
+    # both already read the same underlying toggle, so this is not a behaviour
+    # change, only a spread-collision guard: without it, a carbon_kwargs dict that
+    # also carries `transport_detail` would raise "got multiple values for
+    # keyword argument" the moment this function forwarded both. `carbon_kwargs`
+    # lacking the key (today, before ui/config.py's dict entry lands, and every
+    # existing call site) is bit-identical to before.
+    ck = dict(carbon_kwargs or {})
+    effective_transport_detail = ck.pop("transport_detail", transport_detail)
+    carbon = (carbon_for_mode(d, advanced, exotic=exotic, transport_detail=effective_transport_detail,
+                              **ck)
              + exotic_carbon(exotic))
     cost = calculate_mix_cost(d, costs) + exotic_cost(exotic)
     disclosure = _disclosure_metrics(d, exotic, carbon_kwargs, carbon, site_temp_c=site_temp_c)
+    slump = slump_estimate(d)
+    compliance = _compliance_block(d, exposure_pack, exposure_class, interval_lo, air_pct)
     return {
         "strength": strength,
         "exotic_strength": delta,
         "tensile": tensile_estimate(strength),  # EC2 correlation (derived)
-        "interval_lo": float(lo[0]) + delta,   # 90% prediction interval, shifted by
+        "interval_lo": interval_lo,   # 90% prediction interval, shifted by
         "interval_hi": float(hi[0]) + delta,   # any exotic strength estimate
         "novelty": novelty,
         "in_support": bool(novelty <= predictor.support_threshold()),
@@ -275,6 +479,13 @@ def compute_metrics(
         "cost_as_placed": cost * (1.0 + waste_factor),
         "curing": estimate_curing_time(d),
         "uncertainty": float(uncertainty_fn(arr)) if uncertainty_fn else None,
+        "slump_cm": slump["slump_cm"],
+        "slump_lo": slump["lo"],
+        "slump_hi": slump["hi"],
+        "slump_basis": slump["basis"],
+        "slump_in_support": slump["in_support"],
+        "slump_reason": slump["reason"],
+        "compliance": compliance,
         **disclosure,
     }
 
@@ -306,11 +517,26 @@ def scalarized_fitness(
     advanced: bool = False,
     carbon_kwargs: Optional[dict] = None,
     robust: bool = False,
+    robust_carbon: bool = False,
 ) -> float:
     """Maximise strength, penalise carbon and cost -- the optimizer objective.
 
     With `robust=True`, the strength term is the conformal lower bound (guaranteed
-    strength) and an out-of-support penalty discourages extrapolated mixes."""
+    strength) and an out-of-support penalty discourages extrapolated mixes.
+
+    R8.5 P2: `robust_carbon` (default False, independent of `robust`) swaps the
+    carbon term for its +1.96*sigma upper bound (`carbon_term`) -- carbon's
+    mirror of the strength lower-bound move above. Default False is bit-
+    identical to before this flag existed.
+
+    R8.5 P1 (coherence contract, kept forever): the carbon term (`robust_carbon`
+    aside) is `carbon_for_mode(d, advanced, **carbon_kwargs)` -- the SAME call
+    `compute_metrics` makes for its displayed `carbon` -- so this term is
+    ALWAYS the number the ticket would show for the identical config,
+    `transport_detail` included whenever `carbon_kwargs` carries it (it is
+    forwarded unmodified, never filtered to a subset of keys). See
+    tests/test_ui_logic.py's parametrized `test_p1_coherence_*` tests, this
+    spec's durable artifact."""
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
     if robust:
@@ -318,7 +544,7 @@ def scalarized_fitness(
         strength = float(lo[0])
     else:
         strength = float(predictor.predict(arr))
-    carbon = carbon_for_mode(d, advanced, **(carbon_kwargs or {}))
+    carbon = carbon_term(d, advanced, carbon_kwargs, robust_carbon=robust_carbon)
     cost = calculate_mix_cost(d, costs)
     fitness = w_strength * strength - w_carbon * carbon - w_cost * cost
     if robust:
@@ -337,6 +563,8 @@ def recommend_recipe(
     carbon_kwargs: Optional[dict] = None,
     robust: bool = False,
     age: Optional[float] = None,
+    robust_carbon: bool = False,
+    slump_target: Optional[float] = None,
 ) -> dict:
     """
     Return a single recommended mix for a target strength, via the chosen backend.
@@ -350,6 +578,36 @@ def recommend_recipe(
     the target and that sits inside the trusted data region.
 
     Returns the mix vector, its named params, and predicted strength/carbon/cost.
+
+    R8.5 P1 (coherence contract): the returned `"carbon"` is `carbon_term`'s point
+    total (`robust_carbon=False`, the default) -- `carbon_for_mode(d, advanced,
+    **carbon_kwargs)`, the SAME call `compute_metrics`/`scalarized_fitness` make
+    -- so it is bit-identical to what the ticket would show for this mix under
+    the identical config, `transport_detail` included whenever `carbon_kwargs`
+    carries it.
+
+    R8.5 P2: `robust_carbon` (default False, independent of `robust`) reports
+    the +1.96*sigma upper bound instead (see `carbon_term`); NOTE this is a
+    DISCLOSURE/selection-figure swap only -- the search itself (GA/ACO's
+    internal `carbon_target` bias, when given) is unaffected, same as `robust`
+    does not change what `carbon_target` means. `carbon_basis` in the returned
+    dict discloses which ("point" or "upper_95"). Default False is bit-identical
+    to before this flag existed.
+
+    R8.5 P3: `slump_target` (default None -- OFF, ambient calls are unaffected
+    and this whole branch is skipped, keeping the default path bit-identical)
+    requests a workable design. For "ga"/"aco", the designer's own objective
+    gains the slump-support and target-match penalties (`generative_ga.
+    _make_objective`) so the search is biased toward a reachable, in-support
+    mix; for the sampling backends, draws are re-scored to prefer ones the
+    SLUMP model (not the strength model) considers in-support. Either way, the
+    slump fields attached to the result come from `properties.slump_estimate`
+    on the FINAL chosen mix -- the honest per-mix gate, not the search bias --
+    so a mix the search could not land in slump support reports `slump_cm: None`
+    and `found: False` (the `design_compliant` pattern) rather than a
+    confident number for a target the search could not honestly reach. When
+    `found` is True, `"slump_note"` carries the R8.1 WP-1b SP-dosing disclosure
+    (every corpus row used superplasticizer >= 4.4 kg/m3).
     """
     predictor = explorer.predictor
     if method in ("ga", "aco"):
@@ -360,7 +618,8 @@ def recommend_recipe(
         best_arr, best_err = None, np.inf
         for _ in range(3):
             ranked, errors = designer.design(target_strength, carbon_target=carbon_target,
-                                             robust=robust, age=age)
+                                             robust=robust, age=age,
+                                             slump_target=slump_target)
             if errors[0] < best_err:
                 best_err, best_arr = float(errors[0]), ranked[0]
         arr = best_arr
@@ -374,15 +633,36 @@ def recommend_recipe(
             nov = predictor.novelty(samples)
             in_sup = nov <= predictor.support_threshold()
             score = np.abs(lo - target_strength) + np.where(in_sup, 0.0, 1e3)
-            arr = samples[int(np.argmin(score))]
         else:
             preds = predictor.predict_batch(samples)
-            arr = samples[int(np.argmin(np.abs(preds - target_strength)))]
+            score = np.abs(preds - target_strength)
+        if slump_target is not None:
+            # Post-hoc re-scoring, not a change to sample_posterior (bayesian.py
+            # is outside this package's ownership and knows nothing about slump):
+            # prefer draws the SLUMP model's OWN support gate accepts, mirroring
+            # the `robust` in-support preference above but against the slump
+            # envelope, which R8.1 established is NOT the strength envelope.
+            slump_model = get_slump_model()
+            x_slump = samples[:, [PARAM_NAMES.index(f) for f in SLUMP_FEATURES]]
+            slump_in_sup = slump_model.in_support(x_slump)
+            score = score + np.where(slump_in_sup, 0.0, 1e3)
+        arr = samples[int(np.argmin(score))]
 
     d = mix_dict(arr)
     lo, _, hi = predictor.predict_interval(arr)
     novelty = float(predictor.novelty(arr)[0])
-    return {
+    # R8.5 P5: post-hoc-only thermal advisory (spec explicitly REJECTS a ΔT
+    # objective/constraint -- the hydration layer is UNCALIBRATED, see
+    # thermal.py's module docstring, so a ΔT cap would be a cement cap wearing
+    # false precision; the sanctioned workaround for mass-pour safety is a
+    # direct cement-content bounds edit, not this figure). Computed ONCE on
+    # the FINAL chosen mix, unconditionally (no flag -- reuses the same
+    # WP-E disclosure path `compute_metrics`'s `_disclosure_metrics` already
+    # uses, so a reader sees the identical figure on both surfaces for the
+    # same mix/cement_type). None-safe on LC3 (no Bogue-valid record).
+    cement_type = (carbon_kwargs or {}).get("cement_type", "OPC")
+    delta_t = adiabatic_temperature_rise(d, cement_type=cement_type)
+    result = {
         "mix": arr,
         "params": d,
         "strength": float(predictor.predict(arr)),
@@ -393,9 +673,25 @@ def recommend_recipe(
         "workability": workability_flag(d),
         "tensile": tensile_estimate(float(predictor.predict(arr))),
         "curing": estimate_curing_time(d),
-        "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})),
+        "carbon": carbon_term(d, advanced, carbon_kwargs, robust_carbon=robust_carbon),
+        "carbon_basis": "upper_95" if robust_carbon else "point",
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
+        "delta_t_adiabatic_C": delta_t,
+        "mass_pour_flag": mass_pour_flag(delta_t),
     }
+    if slump_target is not None:
+        s = slump_estimate(d)
+        result["found"] = bool(s["in_support"])
+        result["slump_target"] = float(slump_target)
+        result["slump_cm"] = s["slump_cm"]
+        result["slump_lo"] = s["lo"]
+        result["slump_hi"] = s["hi"]
+        result["slump_basis"] = s["basis"]
+        result["slump_in_support"] = s["in_support"]
+        result["slump_reason"] = s["reason"]
+        if result["found"]:
+            result["slump_note"] = SLUMP_SP_DOSING_NOTE
+    return result
 
 
 def pareto_front_mask(strength, carbon, cost) -> np.ndarray:
@@ -483,6 +779,17 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict,
     a secondary UNCALIBRATED maturity-based curing estimate alongside (not instead
     of) the primary heuristic (C2/Decision 1), and -- when `config["transport_detail"]`
     is on (Decision 2) -- per-material transport mode/km disclosure.
+
+    R8.1 WP-3 (unconditional, like the WP-E rows above): a slump point estimate
+    row (`prediction,slump_cm_<basis>`), its interval width (`slump_interval_width_cm`,
+    model basis only), and a `note,slump_interval` row stating the width caveat --
+    see `slump_caveat`; the interval is NEVER presented as a bound.
+
+    R8.2 WP-3 (conditional on `metrics["compliance"]` being truthy -- i.e. a real
+    pack/class was selected, INERT/absent otherwise): a `compliance,<pack>.<class>`
+    verdict row, one `compliance,rule_<name>` row per FAIL/UNKNOWN rule, and the
+    MANDATORY `compliance,advisory` disclosure row naming the standard to check
+    against (present whenever any compliance row is).
     """
     cfg_carbon = {k: config[k] for k in ("advanced", "transport_km", "cement_type",
                                          "factors", "clinker_source")
@@ -557,6 +864,28 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict,
     maturity_str = f"{maturity:.1f}" if maturity is not None else ""
     rows.append(f"prediction,curing_maturity_days_uncalibrated,{maturity_str}")
 
+    # R8.1 WP-3: slump/workability. Prefer compute_metrics's own values; recompute
+    # fresh via slump_estimate(mix) for a metrics dict that predates this wave
+    # (e.g. recommend_recipe's), same fallback shape as the disclosure block above.
+    if "slump_basis" in metrics:
+        slump_cm = metrics.get("slump_cm")
+        slump_lo, slump_hi = metrics.get("slump_lo"), metrics.get("slump_hi")
+        slump_basis, slump_reason = metrics.get("slump_basis"), metrics.get("slump_reason")
+    else:
+        _slump = slump_estimate(mix)
+        slump_cm, slump_lo, slump_hi = _slump["slump_cm"], _slump["lo"], _slump["hi"]
+        slump_basis, slump_reason = _slump["basis"], _slump["reason"]
+    if slump_cm is not None:
+        rows.append(f"prediction,slump_cm_{slump_basis},{slump_cm:.1f}")
+        rows.append(f"prediction,slump_interval_width_cm,{(slump_hi - slump_lo):.1f}")
+    else:
+        reason_text = (slump_reason or "no measured estimate available for this region").replace('"', "'")
+        rows.append(f'prediction,slump_cm_{slump_basis},"n/a -- {reason_text}"')
+    # WP-1b's non-negotiable: the interval (when present) is a width caveat, NEVER
+    # a bound -- this note row and the Compare tab's caption share the exact same
+    # wording (`slump_caveat`) so the two surfaces can never say different things.
+    rows.append(f'note,slump_interval,"{slump_caveat(slump_lo, slump_hi)}"')
+
     for k, c in costs.items():
         rows.append(f"cost_usd,{k},{mix.get(k, 0.0) * c:.2f}")
     # Provenance: what each factor rests on (epd:REF / database:REF / user-override).
@@ -617,6 +946,38 @@ def mix_ticket(mix: Dict[str, float], metrics: dict, config: dict,
              "transport_detail", "site_temp_c"):
         if k in config:
             rows.append(f"config,{k},{config[k]}")
+
+    # R8.2 WP-3: compliance verdict + failing/unknown rules + the MANDATORY
+    # advisory row -- present whenever this ticket carries a verdict at all
+    # (i.e. `metrics["compliance"]` is truthy), absent entirely otherwise (inert
+    # default: no pack/class selected -> no compliance,* rows, bit-identical to
+    # before this feature existed). UNKNOWN is never silently dropped or folded
+    # into PASS -- it gets its own row here exactly like FAIL.
+    def _fmt_rule_value(v):
+        # Numeric values (a rule's `required`/`actual`) get fixed readable
+        # precision -- without this, an `actual` sourced from the model's raw
+        # float32 prediction (e.g. min_strength_MPa's conformal lower bound)
+        # would print 15 spurious digits. None -> blank; a string passes through.
+        if v is None:
+            return ""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return f"{float(v):.4g}"
+        return v
+
+    compliance = metrics.get("compliance")
+    if compliance:
+        rows.append(f"compliance,{compliance['pack_id']}.{compliance['class']},{compliance['verdict']}")
+        for r in compliance["rules"]:
+            if r["result"] in ("FAIL", "UNKNOWN"):
+                required = _fmt_rule_value(r["required"])
+                actual = _fmt_rule_value(r["actual"])
+                reason = f" reason={r['reason']}" if r["reason"] else ""
+                rows.append(f'compliance,rule_{r["rule"]},"{r["result"]}: '
+                           f'required={required} actual={actual}{reason}"')
+        rows.append(f'compliance,advisory,"{compliance_advisory_text(compliance.get("source", {}))}"')
+
     rows.append('disclaimer,,"Design exploration only — validate physically (ASTM/EN) '
                 'before any structural use."')
     return "\n".join(rows)

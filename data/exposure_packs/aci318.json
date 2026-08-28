@@ -1,0 +1,97 @@
+{
+  "pack_id": "aci318",
+  "name": "ACI 318-19 — Building Code Requirements for Structural Concrete, exposure categories F/S/W/C",
+  "jurisdiction": "United States (ACI 318-19)",
+  "source": {
+    "standard": "ACI 318-19",
+    "table": "Table 19.3.1.1 (exposure categories and classes) and Table 19.3.2.1 (requirements for concrete by exposure class)",
+    "verified": false,
+    "verification_note": "Indicative values for design exploration, reconstructed from secondary-source summaries of Chapter 19, NOT transcribed from a purchased copy of ACI 318-19. Strength values are converted from the code's native psi units to MPa (0.00689476 MPa/psi) and rounded to 1 decimal place, which is itself a source of imprecision. Check against the published standard before any structural use."
+  },
+  "strength_basis": "conformal_lower_bound",
+  "classes": {
+    "F0": {
+      "description": "Concrete not exposed to freezing-and-thawing cycles",
+      "max_w_b": null,
+      "min_strength_MPa": null,
+      "min_air_pct": null,
+      "notes": "Category 0 = 'not exposed'; no durability-driven limit applies by definition of the class, hence null rather than absent."
+    },
+    "F1": {
+      "description": "Freezing-and-thawing exposure with limited exposure to water",
+      "max_w_b": 0.55,
+      "min_strength_MPa": 27.6,
+      "notes": "min_strength_MPa converted from ACI's 4000 psi. min_air_pct intentionally omitted (not null): Table 19.3.3.3 sets the target air content by nominal maximum aggregate size, which was not confidently recalled here -- the engine will report UNKNOWN for this rule."
+    },
+    "F2": {
+      "description": "Freezing-and-thawing exposure with frequent exposure to water",
+      "max_w_b": 0.45,
+      "min_strength_MPa": 31.0,
+      "notes": "min_strength_MPa converted from ACI's 4500 psi. min_air_pct intentionally omitted (not null); see F1 note."
+    },
+    "F3": {
+      "description": "Freezing-and-thawing exposure with frequent exposure to water and to deicing chemicals",
+      "max_w_b": 0.40,
+      "min_strength_MPa": 34.5,
+      "notes": "min_strength_MPa converted from ACI's 5000 psi. min_air_pct intentionally omitted (not null); see F1 note."
+    },
+    "S0": {
+      "description": "Water-soluble sulfate exposure negligible",
+      "max_w_b": null,
+      "min_strength_MPa": null,
+      "notes": "Category 0 = 'exposure negligible'; no durability-driven limit applies by definition of the class, hence null rather than absent."
+    },
+    "S1": {
+      "description": "Moderate water-soluble sulfate exposure",
+      "max_w_b": 0.50,
+      "min_strength_MPa": 27.6,
+      "notes": "min_strength_MPa converted from ACI's 4000 psi. max_scm_fraction omitted: S1 also carries a cementitious-material-type requirement (e.g. Type II cement) that this schema does not model."
+    },
+    "S2": {
+      "description": "Severe water-soluble sulfate exposure",
+      "max_w_b": 0.45,
+      "min_strength_MPa": 31.0,
+      "notes": "min_strength_MPa converted from ACI's 4500 psi. max_scm_fraction omitted, matching S1 -- Type V cement / SCM-blend requirements not modelled."
+    },
+    "S3": {
+      "description": "Very severe water-soluble sulfate exposure",
+      "max_w_b": 0.45,
+      "min_strength_MPa": 31.0,
+      "notes": "Same max_w_b/min_strength_MPa as S2: recollection is that S3's stricter requirement in ACI 318-19 is expressed through additional cementitious-material-type and calcium-chloride-admixture restrictions (Table 26.4.2.2(b)-style provisions), not a lower w/cm or higher f'c than S2 -- those additional provisions are out of this schema's scope and are not modelled (max_scm_fraction omitted for the same reason as S1/S2)."
+    },
+    "W0": {
+      "description": "In contact with water where low permeability to water is not required",
+      "max_w_b": null,
+      "min_strength_MPa": null,
+      "min_air_pct": null,
+      "notes": "Category 0 = 'not required'; no durability-driven limit applies by definition of the class, hence null rather than absent."
+    },
+    "W1": {
+      "description": "In contact with water where low permeability to water is required",
+      "max_w_b": 0.50,
+      "min_strength_MPa": 27.6,
+      "min_air_pct": null,
+      "notes": "min_strength_MPa converted from ACI's 4000 psi. min_air_pct null: W is a permeability category, not a freeze/thaw category."
+    },
+    "C0": {
+      "description": "Concrete dry or protected from moisture in service",
+      "max_w_b": null,
+      "min_strength_MPa": null,
+      "min_air_pct": null,
+      "notes": "Category 0 = 'protected from moisture'; no durability-driven w/cm or strength limit applies by definition of the class, hence null rather than absent. ACI also sets a max water-soluble chloride-ion content for this category, which this schema has no field for and does not model."
+    },
+    "C1": {
+      "description": "Concrete exposed to moisture but not to an external source of chlorides",
+      "min_air_pct": null,
+      "notes": "max_w_b and min_strength_MPa intentionally omitted (not null): it was not confidently recalled whether Table 19.3.2.1 states a numeric w/cm and f'c requirement for C1 or leaves it unstated (as several other 'intermediate' rows do) -- rather than guess which, this is left UNKNOWN. ACI also sets a max water-soluble chloride-ion content for this category, not modelled here."
+    },
+    "C2": {
+      "description": "Concrete exposed to moisture and an external source of chlorides from deicing chemicals, salt, brackish water, seawater, or spray from these sources",
+      "max_w_b": 0.40,
+      "min_strength_MPa": 34.5,
+      "min_air_pct": null,
+      "notes": "min_strength_MPa converted from ACI's 5000 psi -- this is the most-cited, highest-confidence figure in this pack (ACI's strictest reinforced-concrete durability requirement). ACI also sets a max water-soluble chloride-ion content for this category, not modelled here."
+    }
+  },
+  "notes": "ACI 318-19 exposure categories F (freeze-thaw), S (sulfate), W (water permeability), C (corrosion protection) -- a genuinely different taxonomy from the EN XC/XD/XS/XF/XA classes, not a relabelling of them. Systematic omissions, not guesses: (1) min_air_pct is omitted (not null) for F1-F3 because ACI Table 19.3.3.3's target air content depends on nominal maximum aggregate size, mirroring the same omission in en206.json/bs8500.json for XF classes. (2) max_scm_fraction is omitted for every class: S1-S3's cementitious-material-type and SCM-blend restrictions (roughly Table 26.4.2.2(b)) are not modelled. (3) max_w_b/min_strength_MPa are omitted for C1 specifically because it was not confidently recalled whether the standard states a numeric requirement there. (4) The chloride-ion-content limits ACI sets for the C category are out of scope entirely -- this schema has no field for them. Strength values are psi->MPa conversions and carry their own rounding imprecision on top of the underlying sourcing uncertainty."
+}

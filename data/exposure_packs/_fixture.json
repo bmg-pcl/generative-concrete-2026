@@ -1,0 +1,37 @@
+{
+  "pack_id": "_fixture",
+  "name": "Synthetic test fixture -- NOT a real standard",
+  "jurisdiction": "N/A (unit test fixture for src/compliance.py)",
+  "source": {
+    "standard": "none",
+    "table": "none",
+    "verified": false,
+    "verification_note": "Synthetic fixture invented for src/compliance.py's own unit tests. Not derived from any real standard; values are round numbers chosen for testable arithmetic, not deemed-to-satisfy limits."
+  },
+  "strength_basis": "conformal_lower_bound",
+  "classes": {
+    "A1": {
+      "description": "Fixture class with every rule present -- exercises the full PASS/FAIL path.",
+      "max_w_b": 0.50,
+      "min_cement_kg_m3": 300,
+      "min_strength_MPa": 30,
+      "min_air_pct": null,
+      "max_scm_fraction": {"ash": 0.33, "slag": 0.80},
+      "notes": "min_air_pct is null on purpose: exercises the 'rule does not apply' path, distinct from an absent key."
+    },
+    "A2": {
+      "description": "Fixture class with only max_w_b present -- every other rule key is absent, so the engine must report UNKNOWN with a reason for each, not guess a value.",
+      "max_w_b": 0.45,
+      "notes": "min_cement_kg_m3, min_strength_MPa, min_air_pct, max_scm_fraction are all deliberately absent (not null)."
+    },
+    "A3": {
+      "description": "Fixture class with a numeric min_air_pct -- exercises the UNKNOWN-without-air_pct and PASS/FAIL-with-air_pct paths.",
+      "max_w_b": null,
+      "min_cement_kg_m3": null,
+      "min_strength_MPa": null,
+      "min_air_pct": 4.0,
+      "max_scm_fraction": null,
+      "notes": "All other rules null on purpose so only the air rule is under test."
+    }
+  }
+}

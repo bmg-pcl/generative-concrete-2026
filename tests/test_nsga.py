@@ -9,10 +9,12 @@ import pytest
 
 pytest.importorskip("pymoo")
 
-from src.nsga import run_nsga  # noqa: E402
+from src.nsga import run_nsga, MixDesignProblem  # noqa: E402
 from src.models import StrengthPredictor  # noqa: E402
-from src.generative_ga import PARAM_NAMES, data_envelope  # noqa: E402
-from src.ui_logic import pareto_front_mask  # noqa: E402
+from src.generative_ga import PARAM_NAMES, data_envelope, SLUMP_SP_DOSING_NOTE  # noqa: E402
+from src.ui_logic import pareto_front_mask, mix_dict, compute_metrics  # noqa: E402
+from src.compliance import load_packs, check_compliance  # noqa: E402
+from src.properties import slump_estimate  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -71,3 +73,264 @@ def test_warm_start_accepted(predictor):
     out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=8, seed_population=seed)
     assert out["front_size"] >= 1
     assert len(out["history"]["best_strength"]) == 8
+
+
+# --- WP-3b: optional compliance constraint (spec R8.2, WP-3 item 5) ---------
+#
+# Uses the `_fixture` pack (data/exposure_packs/_fixture.json, owned by WP-1)
+# via `load_packs(include_hidden=True)`, same as tests/test_generative.py --
+# see that file's header comment for why (its "A1" class has every rule
+# present with real numeric values, so it can actually reach PASS).
+
+def test_default_path_is_bit_identical_to_no_compliance(predictor):
+    """compliance=None (the default) must produce the exact same front as
+    omitting the argument entirely -- the new constraint code path must not
+    execute at all. (Independently verified against pre-change nsga.py from
+    git HEAD under the same seed -- see the WP-3b report -- this is the
+    in-repo regression guard for that finding.)"""
+    out1 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3)
+    out2 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3,
+                     compliance=None)
+    assert np.array_equal(out1["mixes"], out2["mixes"])
+    assert np.array_equal(out1["strength"], out2["strength"])
+    assert np.array_equal(out1["carbon"], out2["carbon"])
+    assert np.array_equal(out1["cost"], out2["cost"])
+    assert out1["history"] == out2["history"]
+    assert out2["compliance"] is None
+
+
+def test_nsga_compliance_constraint_front_passes_requested_class(predictor):
+    """Gate: a constrained NSGA run's front members pass the requested class,
+    verified independently with check_compliance (not just trusted from the
+    optimizer's own constraint bookkeeping)."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=20,
+                    compliance=("_fixture", "A1"))
+    assert out["compliance"] is not None
+    assert out["compliance"]["strength_basis"] == "conformal_lower_bound"
+    assert out["compliance"]["all_pass"], "front reported non-compliant members"
+    pack = load_packs(include_hidden=True)["_fixture"]
+    strength_lo, _, _ = predictor.predict_interval(out["mixes"])
+    for x, slo in zip(out["mixes"], strength_lo):
+        result = check_compliance(mix_dict(x), pack, "A1", strength_lo=float(slo))
+        assert result["verdict"] == "PASS"
+
+
+def test_nsga_compliance_constraint_keeps_three_objectives(predictor):
+    """Gate: compliance must be a pymoo CONSTRAINT, not a 4th objective -- the
+    front's objective dimensionality (strength/carbon/cost) must be unchanged."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15,
+                    compliance=("_fixture", "A1"))
+    assert out["mixes"].shape[1] == len(PARAM_NAMES)
+    # Exactly 3 objective-derived arrays are returned, matching the unconstrained
+    # front's shape -- no 4th "compliance objective" array exists anywhere.
+    assert out["strength"].shape == out["carbon"].shape == out["cost"].shape
+    assert out["strength"].ndim == 1
+    baseline = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15)
+    assert out["mixes"].shape[1] == baseline["mixes"].shape[1]
+
+
+# --- R8.5 P1: the coherence contract, kept forever (NSGA leg) ---------------------
+#
+# See tests/test_ui_logic.py's matching block for the full rationale. This is
+# the "Same for the NSGA objective column" half of the spec's gate: the front's
+# carbon OBJECTIVE COLUMN (MixDesignProblem._evaluate's out["F"][:, 1]) must
+# equal compute_metrics's displayed carbon for the identical mix/config. Tested
+# directly against MixDesignProblem._evaluate (not a full run_nsga optimization)
+# so the coherence gate is cheap and deterministic -- it is arithmetic
+# reconciliation, not a search-quality property.
+
+def _p1_factors_variants():
+    from src.chemistry_simple import CARBON_FACTORS
+    overridden = dict(CARBON_FACTORS)
+    overridden["cement"] = overridden["cement"] * 0.5
+    return (None, overridden)
+
+
+_P1_NSGA_AXES = [
+    (advanced, transport_km, transport_detail, factors_override, clinker_source)
+    for advanced in (False, True)
+    for transport_km in (0.0, 500.0)
+    for transport_detail in (False, True)
+    for factors_override in _p1_factors_variants()
+    for clinker_source in (None, {"kiln_fuel": "natural_gas", "electricity": "hydro"})
+]
+
+
+@pytest.mark.parametrize(
+    "advanced,transport_km,transport_detail,factors_override,clinker_source", _P1_NSGA_AXES,
+    ids=[f"advanced={a}-km={k}-detail={t}-factors={'override' if f else 'default'}-"
+         f"clinker={'set' if c else 'none'}"
+         for a, k, t, f, c in _P1_NSGA_AXES],
+)
+def test_p1_nsga_objective_carbon_column_matches_compute_metrics(
+    predictor, advanced, transport_km, transport_detail, factors_override, clinker_source,
+):
+    mix = np.array([350.0, 100.0, 0.0, 175.0, 5.0, 1000.0, 750.0, 28.0])
+    carbon_kwargs = {
+        "transport_km": transport_km,
+        "cement_type": "OPC",
+        "factors": factors_override,
+        "clinker_source": clinker_source,
+        "transport_detail": transport_detail,
+    }
+    bounds = data_envelope()
+    problem = MixDesignProblem(predictor, bounds, advanced, costs=None,
+                               carbon_kwargs=carbon_kwargs)
+    out = {}
+    problem._evaluate(mix.reshape(1, -1), out)
+    nsga_carbon = float(out["F"][0, 1])
+
+    m = compute_metrics(mix, {}, {}, predictor, advanced=advanced, carbon_kwargs=carbon_kwargs)
+
+    assert nsga_carbon == pytest.approx(m["carbon"]), (
+        f"NSGA carbon objective column diverged from compute_metrics carbon: "
+        f"advanced={advanced} transport_km={transport_km} "
+        f"transport_detail={transport_detail} clinker_source={clinker_source}"
+    )
+
+
+# --- R8.5 P2: robust carbon -- optimize the upper bound, symmetric with robust strength --
+
+def test_p2_nsga_robust_carbon_default_bit_identical(predictor):
+    """No caller touches `robust_carbon` (default False) -> identical front,
+    same seed."""
+    out1 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3)
+    out2 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3,
+                    robust_carbon=False)
+    assert np.array_equal(out1["mixes"], out2["mixes"])
+    assert np.array_equal(out1["carbon"], out2["carbon"])
+    assert out1["carbon_basis"] == out2["carbon_basis"] == "point"
+
+
+def test_p2_nsga_robust_carbon_swaps_column_dimensionality_unchanged(predictor):
+    """Gate: robust_carbon swaps the carbon column -- front stays 3-objective
+    (strength/carbon/cost), and the basis is disclosed correctly either way."""
+    baseline = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15)
+    assert baseline["carbon_basis"] == "point"
+    robust = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15, robust_carbon=True)
+    assert robust["carbon_basis"] == "upper_95"
+    assert robust["mixes"].shape[1] == baseline["mixes"].shape[1] == len(PARAM_NAMES)
+    assert robust["strength"].shape == robust["carbon"].shape == robust["cost"].shape
+    assert robust["strength"].ndim == 1
+
+
+def test_p2_nsga_robust_carbon_zero_uncertainty_bit_identical(predictor, monkeypatch):
+    """The MixDesignProblem leg of the zero-uncertainty gate: with every
+    registry uncertainty patched to zero, the robust_carbon objective column
+    equals the point column exactly."""
+    import src.ui_logic as ui_logic
+    monkeypatch.setattr(ui_logic, "factor_uncertainties_view", lambda: {})
+    mix = np.array([350.0, 100.0, 0.0, 175.0, 5.0, 1000.0, 750.0, 28.0])
+    bounds = data_envelope()
+    carbon_kwargs = {"transport_km": 150.0}
+    point_problem = MixDesignProblem(predictor, bounds, False, costs=None,
+                                     carbon_kwargs=carbon_kwargs, robust_carbon=False)
+    robust_problem = MixDesignProblem(predictor, bounds, False, costs=None,
+                                      carbon_kwargs=carbon_kwargs, robust_carbon=True)
+    out_point, out_robust = {}, {}
+    point_problem._evaluate(mix.reshape(1, -1), out_point)
+    robust_problem._evaluate(mix.reshape(1, -1), out_robust)
+    assert out_point["F"][0, 1] == pytest.approx(out_robust["F"][0, 1])
+
+
+def test_nsga_compliance_uses_lower_bound_not_point_estimate(predictor):
+    """The constraint must be built on strength_lo, not the mean -- confirm the
+    reported front verdicts were computed against predict_interval's lower
+    bound, not predictor.predict_batch's point estimate (which can disagree)."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15,
+                    compliance=("_fixture", "A1"))
+    for r in out["compliance"]["results"]:
+        strength_rule = next(x for x in r["rules"] if x["rule"] == "min_strength_MPa")
+        assert strength_rule["basis"] == "conformal_lower_bound (strength_lo supplied)"
+
+
+# --- R8.5 P3: workability -- slump-support constraint, NSGA leg -------------------
+
+def test_p3_nsga_slump_default_bit_identical(predictor):
+    """slump_target=None (the default) -> identical front, same seed."""
+    out1 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3)
+    out2 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3,
+                    slump_target=None)
+    assert np.array_equal(out1["mixes"], out2["mixes"])
+    assert out1["slump"] is None and out2["slump"] is None
+
+
+def test_p3_nsga_slump_target_constrains_front_to_slump_support(predictor):
+    """Gate: every front member must be in slump support, verified
+    independently with `properties.slump_estimate` -- never inferred from the
+    constraint's own bookkeeping alone."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=20, slump_target=15.0)
+    assert out["slump"] is not None
+    assert out["slump"]["target"] == 15.0
+    assert out["slump"]["basis"] == "model"
+    for x in out["mixes"]:
+        s = slump_estimate(mix_dict(x))
+        assert s["in_support"], s["reason"]
+    assert out["slump"]["all_in_support"] is True
+    assert out["slump"]["in_support_count"] == out["slump"]["front_size"] == out["front_size"]
+    assert out["slump"]["note"] == SLUMP_SP_DOSING_NOTE
+
+
+def test_p3_nsga_slump_dimensionality_unchanged(predictor):
+    """Gate: the slump constraint does not change front dimensionality --
+    still 3-objective strength/carbon/cost, same shape as the unconstrained
+    front."""
+    baseline = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15)
+    slump_constrained = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15,
+                                 slump_target=15.0)
+    assert slump_constrained["mixes"].shape[1] == baseline["mixes"].shape[1] == len(PARAM_NAMES)
+    assert (slump_constrained["strength"].shape == slump_constrained["carbon"].shape
+           == slump_constrained["cost"].shape)
+
+
+def test_p3_mixdesignproblem_slump_constraint_feasible_for_in_support_mix():
+    """Direct unit check on the constraint's arithmetic: a mix well inside the
+    slump corpus's envelope must score <= 0 (feasible) on the slump
+    constraint row; a mix far outside it (e.g. water below the slump corpus's
+    160 kg/m3 minimum) must score > 0 (infeasible)."""
+    predictor = StrengthPredictor()
+    bounds = data_envelope()
+    problem = MixDesignProblem(predictor, bounds, False, costs=None,
+                               slump_target=15.0)
+    in_support_mix = np.array([300.0, 50.0, 0.0, 180.0, 8.0, 1000.0, 750.0, 28.0])
+    out_of_support_mix = np.array([300.0, 0.0, 0.0, 120.0, 0.0, 1000.0, 750.0, 28.0])
+    out = {}
+    problem._evaluate(np.vstack([in_support_mix, out_of_support_mix]), out)
+    g_slump = out["G"][:, -1]  # slump constraint is always appended last
+    assert g_slump[0] <= 0.0
+    assert g_slump[1] > 0.0
+
+
+# --- R8.5 P5: thermal -- post-hoc advisory only (no objective/constraint use) -----
+
+def test_p5_nsga_front_members_get_thermal_advisory(predictor):
+    """Always present (no flag), one entry per front member, reproducible
+    independently via `thermal.adiabatic_temperature_rise`/`mass_pour_flag`."""
+    from src.thermal import adiabatic_temperature_rise, mass_pour_flag
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10)
+    assert len(out["delta_t_adiabatic_C"]) == len(out["mass_pour_flag"]) == out["front_size"]
+    for x, dt, flag in zip(out["mixes"], out["delta_t_adiabatic_C"], out["mass_pour_flag"]):
+        expected_dt = adiabatic_temperature_rise(mix_dict(x), cement_type="OPC")
+        assert dt == pytest.approx(expected_dt)
+        assert flag == mass_pour_flag(expected_dt)
+
+
+def test_p5_nsga_thermal_none_safe_on_lc3(predictor):
+    """No Bogue-valid record for LC3 -> None for every front member, never a
+    raised exception."""
+    out = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10,
+                   carbon_kwargs={"cement_type": "LC3"})
+    assert all(dt is None for dt in out["delta_t_adiabatic_C"])
+    assert all(flag is None for flag in out["mass_pour_flag"])
+
+
+def test_p5_nsga_thermal_does_not_change_dimensionality_or_constraints(predictor):
+    """The thermal advisory must not enter the objective or a constraint --
+    front dimensionality and constraint count are unaffected by whatever
+    cement_type/carbon_kwargs is passed."""
+    opc = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10)
+    lc3 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10,
+                   carbon_kwargs={"cement_type": "LC3"})
+    assert opc["mixes"].shape[1] == lc3["mixes"].shape[1] == len(PARAM_NAMES)
+    assert opc["strength"].shape == opc["carbon"].shape == opc["cost"].shape
+    assert lc3["strength"].shape == lc3["carbon"].shape == lc3["cost"].shape

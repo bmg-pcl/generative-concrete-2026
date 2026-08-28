@@ -19,6 +19,13 @@ from src.chemistry_advanced import GRID_EF
 from src.exotics import EXOTIC_ADMIXTURES
 from src.materials import slider_specs_view
 
+# R8.2 WP-3: sentinel meaning "no exposure pack/class selected" for the compliance
+# selectors below -- shared by ui/config.py (renders the widgets) and ui/compare.py
+# (reads them to decide whether to pass exposure_pack/exposure_class into
+# compute_metrics at all). Selecting it on EITHER selector makes the whole
+# compliance feature inert (src.ui_logic._compliance_block requires both).
+EXPOSURE_NONE = "(none selected)"
+
 # Mix slider specs: (param, label, min, max) in PARAM_NAMES order. R7.4b: the seven
 # core materials' bounds live in data/materials.json (single UI authority — edit the
 # registry, not this file); "age" is a design condition, not a material, so it has no
@@ -63,6 +70,39 @@ CONFIG_DEFAULTS = {
     # R8.0 WP-E Decision 2: per-material transport detail toggle (default False
     # -- inert; today's single global-km transport heuristic, bit-identical).
     "cfg_transport_detail": False,
+    # R8.2 WP-3: exposure-class compliance selectors, options built from
+    # load_packs() (never a hardcoded jurisdiction list -- a pack is a JSON
+    # drop-in, see src/compliance.py). Both default to EXPOSURE_NONE, which
+    # makes the feature INERT: compute_metrics only attempts a compliance check
+    # when both resolve to a real pack/class (src.ui_logic._compliance_block).
+    # Same single-place-add pattern as cfg_waste_factor/cfg_site_temp_c above --
+    # no SESSION_FIELDS edit, no SESSION_VERSION bump.
+    "cfg_exposure_pack": EXPOSURE_NONE,
+    "cfg_exposure_class": EXPOSURE_NONE,
+    # R8.5 P2: robust carbon (optimize the +1.96*sigma upper bound instead of the
+    # point total), rendered on the Inverse Design tab. Default False -- inert,
+    # bit-identical to before this flag existed. Persisted like cfg_robust (its
+    # strength-side mirror) -- same single-place-add pattern as the keys above,
+    # no SESSION_FIELDS edit, no SESSION_VERSION bump.
+    "cfg_robust_carbon": False,
+    # R8.5 P3: workability (slump) target, rendered on the Inverse Design tab.
+    # `cfg_slump_target_enabled` gates the whole feature (default False -- ambient,
+    # inert); `cfg_slump_target_cm` only takes effect when enabled.
+    "cfg_slump_target_enabled": False,
+    "cfg_slump_target_cm": 10.0,
+    # R8.5 P4: "require compliance" constraint, rendered on the Inverse Design and
+    # Pareto tabs (gated on the Config tab's cfg_exposure_pack/cfg_exposure_class
+    # naming a real pair). Default strict (`cfg_compliance_allow_unknown*` False) --
+    # the spec's honest-ceiling default: an UNKNOWN (unsourced) rule counts as a
+    # violation unless the user explicitly opts into "allow UNKNOWN rules".
+    # Two independent pairs, not one shared pair: Streamlit runs every tab's code
+    # on each script run, so a widget under the SAME key rendered on both tabs
+    # would raise a duplicate-widget-ID error -- and a user may reasonably want
+    # compliance required in one tab but not the other.
+    "cfg_require_compliance": False,
+    "cfg_compliance_allow_unknown": False,
+    "cfg_require_compliance_pareto": False,
+    "cfg_compliance_allow_unknown_pareto": False,
 }
 
 

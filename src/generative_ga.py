@@ -18,6 +18,31 @@ The idea is deliberately easy to follow:
        spread is our transparent stand-in for a posterior.
 
 No TensorFlow, no black boxes: everything here is a GA over a known objective.
+
+Optional compliance constraint (spec docs/specs/R8.2-exposure-compliance.md, WP-3
+item 5): a caller may pass `compliance=(pack_id, class_id)` to `design()` /
+`sample()` / `best_mix()` to bias the search toward an exposure class. This is
+OFF BY DEFAULT (`compliance=None`) and, when off, executes none of the new code
+paths below -- the default objective is untouched line-for-line, so default runs
+stay bit-identical to before this feature existed (see tests/test_generative.py's
+`test_default_path_is_bit_identical_to_no_compliance`).
+
+UNKNOWN handling decision (must be justified per WP-3b instructions): for the
+*optimizer's* penalty/constraint, an UNKNOWN rule counts as a VIOLATION, not a
+pass. This mirrors compliance.py's own discipline ("a rule that cannot be
+evaluated is not a pass") and, critically, closes an exploit an optimizer is
+uniquely positioned to find: a GA/NSGA search that treated UNKNOWN as "free"
+would actively steer toward whatever a pack happens to leave unsourced (e.g. an
+SCM fraction no jurisdiction pack currently states) to relax the search, and
+would do so *silently* -- the population would drift toward exactly the gap in
+the reference data with nothing in the objective signalling it. Treating UNKNOWN
+as violated is the conservative choice: it means a class most of whose rules are
+absent from a pack (e.g. every en206.json class, which omits max_scm_fraction
+everywhere) may never reach a true PASS verdict via this engine, only FAIL or
+UNKNOWN -- but "we can't certify this against an incomplete pack" is the honest
+answer, not a bug to route around. `design_compliant()` reports this honestly:
+it returns `found=False` rather than presenting the closest candidate as if it
+had passed.
 """
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +53,7 @@ from .models import StrengthPredictor
 from .chemistry_simple import calculate_embodied_carbon
 from .data_fetcher import load_data
 from .physical import volume_error, enforce_volume, VOLUME_TOLERANCE
+from .compliance import check_compliance, load_packs
 
 # Canonical parameter order (matches the UCI columns and StrengthPredictor inputs).
 PARAM_NAMES: List[str] = [
@@ -39,6 +65,61 @@ PARAM_NAMES: List[str] = [
 OOS_PENALTY_WEIGHT = 10.0
 # Volume-balance penalty weight (MPa-scale per m³ of imbalance). See docs/specs/R2.
 VOLUME_PENALTY_WEIGHT = 200.0
+# Compliance-constraint penalty weight (MPa-scale). See docs/specs/R8.2, WP-3 item 5.
+#
+# Unlike OOS/VOLUME above, the quantity this multiplies (`compliance_violation()`)
+# is already a *normalised* magnitude -- roughly the fractional amount each failing
+# or unknown rule misses its limit by, summed across rules -- not a raw physical
+# unit, so its weight is chosen relative to the other two weights' *roles* rather
+# than to shared units. VOLUME_PENALTY_WEIGHT (200) exists to make a small, always-
+# on physical infeasibility (a mix that doesn't fill ~1 m³) dominate the search
+# regardless of how well it hits the strength target. A requested exposure class is
+# the same kind of hard, non-negotiable requirement -- a design that fails it is not
+# deliverable no matter how close its strength match is -- so COMPLIANCE_PENALTY_WEIGHT
+# is set to sit in that same dominant regime: large enough that even one violated
+# rule outweighs the ~0-70 MPa range of plausible target-strength errors, but far
+# above OOS_PENALTY_WEIGHT (10), which only has to *nudge* the search away from
+# extrapolated territory, not exclude it outright.
+COMPLIANCE_PENALTY_WEIGHT = 150.0
+
+# R8.5 P3 -- slump-target workability. Only active when a caller explicitly
+# requests `slump_target` (never ambient); see `_InverseDesignerBase._make_objective`.
+#
+# Slump-SUPPORT penalty weight -- MIRRORS OOS_PENALTY_WEIGHT (10.0) exactly:
+# same role (a smooth, always-computable nudge away from a property's
+# extrapolated region, not a hard exclusion), same MPa-scale additive regime
+# as the strength-match error this objective already sums. It is deliberately
+# NOT in COMPLIANCE_PENALTY_WEIGHT's dominant regime (150): a requested slump
+# target is the caller's OWN preference, not an externally-imposed
+# certification requirement the way an exposure class is, and R8.1 WP-1b's
+# finding (the slump model's 90% interval already spans 83% of the physical
+# 0-29 cm range) means its novelty signal is comparatively noisy -- weighting
+# it as heavily as COMPLIANCE would let a single noisy slump-novelty reading
+# override an otherwise-excellent strength/carbon match. 10.0 mirrors the
+# out-of-support role at the out-of-support scale.
+SLUMP_OOS_PENALTY_WEIGHT = 10.0
+# Slump target-match penalty weight (applied to |slump_point - slump_target|,
+# in cm, added directly into the same MPa-scale additive objective as the
+# strength-match error). Deliberately SMALL and unscaled (not multiplied up
+# like the weights above): per spec P3 this is a SOFT preference on the point
+# estimate, not a hard requirement -- the load-bearing gate is
+# SLUMP_OOS_PENALTY_WEIGHT above. At 1.0, a 10 cm slump miss costs as much as
+# a 10 MPa strength miss: enough to break ties among mixes that already hit
+# the strength target well, without ever dominating a genuinely large
+# strength error the way the hard-constraint weights above are meant to.
+SLUMP_TARGET_PENALTY_WEIGHT = 1.0
+
+# R8.1's corpus finding, surfaced wherever a slump-constrained design is
+# actually returned (recommend_recipe, run_nsga): every row in the 103-row
+# slump corpus used superplasticizer >= 4.4 kg/m3 (see docs/specs/R8.1 WP-1b),
+# so a design honestly IN slump support will be SP-dosed -- that is the corpus
+# speaking, not an optimizer preference, and callers must disclose it rather
+# than let it look like an arbitrary optimizer choice.
+SLUMP_SP_DOSING_NOTE = (
+    "Slump-constrained designs are superplasticizer-dosed because every row in "
+    "the 103-row slump corpus used SP >= 4.4 kg/m3 (R8.1 WP-1b) -- the corpus "
+    "speaking, not an optimizer preference."
+)
 
 
 def data_envelope(param_names: List[str] = PARAM_NAMES) -> np.ndarray:
@@ -51,6 +132,63 @@ def data_envelope(param_names: List[str] = PARAM_NAMES) -> np.ndarray:
     """
     df = load_data()
     return np.array([(df[name].min(), df[name].max()) for name in param_names], dtype=float)
+
+
+def resolve_compliance_target(compliance: Optional[Tuple[str, str]]) -> Tuple[Optional[dict], Optional[str]]:
+    """Resolve an optional `(pack_id, class_id)` pair to `(pack_dict, class_id)`.
+
+    Returns `(None, None)` when `compliance` is `None` -- the off-by-default case
+    every default-path call goes through. Uses `load_packs(include_hidden=True)`:
+    the optimizer is an engine, not the UI's jurisdiction picker, so the hidden
+    `_fixture` pack (used by this module's and nsga's own tests) must resolve
+    exactly like a real jurisdiction pack -- `load_packs()`'s default hidden-pack
+    exclusion is a presentation concern for the UI dropdown, not an engine one.
+    """
+    if compliance is None:
+        return None, None
+    pack_id, cls = compliance
+    packs = load_packs(include_hidden=True)
+    if pack_id not in packs:
+        raise KeyError(f"unknown compliance pack '{pack_id}' (available: {sorted(packs)})")
+    pack = packs[pack_id]
+    if cls not in pack.get("classes", {}):
+        raise KeyError(f"pack '{pack_id}' has no class '{cls}' "
+                        f"(available: {sorted(pack.get('classes', {}))})")
+    return pack, cls
+
+
+def compliance_violation(mix: Dict[str, float], pack: dict, cls: str, strength_lo: float,
+                          *, unknown_counts_as_violation: bool = True) -> float:
+    """Scalar violation magnitude (>= 0; 0 means fully compliant) for one mix
+    against one exposure class, for use as a penalty term (GA) or a pymoo
+    inequality constraint value (NSGA -- see nsga.py's MixDesignProblem, which
+    imports this function so both optimizers score compliance identically).
+
+    Always checks strength against `strength_lo` (the conformal lower bound),
+    never a mean -- this is R8.2's core design decision, applied identically
+    whether or not the caller's optimizer run is in "robust" mode (see the
+    module docstring's "Optional compliance constraint" note).
+
+    Each FAILing rule contributes the fractional amount by which it misses its
+    limit (e.g. ~0.10 for a value 10% over a max, or 10% under a min), so a
+    near-miss is penalised less than a gross violation. Each UNKNOWN rule
+    contributes a fixed unit penalty when `unknown_counts_as_violation` is True
+    (the default -- see the module docstring's "UNKNOWN handling decision").
+    """
+    result = check_compliance(mix, pack, cls, strength_lo=strength_lo)
+    if result["verdict"] == "PASS":
+        return 0.0
+    total = 0.0
+    for rule in result["rules"]:
+        if rule["result"] == "FAIL":
+            required, actual = rule["required"], rule["actual"]
+            if required:
+                total += abs(actual - required) / abs(required)
+            else:
+                total += 1.0
+        elif rule["result"] == "UNKNOWN" and unknown_counts_as_violation:
+            total += 1.0
+    return total
 
 
 class _InverseDesignerBase:
@@ -81,19 +219,57 @@ class _InverseDesignerBase:
 
     # -- objective -----------------------------------------------------------
     def _make_objective(self, target_strength: float, carbon_target: Optional[float],
-                        robust: bool = False):
+                        robust: bool = False, compliance_pack: Optional[dict] = None,
+                        compliance_cls: Optional[str] = None,
+                        slump_target: Optional[float] = None):
         """
         Returns a scalar error to MINIMISE:
 
-            error = |strength(mix) - target_strength|            (always)
-                  + max(0, carbon(mix) - carbon_target)          (only if carbon_target given)
-                  + OOS_PENALTY_WEIGHT·max(0, novelty - thresh)  (robust only)
+            error = |strength(mix) - target_strength|                    (always)
+                  + max(0, carbon(mix) - carbon_target)                  (only if carbon_target given)
+                  + OOS_PENALTY_WEIGHT·max(0, novelty - thresh)          (robust only)
+                  + COMPLIANCE_PENALTY_WEIGHT·compliance_violation(...)  (only if a
+                                                                           compliance target given)
+                  + SLUMP_OOS_PENALTY_WEIGHT·max(0, slump_novelty-thresh) (only if a
+                                                                           slump target given)
+                  + SLUMP_TARGET_PENALTY_WEIGHT·|slump_point-slump_target| (only if a
+                                                                           slump target given)
 
         With `robust=True`, `strength` is the conformal lower bound (the guaranteed
         strength) rather than the mean, and an out-of-support penalty pulls the search
         away from extrapolated regions the prediction can't be trusted in.
+
+        When `compliance_pack`/`compliance_cls` are given (both None by default --
+        this whole branch is skipped in that case, which is how the default path
+        stays bit-identical), the compliance term always checks strength against the
+        conformal lower bound, independent of `robust`: R8.2's core design decision
+        is to never certify a spec-relevant pass on a mean prediction, so even a
+        non-robust run (whose primary strength term above uses the mean) recomputes
+        the interval for the compliance check specifically.
+
+        R8.5 P3: when `slump_target` is given (default `None` -- this whole branch
+        is skipped in that case, same bit-identical-by-default shape as compliance
+        above), two terms are added, using the SLUMP model's OWN support gate (R8.1
+        -- distinct from the strength model's `threshold` above, never conflated):
+        a smooth out-of-(slump-)support penalty mirroring the robust-strength one
+        (principle 2 of this spec -- the slump support gate is the load-bearing
+        constraint, so it gets the same always-on-when-active penalty machinery as
+        strength's own OOS term), and a soft, modest penalty pulling the point
+        estimate toward the requested target. The slump model's `predict`/`novelty`
+        are well-defined regardless of support (the model can extrapolate a number),
+        so both terms are always computable here; `properties.slump_estimate`'s
+        higher-level None-outside-support honesty rule is enforced by the CALLER
+        (recommend_recipe) when it decides whether to disclose a confident number
+        for whatever candidate this search returns -- this objective only shapes
+        the search, it never itself decides "found".
         """
         threshold = self.predictor.support_threshold() if robust else None
+        slump_model = slump_features = None
+        if slump_target is not None:
+            from .properties import get_slump_model, SLUMP_FEATURES  # lazy: avoids a
+            # module-level cycle (properties.py imports PARAM_NAMES from this module).
+            slump_model = get_slump_model()
+            slump_features = SLUMP_FEATURES
 
         def objective(theta: np.ndarray) -> float:
             if robust:
@@ -110,6 +286,21 @@ class _InverseDesignerBase:
             if robust:
                 nov = float(self.predictor.novelty(theta)[0])
                 error += OOS_PENALTY_WEIGHT * max(0.0, nov - threshold)
+            if compliance_pack is not None:
+                if robust:
+                    strength_lo_c = strength  # already the conformal lower bound above
+                else:
+                    lo_c, _, _ = self.predictor.predict_interval(theta)
+                    strength_lo_c = float(lo_c[0])
+                viol = compliance_violation(mix, compliance_pack, compliance_cls, strength_lo_c)
+                error += COMPLIANCE_PENALTY_WEIGHT * viol
+            if slump_model is not None:
+                x_slump = np.array([mix.get(f, 0.0) for f in slump_features], dtype=float)
+                slump_nov = float(slump_model.novelty(x_slump)[0])
+                error += SLUMP_OOS_PENALTY_WEIGHT * max(
+                    0.0, slump_nov - slump_model.support_threshold())
+                slump_point = float(slump_model.predict(x_slump))
+                error += SLUMP_TARGET_PENALTY_WEIGHT * abs(slump_point - slump_target)
             return float(error)
 
         return objective
@@ -134,6 +325,7 @@ class _InverseDesignerBase:
 
     # -- to be provided by subclasses ---------------------------------------
     def design(self, target_strength: float, carbon_target: Optional[float] = None,
+               compliance: Optional[Tuple[str, str]] = None,
                **kwargs) -> Tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError
 
@@ -145,6 +337,7 @@ class _InverseDesignerBase:
         carbon_target: Optional[float] = None,
         robust: bool = False,
         age: Optional[float] = None,
+        compliance: Optional[Tuple[str, str]] = None,
     ) -> np.ndarray:
         """
         Produce an (n_samples, n_dims) cloud of target-conditioned mixes.
@@ -153,8 +346,15 @@ class _InverseDesignerBase:
         small Gaussian jitter (clipped to the data envelope). This turns a handful
         of good solutions into a smooth spread suitable for the dashboard surface,
         while keeping every sample tied to the requested target.
+
+        `compliance`, as everywhere in this module, is an optional `(pack_id,
+        class_id)` pair (default `None` -- off) biasing the underlying search
+        toward the requested exposure class; see `design_compliant()` if you need
+        an honest yes/no on whether a compliant design was actually found rather
+        than a biased-but-unverified cloud.
         """
-        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age)
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age,
+                                 compliance=compliance)
         n_elite = max(10, len(ranked) // 4)
         elite = ranked[:n_elite]
 
@@ -172,11 +372,60 @@ class _InverseDesignerBase:
         return samples
 
     def best_mix(self, target_strength: float, carbon_target: Optional[float] = None,
-                 robust: bool = False, age: Optional[float] = None) -> Dict[str, float]:
+                 robust: bool = False, age: Optional[float] = None,
+                 compliance: Optional[Tuple[str, str]] = None) -> Dict[str, float]:
         """Single best mix as a dict -- for one-shot callers like inverse_plan_mix.
-        Repaired to satisfy the volume balance if the search left it slightly off."""
-        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age)
+        Repaired to satisfy the volume balance if the search left it slightly off.
+        See `sample()`'s docstring on `compliance` -- this is the search bias, not
+        a verified pass; use `design_compliant()` for a checked answer."""
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age,
+                                 compliance=compliance)
         return enforce_volume(dict(zip(self.param_names, ranked[0])))
+
+    def design_compliant(
+        self,
+        target_strength: float,
+        compliance: Tuple[str, str],
+        carbon_target: Optional[float] = None,
+        robust: bool = False,
+        age: Optional[float] = None,
+        **design_kwargs,
+    ) -> Dict:
+        """Run a compliance-constrained design and report HONESTLY whether a
+        verified-compliant mix was actually found.
+
+        `design()` minimises a *penalised* objective -- the compliance penalty
+        pulls the population toward the requested class but is a soft bias, not a
+        certificate. This wrapper re-checks every candidate in the final ranked
+        population, best-first, with the real `check_compliance()` engine (always
+        against the conformal lower bound, per R8.2), and returns the first one
+        that is a true PASS. If none of the final population verifies as PASS --
+        which, per this module's UNKNOWN-handling decision, includes any mix left
+        with an UNKNOWN rule -- it returns `found=False` rather than presenting
+        the closest (but unverified) candidate as compliant.
+
+        Returns:
+            {"found": bool, "mix": dict | None, "result": check_compliance dict | None,
+             "strength_basis": "conformal_lower_bound", "pack_id": str, "class": str,
+             "checked": [(mix, check_compliance result), ...]}  # every candidate examined
+        """
+        pack, cls = resolve_compliance_target(compliance)
+        ranked, _ = self.design(target_strength, carbon_target, robust=robust, age=age,
+                                 compliance=compliance, **design_kwargs)
+        checked = []
+        for theta in ranked:
+            mix = enforce_volume(dict(zip(self.param_names, theta)))
+            theta_repaired = np.array([mix[p] for p in self.param_names])
+            lo, _, _ = self.predictor.predict_interval(theta_repaired)
+            result = check_compliance(mix, pack, cls, strength_lo=float(lo[0]))
+            checked.append((mix, result))
+            if result["verdict"] == "PASS":
+                return {"found": True, "mix": mix, "result": result,
+                        "strength_basis": "conformal_lower_bound",
+                        "pack_id": pack["pack_id"], "class": cls, "checked": checked}
+        return {"found": False, "mix": None, "result": None,
+                "strength_basis": "conformal_lower_bound",
+                "pack_id": pack["pack_id"], "class": cls, "checked": checked}
 
 
 class PopulationInverseDesigner(_InverseDesignerBase):
@@ -193,9 +442,21 @@ class PopulationInverseDesigner(_InverseDesignerBase):
         generations: int = 40,
         robust: bool = False,
         age: Optional[float] = None,
+        compliance: Optional[Tuple[str, str]] = None,
+        slump_target: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Run the GA and return the final population sorted best-first."""
-        objective = self._make_objective(target_strength, carbon_target, robust=robust)
+        """Run the GA and return the final population sorted best-first.
+
+        `compliance=(pack_id, class_id)` (default None -- off) adds a penalty
+        term biasing the search toward that exposure class; see the module
+        docstring and `design_compliant()`.
+
+        `slump_target` (R8.5 P3, default None -- off) adds the slump-support
+        penalty and target-match penalty described in `_make_objective`."""
+        pack, cls = resolve_compliance_target(compliance)
+        objective = self._make_objective(target_strength, carbon_target, robust=robust,
+                                          compliance_pack=pack, compliance_cls=cls,
+                                          slump_target=slump_target)
         optimizer = GeneticOptimizer(
             objective_fn=objective,
             bounds=self._effective_bounds(age).tolist(),
@@ -222,12 +483,24 @@ class AntColonyInverseDesigner(_InverseDesignerBase):
         generations: int = 40,
         robust: bool = False,
         age: Optional[float] = None,
+        compliance: Optional[Tuple[str, str]] = None,
+        slump_target: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Run ACO_R and return the final solution archive sorted best-first."""
+        """Run ACO_R and return the final solution archive sorted best-first.
+
+        `compliance=(pack_id, class_id)` (default None -- off) adds a penalty
+        term biasing the search toward that exposure class; see the module
+        docstring and `design_compliant()`.
+
+        `slump_target` (R8.5 P3, default None -- off) adds the slump-support
+        penalty and target-match penalty described in `_make_objective`."""
         # Imported lazily so importing this module doesn't require the ACO engine.
         from .aco import AntColonyOptimizer
 
-        objective = self._make_objective(target_strength, carbon_target, robust=robust)
+        pack, cls = resolve_compliance_target(compliance)
+        objective = self._make_objective(target_strength, carbon_target, robust=robust,
+                                          compliance_pack=pack, compliance_cls=cls,
+                                          slump_target=slump_target)
         optimizer = AntColonyOptimizer(
             objective_fn=objective,
             bounds=self._effective_bounds(age).tolist(),

@@ -9,6 +9,7 @@ import pytest
 from src.ui_logic import (
     PARAM_NAMES,
     carbon_for_mode,
+    carbon_term,
     pareto_front_mask,
     compute_metrics,
     batch_metrics,
@@ -20,11 +21,17 @@ from src.ui_logic import (
     tensile_estimate,
     carbon_breakdown,
     mix_ticket,
+    slump_caveat,
+    compliance_advisory_text,
+    compliance_matrix,
 )
-from src.chemistry_simple import calculate_embodied_carbon, calculate_mix_cost
+from src.chemistry_simple import calculate_embodied_carbon, calculate_mix_cost, CARBON_FACTORS
 from src.chemistry_advanced import embodied_carbon_advanced
 from src.exotics import exotic_strength_delta
 from src.models import StrengthPredictor
+from src.properties import slump_estimate
+from src.compliance import set_packs_path
+from src.generative_ga import SLUMP_SP_DOSING_NOTE
 
 MIX = [350, 100, 0, 175, 5, 1000, 750, 28]
 COSTS = {"cement": 0.15, "slag": 0.08, "ash": 0.05, "water": 0.002,
@@ -560,6 +567,409 @@ def test_compute_metrics_transport_detail_on_matches_breakdown(predictor):
     assert sum(bd.values()) == pytest.approx(m["carbon"])
 
 
+# --- R8.5 P1: the coherence contract, kept forever ---------------------------------
+#
+# ui_logic's module docstring promises "ONE carbon path, ONE metrics path, ONE
+# fitness path" -- the audit for docs/specs/R8.5 found exactly one live
+# divergence from that promise: `ui/config.py:161` builds `ctx.carbon_kwargs`
+# WITHOUT `transport_detail`, so with the per-material transport toggle ON the
+# ticket (compute_metrics) shows per-material transport carbon while the
+# optimizer (scalarized_fitness/recommend_recipe/run_nsga) still minimizes the
+# global-km path. `ui/config.py` is WP-2's file (P4's package, dispatched after
+# this one) -- the one-line dict-entry fix lands there. This test suite is the
+# ENGINE-side half of the contract: it proves that once `transport_detail`
+# arrives inside `carbon_kwargs` (exactly the shape the WP-2 fix produces),
+# every engine consumer honours it identically to `compute_metrics`, regardless
+# of when the UI-side dict entry lands. It is written so it ALREADY exercises
+# that exact shape (a `carbon_kwargs` dict carrying a `transport_detail` key)
+# rather than waiting for WP-2 -- which is how it caught a second, more subtle
+# defect: `compute_metrics` used to ALSO accept `transport_detail` as its own
+# keyword parameter and unconditionally re-passed it alongside `**carbon_kwargs`
+# to `carbon_for_mode`, so a `carbon_kwargs` dict carrying that key (the post-fix
+# shape) would raise "got multiple values for keyword argument 'transport_detail'"
+# on the very first call -- fixed in `compute_metrics` by letting `carbon_kwargs`
+# win when both are present (see its docstring).
+
+def _factors_variants():
+    """None (registry defaults) and a real override -- every core key present,
+    so the override changes the arithmetic without silently zeroing materials
+    `factors` doesn't mention (carbon_for_mode's `factors` dict REPLACES, not
+    merges with, the registry defaults -- see chemistry_simple.calculate_embodied_carbon)."""
+    overridden = dict(CARBON_FACTORS)
+    overridden["cement"] = overridden["cement"] * 0.5
+    return (None, overridden)
+
+
+def _clinker_source_variants():
+    """None (legacy default) and a real descriptor. Only affects the advanced
+    tier (carbon_for_mode's own contract) -- included in every combination
+    anyway so the coherence test also proves it stays a true no-op in simple
+    mode on BOTH sides of the comparison, not just tested in isolation."""
+    return (None, {"kiln_fuel": "natural_gas", "electricity": "hydro"})
+
+
+_P1_AXES = [
+    (advanced, transport_km, transport_detail, factors_override, clinker_source)
+    for advanced in (False, True)
+    for transport_km in (0.0, 500.0)
+    for transport_detail in (False, True)
+    for factors_override in _factors_variants()
+    for clinker_source in _clinker_source_variants()
+]
+
+
+@pytest.mark.parametrize(
+    "advanced,transport_km,transport_detail,factors_override,clinker_source", _P1_AXES,
+    ids=[f"advanced={a}-km={k}-detail={t}-factors={'override' if f else 'default'}-"
+         f"clinker={'set' if c else 'none'}"
+         for a, k, t, f, c in _P1_AXES],
+)
+def test_p1_scalarized_fitness_carbon_term_matches_compute_metrics(
+    predictor, advanced, transport_km, transport_detail, factors_override, clinker_source,
+):
+    """The durable gate this spec names explicitly: `scalarized_fitness`'s carbon
+    term `==` `compute_metrics(...)["carbon"]` for the same mix, across every
+    axis of the R8 config surface -- simple/advanced x transport_km {0, 500} x
+    transport_detail {off, on} x factor overrides x clinker_source. `w_strength`
+    and `w_cost` are zeroed so `fitness == -carbon` isolates the carbon term
+    exactly; `exotic={}` on the compute_metrics side matches scalarized_fitness
+    having no exotic dosing concept at all (both `exotic_carbon({})` and
+    `carbon_for_mode(..., exotic=None)` contribute zero -- see
+    test_carbon_for_mode_exotic_default_is_bit_identical)."""
+    carbon_kwargs = {
+        "transport_km": transport_km,
+        "cement_type": "OPC",
+        "factors": factors_override,
+        "clinker_source": clinker_source,
+        "transport_detail": transport_detail,
+    }
+    fitness = scalarized_fitness(MIX, COSTS, predictor, 0.0, 1.0, 0.0,
+                                 advanced=advanced, carbon_kwargs=carbon_kwargs)
+    fitness_carbon = -fitness
+
+    m = compute_metrics(MIX, {}, COSTS, predictor, advanced=advanced,
+                        carbon_kwargs=carbon_kwargs)
+
+    assert fitness_carbon == pytest.approx(m["carbon"]), (
+        f"scalarized_fitness carbon term diverged from compute_metrics carbon: "
+        f"advanced={advanced} transport_km={transport_km} "
+        f"transport_detail={transport_detail} clinker_source={clinker_source}"
+    )
+
+
+def test_p1_compute_metrics_carbon_kwargs_transport_detail_overrides_explicit_param():
+    """The collision-avoidance regression: `compute_metrics` must not raise when
+    `carbon_kwargs` carries `transport_detail` (the post-WP-2 shape) -- and once
+    it does, that value governs (matches calling with the EQUIVALENT explicit
+    parameter, never both silently disagreeing)."""
+    predictor = StrengthPredictor()
+    exotic = {}
+    via_dict = compute_metrics(MIX, exotic, COSTS, predictor,
+                               carbon_kwargs={"transport_km": 300.0, "transport_detail": True})
+    via_param = compute_metrics(MIX, exotic, COSTS, predictor,
+                                carbon_kwargs={"transport_km": 300.0},
+                                transport_detail=True)
+    assert via_dict["carbon"] == pytest.approx(via_param["carbon"])
+    # And the explicit parameter is silently ignored (not summed/double-applied)
+    # when carbon_kwargs disagrees with it -- carbon_kwargs is the one source.
+    dict_says_off_param_says_on = compute_metrics(
+        MIX, exotic, COSTS, predictor,
+        carbon_kwargs={"transport_km": 300.0, "transport_detail": False},
+        transport_detail=True,
+    )
+    off_explicit = compute_metrics(MIX, exotic, COSTS, predictor,
+                                   carbon_kwargs={"transport_km": 300.0},
+                                   transport_detail=False)
+    assert dict_says_off_param_says_on["carbon"] == pytest.approx(off_explicit["carbon"])
+
+
+def test_p1_recommend_recipe_carbon_matches_compute_metrics_for_returned_mix():
+    """`recommend_recipe`'s returned `"carbon"` must equal `compute_metrics`'s
+    carbon for the SAME returned mix under the SAME carbon_kwargs, with
+    transport_detail on and off -- the third leg of the coherence contract (the
+    NSGA leg lives in tests/test_nsga.py)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    for transport_detail in (False, True):
+        carbon_kwargs = {"transport_km": 200.0, "transport_detail": transport_detail}
+        rec = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS,
+                               carbon_kwargs=carbon_kwargs)
+        m = compute_metrics(rec["mix"], {}, COSTS, explorer.predictor,
+                            carbon_kwargs=carbon_kwargs)
+        assert rec["carbon"] == pytest.approx(m["carbon"]), transport_detail
+
+
+# --- R8.5 P2: robust carbon -- optimize the upper bound, symmetric with robust strength --
+#
+# R1's flagship move was optimizing the strength LOWER bound; carbon_term's
+# robust_carbon mirrors it on the carbon side by optimizing the UPPER bound
+# (materials.carbon_interval's +1.96*sigma, re-centered on the point total --
+# same convention _disclosure_metrics's carbon_interval_hi already established).
+
+def test_p2_carbon_term_point_mode_matches_carbon_for_mode():
+    """robust_carbon=False (the default) is exactly carbon_for_mode -- no new
+    arithmetic on the default path."""
+    d = mix_dict(MIX)
+    carbon_kwargs = {"transport_km": 150.0}
+    assert carbon_term(d, advanced=False, carbon_kwargs=carbon_kwargs) == (
+        carbon_for_mode(d, advanced=False, **carbon_kwargs)
+    )
+    assert carbon_term(d, advanced=False, carbon_kwargs=carbon_kwargs, robust_carbon=False) == (
+        carbon_for_mode(d, advanced=False, **carbon_kwargs)
+    )
+
+
+def test_p2_scalarized_fitness_robust_carbon_default_bit_identical(predictor):
+    """No caller touches `robust_carbon` (default False) -> identical to before
+    the flag existed."""
+    carbon_kwargs = {"transport_km": 200.0}
+    omitted = scalarized_fitness(MIX, COSTS, predictor, 1.0, 0.05, 0.5,
+                                 carbon_kwargs=carbon_kwargs)
+    explicit_false = scalarized_fitness(MIX, COSTS, predictor, 1.0, 0.05, 0.5,
+                                        carbon_kwargs=carbon_kwargs, robust_carbon=False)
+    assert omitted == explicit_false
+
+
+def test_p2_robust_carbon_zero_uncertainty_bit_identical(predictor, monkeypatch):
+    """Gate: with every registry uncertainty patched to zero, robust_carbon's
+    output is bit-identical to point mode (sigma == 0 collapses the upper bound
+    onto the point total exactly)."""
+    import src.ui_logic as ui_logic
+    monkeypatch.setattr(ui_logic, "factor_uncertainties_view", lambda: {})
+    carbon_kwargs = {"transport_km": 150.0}
+    point = scalarized_fitness(MIX, COSTS, predictor, 0.0, 1.0, 0.0,
+                               carbon_kwargs=carbon_kwargs, robust_carbon=False)
+    robust = scalarized_fitness(MIX, COSTS, predictor, 0.0, 1.0, 0.0,
+                                carbon_kwargs=carbon_kwargs, robust_carbon=True)
+    assert robust == point
+
+
+def test_p2_robust_carbon_prefers_better_characterized_composition():
+    """Gate: two mixes with EQUAL point carbon but different composition
+    uncertainty -- robust_carbon must rank the mix built from the LOWER-
+    relative-uncertainty material as cheaper, even though their plain point
+    carbon ties exactly. Uses the spec's own example: fly ash's factor is tiny
+    but +/-50% uncertain; slag's is larger but only +/-30%."""
+    from src.materials import carbon_factors_view, factor_uncertainties_view
+    factors = carbon_factors_view()
+    uncertainties = factor_uncertainties_view()
+    assert uncertainties["slag"] < uncertainties["ash"]  # 0.30 vs 0.50
+
+    # A shared baseline (cement/water/etc, from MIX); swap in slag vs ash masses
+    # chosen so each contributes IDENTICAL point carbon.
+    contribution = 20.0  # kg CO2/m3, arbitrary but shared
+    slag_qty = contribution / factors["slag"]
+    ash_qty = contribution / factors["ash"]
+    base = dict(zip(PARAM_NAMES, MIX))
+    mix_slag = mix_dict([{**base, "slag": slag_qty, "ash": 0.0}[p] for p in PARAM_NAMES])
+    mix_ash = mix_dict([{**base, "slag": 0.0, "ash": ash_qty}[p] for p in PARAM_NAMES])
+
+    point_slag = carbon_for_mode(mix_slag, advanced=False)
+    point_ash = carbon_for_mode(mix_ash, advanced=False)
+    assert point_slag == pytest.approx(point_ash)  # equal point carbon, by construction
+
+    robust_slag = carbon_term(mix_slag, advanced=False, robust_carbon=True)
+    robust_ash = carbon_term(mix_ash, advanced=False, robust_carbon=True)
+    assert robust_slag < robust_ash  # slag (better-characterized) wins under robust_carbon
+
+
+def test_p2_robust_carbon_monotone_in_tightened_uncertainty(monkeypatch):
+    """Gate: tightening ONE material's uncertainty (an EPD attaching a tighter
+    number, per the spec's 'attach an EPD, your guaranteed number improves'
+    framing) lowers that mix's robust_carbon objective MONOTONICALLY."""
+    import src.ui_logic as ui_logic
+    from src.materials import factor_uncertainties_view as real_view
+    base_unc = real_view()
+    d = mix_dict(MIX)  # MIX carries slag=100 -- a nonzero mass so tightening moves sigma
+
+    def patched(u):
+        merged = dict(base_unc)
+        merged["slag"] = u
+        return merged
+
+    values = []
+    for u in (0.30, 0.20, 0.10, 0.0):
+        monkeypatch.setattr(ui_logic, "factor_uncertainties_view", lambda u=u: patched(u))
+        values.append(carbon_term(d, advanced=False, robust_carbon=True))
+    assert all(values[i] > values[i + 1] for i in range(len(values) - 1)), values
+
+
+def test_p2_recommend_recipe_discloses_carbon_basis():
+    """Gate: the returned dict always carries `carbon_basis`, correctly set."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec_point = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS)
+    assert rec_point["carbon_basis"] == "point"
+    rec_explicit_point = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS,
+                                          robust_carbon=False)
+    assert rec_explicit_point["carbon_basis"] == "point"
+    rec_robust = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS, robust_carbon=True)
+    assert rec_robust["carbon_basis"] == "upper_95"
+
+
+def test_p2_recommend_recipe_robust_carbon_default_bit_identical():
+    """No caller touches `robust_carbon` -> identical mix chosen and identical
+    carbon reported (same GA seed)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    omitted = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS)
+    np.random.seed(0)
+    explorer2 = BayesFlowExplorer()
+    explicit_false = recommend_recipe(explorer2, 40.0, method="ga", costs=COSTS,
+                                      robust_carbon=False)
+    assert np.array_equal(omitted["mix"], explicit_false["mix"])
+    assert omitted["carbon"] == explicit_false["carbon"]
+
+
+# --- R8.5 P3: workability -- a slump target the model can honestly support --------
+#
+# Only active when the caller REQUESTS a slump target -- never ambient (spec's
+# opening line for P3). `recommend_recipe`'s honesty contract: never a confident
+# slump number for a target the search could not reach in slump support -- see
+# `properties.slump_estimate`'s own None-outside-support rule, which this layer
+# relies on rather than re-implementing.
+
+def test_p3_recommend_recipe_default_bit_identical():
+    """slump_target omitted vs explicit None -> identical mix AND no new keys
+    in the returned dict (additive-only, same discipline as robust_carbon)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    omitted = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS)
+    np.random.seed(0)
+    explorer2 = BayesFlowExplorer()
+    explicit_none = recommend_recipe(explorer2, 40.0, method="ga", costs=COSTS,
+                                     slump_target=None)
+    assert np.array_equal(omitted["mix"], explicit_none["mix"])
+    assert omitted["carbon"] == explicit_none["carbon"]
+    assert "found" not in omitted and "slump_cm" not in omitted
+    assert "found" not in explicit_none and "slump_cm" not in explicit_none
+
+
+def test_p3_recommend_recipe_reachable_slump_target_found_true_in_support():
+    """A reachable joint target (strength=45, slump=15, both well inside their
+    respective corpora) must be found, with basis 'model' and the SP-dosing
+    note attached -- and the disclosed slump number must be independently
+    reproducible via `properties.slump_estimate` on the SAME returned mix
+    (never a number invented separately from the honest per-mix gate)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS, slump_target=15.0)
+    assert rec["found"] is True
+    assert rec["slump_basis"] == "model"
+    assert rec["slump_in_support"] is True
+    assert rec["slump_cm"] is not None
+    assert rec["slump_note"] == SLUMP_SP_DOSING_NOTE
+    independent = slump_estimate(rec["params"])
+    assert rec["slump_cm"] == independent["slump_cm"]
+    assert rec["slump_lo"] == independent["lo"] and rec["slump_hi"] == independent["hi"]
+
+
+def test_p3_recommend_recipe_unreachable_joint_target_reports_found_false():
+    """An extreme strength target (80 MPa) pulls the search toward a low w/c
+    mix that drifts outside the (narrower) slump corpus's material envelope
+    even while remaining in the (wider) strength corpus's envelope -- the
+    R8.1 finding P3 is built on. The result must report `found: False` and
+    carry NO confident slump number (never `slump_note` either -- that
+    disclosure is conditional on `found`)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(1)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 80.0, method="ga", costs=COSTS, slump_target=15.0)
+    assert rec["found"] is False
+    assert rec["slump_cm"] is None
+    assert rec["slump_basis"] == "heuristic"
+    assert "slump_note" not in rec
+    assert rec["slump_reason"]  # a human-readable reason is always populated on this path
+
+
+def test_p3_recommend_recipe_auto_method_slump_disclosure_is_internally_consistent():
+    """The sampling backend ("auto"/"flow"/"amortized") must not crash with a
+    slump target, and whatever it returns must be internally honest: `found`
+    true implies an in-support model number, `found` false implies None --
+    never a confident number attached to an out-of-support pick. (The
+    fallback GA `sample_posterior` uses when no amortized weights are
+    installed does not itself know about slump -- bayesian.py is outside this
+    package's ownership -- so this backend is NOT asserted to succeed, only
+    to degrade honestly when it doesn't.)"""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 40.0, method="auto", costs=COSTS, slump_target=12.0)
+    assert "found" in rec
+    if rec["found"]:
+        assert rec["slump_cm"] is not None and rec["slump_basis"] == "model"
+        assert rec["slump_note"] == SLUMP_SP_DOSING_NOTE
+    else:
+        assert rec["slump_cm"] is None and rec["slump_basis"] == "heuristic"
+        assert "slump_note" not in rec
+
+
+# --- R8.5 P5: thermal -- post-hoc advisory only (no objective/constraint use) -----
+#
+# `adiabatic_temperature_rise` inherits the hydration layer's UNCALIBRATED
+# status (thermal.py's module docstring) -- a ΔT cap would be a cement cap
+# wearing false precision, so P5 is explicitly a DISCLOSURE-only addition,
+# unconditional (no flag), reusing the same figures `compute_metrics`'s own
+# WP-E disclosure already computes.
+
+def test_p5_recommend_recipe_discloses_thermal_advisory():
+    """Always present (no flag) and reproducible independently via
+    `thermal.adiabatic_temperature_rise`/`mass_pour_flag` on the SAME
+    returned mix/cement_type."""
+    from src.bayesian import BayesFlowExplorer
+    from src.thermal import adiabatic_temperature_rise, mass_pour_flag
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS)
+    expected_dt = adiabatic_temperature_rise(rec["params"], cement_type="OPC")
+    assert rec["delta_t_adiabatic_C"] == pytest.approx(expected_dt)
+    assert rec["mass_pour_flag"] == mass_pour_flag(expected_dt)
+
+
+def test_p5_recommend_recipe_thermal_respects_cement_type_from_carbon_kwargs():
+    """The advisory reads `cement_type` off `carbon_kwargs`, same as every
+    other carbon/thermal figure in this file -- ONE config surface."""
+    from src.bayesian import BayesFlowExplorer
+    from src.thermal import adiabatic_temperature_rise
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS,
+                           carbon_kwargs={"cement_type": "LC3"})
+    assert rec["delta_t_adiabatic_C"] == pytest.approx(
+        adiabatic_temperature_rise(rec["params"], cement_type="LC3")
+    )
+
+
+def test_p5_recommend_recipe_thermal_none_safe_on_lc3():
+    """No Bogue-valid record for LC3 -> None, never a raised exception or a
+    fabricated number."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS,
+                           carbon_kwargs={"cement_type": "LC3"})
+    assert rec["delta_t_adiabatic_C"] is None
+    assert rec["mass_pour_flag"] is None
+
+
+def test_p5_recommend_recipe_thermal_matches_compute_metrics_disclosure():
+    """The SAME figure a reader would see on the Compare tab for this exact
+    mix -- compute_metrics's own WP-E disclosure path, not a second,
+    potentially-diverging computation."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec = recommend_recipe(explorer, 45.0, method="ga", costs=COSTS)
+    m = compute_metrics(rec["mix"], {}, COSTS, explorer.predictor)
+    assert rec["delta_t_adiabatic_C"] == pytest.approx(m["delta_t_adiabatic_C"])
+    assert rec["mass_pour_flag"] == m["mass_pour_flag"]
+
+
 # --- D1/D2/D3/C1/C3 ticket rows -----------------------------------------------------
 
 def test_mix_ticket_carbon_interval_rows_bracket_total(predictor):
@@ -701,3 +1111,331 @@ def test_mix_ticket_disclosure_falls_back_for_metrics_missing_new_fields(predict
     assert any(line.startswith("carbon_kgCO2,interval_lo,") for line in lines)
     assert any(line.startswith("thermal,delta_t_adiabatic_C,") for line in lines)
     assert any(line.startswith("prediction,curing_maturity_days_uncalibrated,") for line in lines)
+
+
+# ===================================================================================
+# R8.1 WP-3 (Wave B): slump display -- compute_metrics + mix_ticket integration.
+# The two non-negotiable display rules (see docs/specs/R8.1's WP-1b section): show
+# the POINT ESTIMATE, state the interval width as a plain caveat, and NEVER render
+# it as a bound/guarantee. Out-of-support mixes show basis="heuristic", never a
+# bare model number.
+# ===================================================================================
+
+# A row drawn straight from the committed slump corpus (data/slump_test.data row
+# 10) -- genuinely IN-SUPPORT for the slump model, unlike MIX above (which is
+# in-support for STRENGTH but sits outside the slump corpus's envelope -- see
+# tests/test_properties.py::test_strength_in_support_slump_out_of_support, the
+# same per-property-gate finding R8.1 WP-1 exhibited).
+IN_SUPPORT_SLUMP_MIX = [145, 106, 136, 208, 10, 751, 883, 28]
+
+
+def test_mix_out_of_slump_support_is_in_strength_support(predictor):
+    """Exhibits the per-property-gate finding this integration relies on: the
+    everyday MIX used throughout this file is comfortably in-support for
+    STRENGTH but outside the slump model's OWN envelope (every slump-corpus row
+    used SP >= 4.4 kg/m3; MIX's SP=5 is fine on that axis, but the full 7-D kNN
+    distance still lands it outside -- see docs/specs/R8.1)."""
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    assert m["in_support"] is True          # strength: in-support
+    assert m["slump_basis"] == "heuristic"  # slump: NOT in-support -- its own gate
+
+
+def test_compute_metrics_slump_model_basis_when_in_support(predictor):
+    m = compute_metrics(IN_SUPPORT_SLUMP_MIX, _no_exotics(), COSTS, predictor)
+    assert m["slump_basis"] == "model"
+    assert m["slump_in_support"] is True
+    assert m["slump_cm"] is not None
+    # WP-1's coherence gate, reused at the integration layer: lo <= point <= hi.
+    assert m["slump_lo"] <= m["slump_cm"] <= m["slump_hi"]
+    assert m["slump_reason"] is None
+    # Cross-check against calling slump_estimate directly on the same mix.
+    direct = slump_estimate(mix_dict(IN_SUPPORT_SLUMP_MIX))
+    assert m["slump_cm"] == pytest.approx(direct["slump_cm"])
+
+
+def test_compute_metrics_slump_heuristic_basis_when_out_of_support(predictor):
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    assert m["slump_basis"] == "heuristic"
+    assert m["slump_in_support"] is False
+    # Never a confident model number outside the trained envelope.
+    assert m["slump_cm"] is None
+    assert m["slump_lo"] is None and m["slump_hi"] is None
+    assert m["slump_reason"] is not None
+
+
+def test_slump_caveat_never_phrases_the_interval_as_a_bound():
+    text = slump_caveat(10.0, 22.0)
+    assert "NOT a guaranteed bound" in text
+    assert "guarantee" not in text.lower().replace("not a guaranteed", "")
+    # Width and half-width are both stated plainly.
+    assert "12.0 cm" in text   # interval width (22 - 10)
+    assert "±6.0 cm" in text   # half-width, the "at 90%" figure
+    # The heuristic (no-interval) path states plainly that there is nothing to bound.
+    assert "No measured interval" in slump_caveat(None, None)
+
+
+def test_mix_ticket_slump_rows_model_basis(predictor):
+    d = mix_dict(IN_SUPPORT_SLUMP_MIX)
+    m = compute_metrics(IN_SUPPORT_SLUMP_MIX, _no_exotics(), COSTS, predictor)
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    cm_row = next(line for line in lines if line.startswith("prediction,slump_cm_model,"))
+    assert float(cm_row.split(",")[2]) == pytest.approx(m["slump_cm"], abs=0.05)
+    width_row = next(line for line in lines if line.startswith("prediction,slump_interval_width_cm,"))
+    assert float(width_row.split(",")[2]) == pytest.approx(m["slump_hi"] - m["slump_lo"], abs=0.05)
+    note_row = next(line for line in lines if line.startswith("note,slump_interval,"))
+    assert "NOT a guaranteed bound" in note_row
+    # Never rendered as an interval90-style bound row (that phrasing is reserved
+    # for the strength interval, which genuinely is conformalised as a bound).
+    assert not any("slump_interval90" in line for line in lines)
+
+
+def test_mix_ticket_slump_rows_heuristic_basis(predictor):
+    d = mix_dict(MIX)
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    cm_row = next(line for line in lines if line.startswith("prediction,slump_cm_heuristic,"))
+    assert "n/a" in cm_row
+    # No numeric model interval width row on the heuristic path.
+    assert not any(line.startswith("prediction,slump_interval_width_cm,") for line in lines)
+    note_row = next(line for line in lines if line.startswith("note,slump_interval,"))
+    assert "heuristic fallback" in note_row.lower()
+
+
+def test_mix_ticket_slump_fallback_for_metrics_missing_new_fields(predictor):
+    """A metrics dict predating this wave (e.g. recommend_recipe's own dict, which
+    carries no slump_* keys at all) must still get every slump row -- recomputed
+    fresh via slump_estimate(mix), same fallback shape as DISCLOSURE_KEYS."""
+    d = mix_dict(IN_SUPPORT_SLUMP_MIX)
+    m = compute_metrics(IN_SUPPORT_SLUMP_MIX, _no_exotics(), COSTS, predictor)
+    legacy_metrics = {k: v for k, v in m.items() if not k.startswith("slump_")}
+    csv = mix_ticket(d, legacy_metrics, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    assert any(line.startswith("prediction,slump_cm_model,") for line in lines)
+    assert any(line.startswith("prediction,slump_interval_width_cm,") for line in lines)
+    assert any(line.startswith("note,slump_interval,") for line in lines)
+
+
+# ===================================================================================
+# R8.2 WP-3 (Wave B): compliance integration -- compute_metrics + mix_ticket +
+# compliance_matrix (the cross-jurisdiction headline). Defaults must be INERT
+# (bit-identical to every pre-existing number); UNKNOWN must never upgrade to
+# PASS; the advisory row is mandatory whenever a verdict exists.
+# ===================================================================================
+
+# A small, fully-specified pack (every rule present on both classes) so a plain
+# PASS/FAIL is actually reachable -- unlike the shipped real packs, which (per
+# WP-2's own honest "omit rather than guess" discipline) omit max_scm_fraction
+# on EVERY class, so a real-pack verdict is always at least UNKNOWN. Mirrors
+# compliance.py's own `_fixture` pack in spirit (full-coverage + gap classes),
+# built inline here so this integration layer's tests do not depend on the
+# real packs' completeness (which is honestly out of WP-3's control).
+_TEST_PACK = {
+    "pack_id": "testpack", "name": "WP-3 integration test pack",
+    "jurisdiction": "N/A (src/ui_logic.py test fixture)",
+    "source": {"standard": "TEST-STD-1", "table": "T.1", "verified": False,
+              "verification_note": "Synthetic, not a real standard."},
+    "strength_basis": "conformal_lower_bound",
+    "classes": {
+        "T1": {"max_w_b": 0.50, "min_cement_kg_m3": 300, "min_strength_MPa": 30,
+              "min_air_pct": None, "max_scm_fraction": {"ash": 0.33, "slag": 0.80}},
+        "T2": {"max_w_b": 0.30, "min_cement_kg_m3": 500, "min_strength_MPa": 60,
+              "min_air_pct": None, "max_scm_fraction": {"ash": 0.33, "slag": 0.80}},
+        "GAP": {"max_w_b": 0.50},   # every other rule absent -> always UNKNOWN
+    },
+}
+
+
+@pytest.fixture()
+def test_pack_dir(tmp_path):
+    """Drop `_TEST_PACK` into a temp registry dir and point compliance.py at it
+    for the duration of one test -- the same `set_packs_path` pluggability WP-1
+    gates on ("a jurisdiction is a JSON drop-in, not a code change"). Restores the
+    default registry afterward so this file cannot poison other test modules."""
+    import json
+    (tmp_path / "testpack.json").write_text(json.dumps(_TEST_PACK))
+    set_packs_path(str(tmp_path))
+    try:
+        yield str(tmp_path)
+    finally:
+        set_packs_path(None)
+
+
+def test_compute_metrics_compliance_inert_by_default(predictor):
+    """The Wave B gate: no pack selected -> every pre-existing number/key is
+    bit-identical to calling compute_metrics with none of the new kwargs, and
+    the new `compliance` key is exactly None (not an empty dict, not omitted)."""
+    exotic = _no_exotics()
+    implicit = compute_metrics(MIX, exotic, COSTS, predictor)
+    explicit = compute_metrics(MIX, exotic, COSTS, predictor,
+                               exposure_pack=None, exposure_class=None, air_pct=None)
+    assert implicit["compliance"] is None
+    assert explicit["compliance"] is None
+    pre_existing_keys = [k for k in implicit if k not in
+                         ("compliance",) and not k.startswith("slump_")]
+    for k in pre_existing_keys:
+        assert implicit[k] == explicit[k], k
+
+
+def test_compute_metrics_compliance_unresolvable_ids_are_inert(predictor):
+    """An exposure_pack/exposure_class that does not resolve to a real pack/class
+    degrades to inert (None), never raises -- this is an advisory UI feature, not
+    a validated boundary (the CLI's --exposure flag is the validated boundary)."""
+    exotic = _no_exotics()
+    m1 = compute_metrics(MIX, exotic, COSTS, predictor, exposure_pack="does_not_exist",
+                         exposure_class="XC4")
+    assert m1["compliance"] is None
+    m2 = compute_metrics(MIX, exotic, COSTS, predictor, exposure_pack="en206",
+                         exposure_class="ZZ9")
+    assert m2["compliance"] is None
+    m3 = compute_metrics(MIX, exotic, COSTS, predictor, exposure_pack="en206",
+                         exposure_class=None)
+    assert m3["compliance"] is None
+
+
+def test_compute_metrics_compliance_pass_at_exact_limit(predictor, test_pack_dir):
+    """The Wave B gate: a mix exactly AT a limit PASSES (deemed-to-satisfy limits
+    are inclusive)."""
+    exotic = _no_exotics()
+    # w/b = 150/300 = 0.50 exactly (T1's max_w_b); cement=300 exactly (T1's
+    # min_cement_kg_m3); strength lower bound comfortably clears 30 MPa for a
+    # 300 kg/m3 OPC mix at this w/b.
+    mix = [300, 0, 0, 150, 5, 1000, 750, 28]
+    m = compute_metrics(mix, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T1")
+    c = m["compliance"]
+    assert c is not None
+    assert c["pack_id"] == "testpack" and c["class"] == "T1"
+    w_b_rule = next(r for r in c["rules"] if r["rule"] == "max_w_b")
+    assert w_b_rule["actual"] == pytest.approx(0.50)
+    assert w_b_rule["result"] == "PASS"
+    cement_rule = next(r for r in c["rules"] if r["rule"] == "min_cement_kg_m3")
+    assert cement_rule["actual"] == pytest.approx(300.0)
+    assert cement_rule["result"] == "PASS"
+    assert c["verdict"] == "PASS"
+
+
+def test_compute_metrics_compliance_fails_a_weak_mix(predictor, test_pack_dir):
+    exotic = _no_exotics()
+    weak_mix = [150, 0, 0, 180, 0, 1000, 750, 3]  # low cement, high w/b, age 3d
+    m = compute_metrics(weak_mix, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T2")
+    assert m["compliance"]["verdict"] == "FAIL"
+
+
+def test_compute_metrics_compliance_unknown_rule_never_upgrades_to_pass(predictor, test_pack_dir):
+    """T2's GAP-adjacent class 'GAP' only declares max_w_b -- every other rule is
+    ABSENT (not null), so the verdict must be UNKNOWN even for an otherwise-
+    excellent mix, never silently PASS."""
+    exotic = _no_exotics()
+    strong_mix = [500, 0, 0, 140, 10, 1000, 750, 90]
+    m = compute_metrics(strong_mix, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="GAP")
+    c = m["compliance"]
+    assert c["verdict"] == "UNKNOWN"
+    assert c["unknown_count"] >= 1
+
+
+def test_compute_metrics_compliance_uses_conformal_lower_bound_not_mean(predictor, test_pack_dir):
+    """R8.2's central design decision: strength is checked against interval_lo
+    (the conformal LOWER bound, already inclusive of any exotic delta), never the
+    point-estimate mean."""
+    exotic = _no_exotics()
+    m = compute_metrics(MIX, exotic, COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T1")
+    rule = next(r for r in m["compliance"]["rules"] if r["rule"] == "min_strength_MPa")
+    assert rule["actual"] == pytest.approx(m["interval_lo"])
+    assert rule["actual"] < m["strength"]   # the lower bound is strictly below the mean
+    assert "lower_bound" in rule["basis"]
+
+
+def test_mix_ticket_compliance_rows_absent_when_inert(predictor):
+    d = mix_dict(MIX)
+    m = compute_metrics(MIX, _no_exotics(), COSTS, predictor)
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    assert not any(line.startswith("compliance,") for line in csv.splitlines())
+
+
+def test_mix_ticket_compliance_rows_and_mandatory_advisory(predictor, test_pack_dir):
+    d = mix_dict([300, 0, 0, 150, 5, 1000, 750, 28])
+    m = compute_metrics([300, 0, 0, 150, 5, 1000, 750, 28], _no_exotics(), COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="T1")
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    verdict_row = next(line for line in lines if line.startswith("compliance,testpack.T1,"))
+    assert verdict_row.endswith(",PASS")
+    advisory_row = next(line for line in lines if line.startswith("compliance,advisory,"))
+    assert "TEST-STD-1" in advisory_row          # names the standard
+    assert "NOT a certification" in advisory_row
+
+
+def test_mix_ticket_compliance_unknown_rows_present_per_failing_rule(predictor, test_pack_dir):
+    d = mix_dict([500, 0, 0, 140, 10, 1000, 750, 90])
+    m = compute_metrics([500, 0, 0, 140, 10, 1000, 750, 90], _no_exotics(), COSTS, predictor,
+                        exposure_pack="testpack", exposure_class="GAP")
+    csv = mix_ticket(d, m, DEFAULT_CONFIG)
+    lines = csv.splitlines()
+    assert any(line.startswith("compliance,testpack.GAP,UNKNOWN") for line in lines)
+    # One row per UNKNOWN/FAIL rule -- min_cement_kg_m3, min_strength_MPa,
+    # min_air_pct, max_scm_fraction are all absent from GAP.
+    unknown_rule_rows = [line for line in lines if line.startswith("compliance,rule_")]
+    assert len(unknown_rule_rows) == 4
+    assert any("UNKNOWN" in line for line in unknown_rule_rows)
+
+
+def test_compliance_advisory_text_names_the_standard():
+    source = {"standard": "EN 206:2013+A2:2021", "verification_note": "check it"}
+    text = compliance_advisory_text(source)
+    assert "EN 206:2013+A2:2021" in text
+    assert "NOT a certification" in text
+    assert "check it" in text
+
+
+def test_compliance_matrix_shows_pass_and_fail_across_jurisdictions():
+    """The R8.2 WP-3 headline gate: the cross-jurisdiction table shows at least
+    one mix passing in one jurisdiction and failing/unknown in another, via
+    compliance_matrix (built on compliance.compare_jurisdictions)."""
+    mix = {"cement": 300, "slag": 0, "ash": 0, "water": 150, "superplasticizer": 5,
+          "coarse_agg": 1000, "fine_agg": 750}
+    packs = {"testpack": _TEST_PACK}
+    rows = compliance_matrix(mix, strength_lo=35.0, highlight_pack="testpack",
+                             highlight_class="T1", packs=packs)
+    verdicts = {r["class"]: r["verdict"] for r in rows}
+    assert verdicts["T1"] == "PASS"
+    # T1's row is here because highlight_pack/highlight_class asked for it; add a
+    # second, independent pack with a class this same mix FAILS to exhibit real
+    # cross-jurisdiction variation.
+    strict_pack = {
+        **_TEST_PACK, "pack_id": "strictpack",
+        "classes": {"S1": {"max_w_b": 0.30, "min_cement_kg_m3": 500,
+                          "min_strength_MPa": 60, "min_air_pct": None,
+                          "max_scm_fraction": {"ash": 0.33, "slag": 0.80}}},
+    }
+    packs2 = {"testpack": _TEST_PACK, "strictpack": strict_pack}
+    rows2 = compliance_matrix(mix, strength_lo=35.0, highlight_pack="testpack",
+                              highlight_class="T1", packs=packs2)
+    verdicts2 = {(r["pack_id"], r["class"]): r["verdict"] for r in rows2}
+    assert verdicts2[("testpack", "T1")] == "PASS"
+    assert verdicts2[("strictpack", "S1")] == "FAIL"
+
+
+def test_compliance_matrix_default_representative_class_per_pack():
+    """Without a highlight, each pack contributes the class that STATES the most
+    rules -- deterministic, and never a hardcoded jurisdiction list (built from
+    whatever `packs` names).
+
+    This deliberately replaces an earlier alphabetical rule. Alphabetical picked
+    ACI 318's real "C0" (concrete dry or protected from moisture -- the
+    not-exposed category, every rule null by construction), so the shipped table
+    paired EN 206's XA1, a genuine chemical-attack requirement, against a class
+    that imposes nothing to fail. It rendered as "en206: UNKNOWN / aci318: PASS"
+    and invited precisely the wrong reading. Here the same degenerate case is
+    "GAP" (every rule but one absent); the rule must not choose it."""
+    mix = {"cement": 300, "slag": 0, "ash": 0, "water": 150, "superplasticizer": 5,
+          "coarse_agg": 1000, "fine_agg": 750}
+    rows = compliance_matrix(mix, strength_lo=35.0, packs={"testpack": _TEST_PACK})
+    assert len(rows) == 1
+    assert rows[0]["class"] != "GAP", "must not represent a pack by a rule-less class"
+    assert rows[0]["class"] in ("T1", "T2")   # both state 4 rules; ties break alphabetically
+    assert rows[0]["class"] == "T1"

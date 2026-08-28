@@ -70,6 +70,8 @@ span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at clo
 | R7.4 | ~1–1.5 d (a+b+c combined) | **~0.4 d** | R7.4a (session restore) was the largest item but followed the established keyed-widget pattern exactly; the one real find was the `"config"`/`"ui_config"` naming collision with the CLI, caught before it shipped. R7.4b's only deviation from the spec text was where the PARAM_NAMES ordering lives (ui/state.py, not materials.py — avoids a circular import). R7.4c was a five-minute measurement (13.4 MiB) confirming the "stay on plain git" default |
 
 | R8.0 | ~2–2.5 d serial / ~1 d parallel (Wave A) + ~0.5 d Wave B | **~0.4 d wall total** (Wave A ~0.3 d + WP-E ~25 min agent time) | Five concurrent sonnet packages under the v2 process: four ran clean start-to-finish (~5–8 min, ~70–106k tokens each, zero stalls); WP-A stalled twice on background-and-wait and was killed by a session usage limit before reporting — its commit was recoverable and the orchestrator verified its gates independently. WP-C caught a real spec error (the ΔT band was derived from 28-day heat, not full-hydration heat) and corrected the band with the derivation instead of tuning — the report-deviations clause working as designed. Headline: LC3 cement term landed at 0.544 kg/kg inside the published 0.50–0.65 EPD band with no coefficient fit to it. Wave B (WP-E) pending |
+| R8.1 + R8.2 | ~1.5 d serial / ~0.9 d parallel | **~0.5 d wall** | Six packages across two specs, run concurrently where files were disjoint. Two agents stalled on background-and-wait and were harvested by the orchestrator (the F3 failure mode again — the v2 test policy is stated in every prompt and still not always followed; consider making it the FIRST line rather than a section). Two genuine spec defects surfaced: R8.2's "packs must differ" gate rewarded fabricating a limit, and the cross-jurisdiction representative-class rule defaulted to ACI's null-exposure C0, making an uninformative comparison look meaningful. Both were caught at integration by reading what the user would see, not by the tests — worth remembering that green suites did not catch either |
+| R8.5 | ~1 d serial (deliberately near-serial) | **~0.35 d wall** | Two sequential packages, +119 tests. The spec's audit found one coherence defect; implementation found two MORE adjacent ones (a kwarg collision that would have fired on the fix, and a stale inverse-tab cache key serving pre-toggle recipes) — three holes in the same guarantee, each caught at a different layer. One F3 stall despite the policy being the prompt's first line; recovered by nudge, agent then finished clean in-foreground |
 | R7.5 | ~1.25 d serial / ~0.7 d parallel | **~0.7 d** (≈0.4 d implementation + ≈0.3 d failure recovery) | Four-agent fan-out; wall clock hit the parallel estimate but for the wrong reason — logistics failures (see `../DELEGATION_WORKFLOW.md`) ate what parallelism saved. WP-5, run solo under the v2 process, took ~6 min of agent time with zero stalls |
 
 **Reading the log so far:** the block estimates (R1–R6) were accurate at block
@@ -220,23 +222,56 @@ The theme: real specifications are written in exposure classes, workability targ
 and (increasingly) carbon ceilings — not bare 28-day strength. Meet them there.
 This is where the business analysis (`../BUSINESS_REPORT.md` §6) becomes product.
 
-**R8.1 Workability from data** — train a slump model on the UCI slump corpus
-(already listed in `data_fetcher.AVAILABLE_DATASETS`; 103 rows — small, so conformal
-intervals matter more, not less), replacing the w/b heuristic where data exists and
-labeling the heuristic fallback. *Value:* second measured property; proves the
-multi-property pattern (per-property model + interval + support gate) end to end.
-*Gates:* slump coverage test; heuristic/model provenance shown; multi-property
-metrics dict versioned.
+**R8.1 Workability from data** — ✅ **Shipped** (2026-08-22) — full spec:
+[`R8.1-workability-from-data.md`](R8.1-workability-from-data.md)
+- **What shipped:** the reusable `PropertyModel` abstraction (point estimate +
+  conformal interval + its OWN support gate) and a slump model on the now-committed
+  103-row corpus, with `slump_estimate` degrading to the w/b heuristic (labelled
+  `basis="heuristic"`) outside the envelope rather than emitting a confident number.
+- **The per-property gate justified itself concretely:** every slump row used
+  superplasticizer ≥ 4.4 kg/m³ while the strength corpus spans 0–32.2, so an ordinary
+  SP-free mix is unremarkable for strength and entirely outside the slump envelope —
+  exactly the over-claim a shared gate would have hidden.
+- **The honest headline is a limitation, not a win:** measured coverage 0.952, but the
+  interval spans **83% of the physical range** (a worked mix: 22.4 cm, bounds 3.5–27.5
+  on a 0–29 cm scale). CV+ / Jackknife+ was then implemented specifically to test the
+  "we just need better calibration" hypothesis and **it came out marginally worse**
+  (24.91 cm, over-covering at 1.000, 11× the artifact) — so split-conformal stays the
+  default and the negative result is pinned by a test. The 103-row corpus is the
+  binding constraint; more data is the fix. The UI therefore shows the **point
+  estimate with its width as a caveat and never as a bound**.
+- **Data note:** the corpus is committed with provenance — the canonical UCI host is
+  unreachable from the dev environment, so it was mirror-sourced and *validated*
+  (checksum, row count, schema, physical ranges) rather than trusted.
 
-**R8.2 Exposure-class compliance layer** — encode deemed-to-satisfy tables
-(EN 206 annex rows, BS 8500, one DOT set) as *data packs*: exposure class →
-max w/b, min binder, SCM caps per jurisdiction. Designs report pass/fail per
-jurisdiction; the optimizer accepts "XC4-compliant, ≤ 180 kg CO₂/m³" as constraints.
-*Value:* the tool outputs something an engineer can defend to a checker and a buyer
-can put in a tender — the performance-spec-with-carbon-axis instrument §6 calls for.
-Also makes the national-variation cost visible: the same mix's compliance across
-jurisdictions in one table. *Gates:* golden tests against published table rows;
-packs are JSON, adding a jurisdiction is a data edit.
+**R8.2 Exposure-class compliance layer** — ✅ **Shipped** (2026-08-22) — full spec:
+[`R8.2-exposure-compliance.md`](R8.2-exposure-compliance.md)
+- **What shipped:** a compliance engine emitting `PASS`/`FAIL`/**`UNKNOWN`** per rule
+  (never a bare boolean, and `UNKNOWN` never upgrades to `PASS`), two sourced
+  jurisdiction packs (EN 206, ACI 318-19), UI/ticket/CLI disclosure with a mandatory
+  advisory line, and an optional optimizer compliance constraint expressed through the
+  existing penalty/constraint machinery.
+- **Strength is checked against the conformal LOWER bound**, not the point estimate —
+  you do not certify on a mean. R7.1's coherent distribution applied to specification.
+- **Three honest limitations, all deliberate and all recorded:**
+  1. *No UK/BS 8500 pack.* The one authored was EN 206's values plus a single invented
+     XD3 limit — produced because the spec's own gate ("must differ from EN 206")
+     rewarded manufacturing a difference. Value and pack removed; gate inverted to
+     `test_no_pack_is_a_copy_of_another`. Adding BS 8500 properly needs a schema
+     extension (its table is keyed by class *and* cement designation), not data entry.
+  2. *The cross-jurisdiction table is weaker than specced.* With only EN 206 and ACI 318
+     shipping, and no shared taxonomy between them, differing verdicts reflect a
+     difference in **what was checked**, not a regulatory difference — the UI says so
+     explicitly. The "same class, different limits" comparison the spec envisioned needs
+     a second pack in the EN family.
+  3. *Neither real pack can currently reach a true `PASS`.* Both honestly omit
+     `max_scm_fraction` (unsourceable), an omitted rule is `UNKNOWN`, and the optimizer
+     counts `UNKNOWN` as violated — deliberately, since minimising carbon means
+     maximising SCM and the missing rule is exactly the SCM cap. The fix is sourcing
+     those rules, not loosening the semantics.
+- **Gates (met):** boundary-inclusive limits; advisory row on every verdict-carrying
+  ticket; `UNKNOWN` rendered distinctly from `PASS`; a pack is a JSON drop-in; the
+  optimizer's default path proven bit-identical in-process.
 
 **R8.3 Carbon intervals** — *absorbed into R8.0 (WP-D/WP-E); kept here for the record* — propagate the registry's per-factor `uncertainty`
 fields to an interval on total carbon (analytic linear propagation; Monte Carlo for
@@ -248,7 +283,36 @@ visibly tighten the interval.
 **R8.4 Dataset importers + regional packs** — schema-mapped importers for further
 corpora (the CLAUDE.md ask beyond the overlay CSV), plus regional grid/factor packs.
 *Value:* the "1998 Taiwan" caveat starts shrinking; the registry's `region` field
-does real work.
+does real work. **Priority raised by R8.1's finding:** the slump interval's
+near-vacuous width is a data problem, not a method problem (CV+ was tried and lost),
+so importers are now the only route to an informative workability interval.
+
+**R8.5 Optimizers meet the R8 capabilities** — ✅ **Shipped** (2026-08-28):
+[`R8.5-optimizer-capability-integration.md`](R8.5-optimizer-capability-integration.md)
+- **The organizing principles:** *you optimize what the ticket reports* (one objective
+  path == one metrics path), and *the optimizer is the adversary of every model gap* —
+  a capability enters the objective/constraint set only where its number can bear
+  optimization pressure (support gates, conservative bounds, exact quantities), and is
+  a post-hoc advisory everywhere else.
+- **P1 is a live defect found by this spec's audit:** `ctx.carbon_kwargs` never carries
+  `transport_detail`, so with the per-material transport toggle ON the optimizer
+  minimizes a different carbon than the ticket reports — the "ONE carbon path"
+  guarantee, violated. Fixed first; a parametrized coherence test becomes the durable
+  contract.
+- **P2 robust carbon:** optimize the +1.96σ carbon bound (D3's interval), the exact
+  mirror of R1's robust strength. The incentive is the feature: uncertainty-weighted
+  carbon prefers well-characterized materials, and an EPD that tightens a factor's
+  uncertainty genuinely lowers the guaranteed number.
+- **P3 workability:** slump-*support* as the constraint, point-estimate target as a
+  soft penalty; robust slump considered and rejected with numbers (the interval spans
+  83% of the physical range — it cannot bear pressure).
+- **P4 compliance UX:** wire WP-3b's existing machinery into the tabs, with the honest
+  ceiling stated (strict mode against the shipped packs correctly reports
+  `found: False` until their omitted rules are sourced).
+- **P5 thermal:** advisory only — a ΔT cap is a cement cap wearing false precision;
+  users wanting mass-pour safety today get a direct cement-content cap.
+- Deliberately near-serial (two packages), because every phase converges on the same
+  three optimizer files.
 
 ### Horizon 3 — R9/R10: The shared information layer (quarter+)
 

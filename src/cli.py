@@ -30,6 +30,7 @@ from .chemistry_simple import UNIT_COSTS, CARBON_FACTORS
 from .chemistry_advanced import FUEL_EF, GRID_EF
 from .exotics import EXOTIC_ADMIXTURES
 from .materials import validate_epd_json, carbon_provenance
+from .compliance import load_packs
 
 DEFAULT_RUN_CONFIG = {"advanced": False, "transport_km": 0.0, "cement_type": "OPC",
                       "robust": True, "age": None, "clinker_source": None,
@@ -77,6 +78,19 @@ def validate_clinker_source(src) -> str | None:
     return None
 
 
+def validate_slump_target(value) -> str | None:
+    """Return None if a `--slump-target` value is usable, else an error message
+    naming the bounds -- `validate_waste_factor`'s style. (0, 29]: 0 is excluded
+    (not a workability target, and the corpus's own physical floor is > 0);
+    29 cm is properties.py's own corpus ceiling (a value at or above it is
+    outside the 0-29 cm range the slump model was ever trained on)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return f"slump target must be numeric; got {value!r}."
+    if not (0.0 < value <= 29.0):
+        return f"slump target must be numeric in (0, 29] cm; got {value!r}."
+    return None
+
+
 def validate_waste_factor(value) -> str | None:
     """Return None if a `waste_factor` value is usable, else an error message.
 
@@ -87,6 +101,39 @@ def validate_waste_factor(value) -> str | None:
         return f"waste_factor must be numeric; got {value!r}."
     if not (0.0 <= value < 0.5):
         return f"waste_factor must be numeric in [0, 0.5); got {value!r}."
+    return None
+
+
+def parse_exposure_arg(value: str) -> tuple[str, str]:
+    """Split a '--exposure <pack>:<class>' string into (pack_id, class_id).
+
+    Boundary syntax validation only (R8.2 WP-3) -- whether the ids actually name
+    a real pack/class is `validate_exposure`'s job below, mirroring
+    `validate_clinker_source`'s two-step shape (parse the shape, then check the
+    values against the live registry)."""
+    if ":" not in value or value.count(":") != 1:
+        raise CliError(f"--exposure must be '<pack>:<class>' (exactly one ':'); got '{value}'.")
+    pack_id, cls = value.split(":", 1)
+    if not pack_id or not cls:
+        raise CliError(f"--exposure must be '<pack>:<class>'; got '{value}'.")
+    return pack_id, cls
+
+
+def validate_exposure(pack_id: str, cls: str) -> str | None:
+    """Return None if `pack_id`/`cls` resolve to a real pack/class, else an error
+    message naming the valid ids -- `validate_clinker_source`'s style, and the
+    same reason: an unknown id must become a clean CliError at the boundary, not
+    an uncaught KeyError from `check_compliance` deep inside `compute_metrics`.
+    Never a hardcoded jurisdiction list -- `load_packs()` is the live registry
+    (R8.2's honesty contract: a pack is a JSON drop-in, not a code change)."""
+    packs = load_packs()
+    if pack_id not in packs:
+        return (f"Unknown exposure pack '{pack_id}'. Valid packs: "
+                f"{', '.join(sorted(packs)) or '(none available)'}.")
+    classes = packs[pack_id].get("classes", {})
+    if cls not in classes:
+        return (f"Unknown exposure class '{cls}' in pack '{pack_id}'. Valid "
+                f"classes: {', '.join(sorted(classes))}.")
     return None
 
 
@@ -192,11 +239,37 @@ def _jsonable(obj):
     return obj
 
 
-def _write_ticket(path: str, mix_dict_named: dict, metrics: dict, cfg: dict, exotic: dict = None):
+def _write_ticket(path: str, mix_dict_named: dict, metrics: dict, cfg: dict, exotic: dict = None,
+                  extra_lines: list = None):
     from .ui_logic import mix_ticket
+    csv = mix_ticket(mix_dict_named, metrics, _ticket_config(cfg), exotic=exotic)
+    # `extra_lines` (R8.5 P4): mix_ticket (frozen) has no row for the strict/
+    # allow-unknown compliance mode -- appended here, in the same
+    # "section,key,value" shape as its own `config,*` rows, never reordering
+    # anything mix_ticket already wrote.
+    if extra_lines:
+        csv += "\n" + "\n".join(extra_lines)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(mix_ticket(mix_dict_named, metrics, _ticket_config(cfg), exotic=exotic))
+        f.write(csv)
     print(f"Ticket written to {path}", file=sys.stderr)
+
+
+def _pick_compliant(checked, allow_unknown: bool):
+    """R8.5 P4: apply OUR OWN strict-vs-allow-UNKNOWN acceptance criterion over
+    `design_compliant()`'s `"checked"` list (every ranked candidate, best-first,
+    with its real `check_compliance()` verdict). Strict: first verdict ==
+    "PASS". Allow-unknown: first verdict in {"PASS", "UNKNOWN"} -- "UNKNOWN"
+    already means zero FAILing rules (check_compliance's own aggregation: any
+    FAIL wins over UNKNOWN), so this is exactly "every EVALUABLE rule passes,
+    some rules just aren't sourced by the pack." Mirrors ui/inverse.py's
+    identical helper (duplicated, not imported, so this module never pulls in
+    Streamlit -- see test_cli_never_imports_streamlit)."""
+    for mix, result in checked:
+        if result["verdict"] == "PASS":
+            return mix, result
+        if allow_unknown and result["verdict"] == "UNKNOWN":
+            return mix, result
+    return None, None
 
 
 def cmd_predict(args) -> int:
@@ -204,12 +277,19 @@ def cmd_predict(args) -> int:
     from .ui_logic import compute_metrics
     cfg = load_project_config(args.config, epd_path=args.epd)
     mix, exotic = load_mix(args.mix)
+    exposure_pack = exposure_class = None
+    if args.exposure:
+        exposure_pack, exposure_class = parse_exposure_arg(args.exposure)
+        err = validate_exposure(exposure_pack, exposure_class)
+        if err:
+            raise CliError(err)
     predictor = StrengthPredictor()
     metrics = compute_metrics(mix, exotic, cfg["costs"], predictor,
                               advanced=bool(cfg["run"]["advanced"]),
                               exotic_strength=False,
                               carbon_kwargs=_carbon_kwargs(cfg),
-                              waste_factor=float(cfg["run"]["waste_factor"]))
+                              waste_factor=float(cfg["run"]["waste_factor"]),
+                              exposure_pack=exposure_pack, exposure_class=exposure_class)
     out = {"mix": dict(zip(PARAM_NAMES, mix)), **metrics}
     print(json.dumps(_jsonable(out), indent=2))
     if args.ticket:
@@ -219,17 +299,102 @@ def cmd_predict(args) -> int:
 
 def cmd_design(args) -> int:
     from .bayesian import BayesFlowExplorer
-    from .ui_logic import recommend_recipe
+    from .ui_logic import recommend_recipe, compute_metrics, carbon_term
+    from .generative_ga import SLUMP_SP_DOSING_NOTE
+
     cfg = load_project_config(args.config, epd_path=args.epd)
     age = cfg["run"]["age"] if args.age is None else args.age
+    age = float(age) if age is not None else None
+
+    slump_target = None
+    if args.slump_target is not None:
+        err = validate_slump_target(args.slump_target)
+        if err:
+            raise CliError(err)
+        slump_target = float(args.slump_target)
+
+    exposure_pack = exposure_class = None
+    if args.exposure:
+        exposure_pack, exposure_class = parse_exposure_arg(args.exposure)
+        err = validate_exposure(exposure_pack, exposure_class)
+        if err:
+            raise CliError(err)
+
     explorer = BayesFlowExplorer()
+
+    if exposure_pack is not None:
+        # R8.5 P4: `recommend_recipe` (frozen, WP-1) has no `compliance` kwarg.
+        # Go straight to `design_compliant()` on the metaheuristic designer (the
+        # engine's own honest-verification wrapper), same approach as
+        # ui/inverse.py -- GA/ACO only (`--backend flow`/`auto` have no
+        # compliance-aware search; fall back to GA, same graceful downgrade the
+        # UI performs, disclosed on stderr not silently).
+        compliant_backend = "aco" if args.backend == "aco" else "ga"
+        if args.backend not in ("ga", "aco"):
+            print(f"Note: --exposure requires the GA/ACO backend; using "
+                 f"'{compliant_backend}' instead of '{args.backend}'.", file=sys.stderr)
+        designer = explorer.aco_designer if compliant_backend == "aco" else explorer.designer
+        result = designer.design_compliant(
+            float(args.target), compliance=(exposure_pack, exposure_class),
+            robust=bool(cfg["run"]["robust"]), age=age, slump_target=slump_target,
+        )
+        mix_d, _check = _pick_compliant(result["checked"], args.allow_unknown)
+        compliance_mode = "allow_unknown" if args.allow_unknown else "strict"
+        if mix_d is None:
+            out = {
+                "found": False, "mix": None, "params": None,
+                "pack_id": exposure_pack, "class": exposure_class,
+                "compliance_mode": compliance_mode,
+            }
+            print(json.dumps(_jsonable(out), indent=2))
+            if args.ticket:
+                print(f"No ticket written: no design {'whose evaluable rules all pass' if args.allow_unknown else 'that verifies PASS'} "
+                     f"against {exposure_pack}:{exposure_class} was found.", file=sys.stderr)
+            return 0
+        mix_arr = np.array([mix_d[p] for p in PARAM_NAMES])
+        m = compute_metrics(mix_arr, {}, cfg["costs"], explorer.predictor,
+                            advanced=bool(cfg["run"]["advanced"]),
+                            carbon_kwargs=_carbon_kwargs(cfg),
+                            exposure_pack=exposure_pack, exposure_class=exposure_class)
+        carbon_disp = carbon_term(mix_d, bool(cfg["run"]["advanced"]), _carbon_kwargs(cfg),
+                                  robust_carbon=args.robust_carbon)
+        rec = {
+            "mix": mix_arr, "params": mix_d, "strength": m["strength"],
+            "interval_lo": m["interval_lo"], "interval_hi": m["interval_hi"],
+            "novelty": m["novelty"], "in_support": m["in_support"],
+            "workability": m["workability"], "tensile": m["tensile"], "curing": m["curing"],
+            "carbon": carbon_disp, "carbon_basis": "upper_95" if args.robust_carbon else "point",
+            "cost": m["cost"], "delta_t_adiabatic_C": m["delta_t_adiabatic_C"],
+            "mass_pour_flag": m["mass_pour_flag"], "compliance": m["compliance"],
+            "compliance_mode": compliance_mode,
+        }
+        if slump_target is not None:
+            rec["slump_target"] = slump_target
+            rec["slump_cm"] = m["slump_cm"]
+            rec["slump_lo"] = m["slump_lo"]
+            rec["slump_hi"] = m["slump_hi"]
+            rec["slump_basis"] = m["slump_basis"]
+            rec["slump_in_support"] = m["slump_in_support"]
+            rec["slump_reason"] = m["slump_reason"]
+            rec["found"] = bool(m["slump_in_support"])
+            if rec["found"]:
+                rec["slump_note"] = SLUMP_SP_DOSING_NOTE
+        out = {k: v for k, v in rec.items() if k != "mix"}
+        print(json.dumps(_jsonable(out), indent=2))
+        if args.ticket:
+            _write_ticket(args.ticket, rec["params"], rec, cfg,
+                          extra_lines=[f"config,compliance_mode,{compliance_mode}"])
+        return 0
+
     try:
         rec = recommend_recipe(
             explorer, float(args.target), method=args.backend,
             advanced=bool(cfg["run"]["advanced"]), costs=cfg["costs"],
             carbon_kwargs=_carbon_kwargs(cfg),
             robust=bool(cfg["run"]["robust"]),
-            age=float(age) if age is not None else None,
+            age=age,
+            robust_carbon=args.robust_carbon,
+            slump_target=slump_target,
         )
     except RuntimeError as e:   # e.g. --backend flow with no trained weights
         print(f"Error: {e}", file=sys.stderr)
@@ -285,6 +450,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mix", required=True, help="Mix JSON (named params or 8-vector).")
     p.add_argument("--config", default=None, help="Project config JSON (session-export schema).")
     p.add_argument("--epd", default=None, help='Supplier EPD JSON ({"epds": {"cement": {"value": ...}}}).')
+    p.add_argument("--exposure", default=None,
+                   help="Exposure class to check, '<pack>:<class>' (e.g. 'en206:XC4'). "
+                        "Advisory only, never a certification -- see docs/specs/R8.2.")
     p.add_argument("--ticket", default=None, help="Also write a mix-ticket CSV here.")
     p.set_defaults(fn=cmd_predict)
 
@@ -295,6 +463,23 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--config", default=None)
     d.add_argument("--epd", default=None, help="Supplier EPD JSON (see predict --epd).")
     d.add_argument("--ticket", default=None)
+    d.add_argument("--robust-carbon", action="store_true",
+                   help="R8.5 P2: report the +1.96σ upper bound of carbon instead of the "
+                        "point total -- a disclosure/selection-figure swap, symmetric with "
+                        "robust strength. Default off (point total).")
+    d.add_argument("--slump-target", type=float, default=None, metavar="CM",
+                   help="R8.5 P3: bias the search toward this slump target (cm), honestly "
+                        "gated by the slump model's OWN support envelope. Numeric in (0, 29]. "
+                        "Default: no target (ambient).")
+    d.add_argument("--exposure", default=None,
+                   help="R8.5 P4: require compliance with this exposure class, "
+                        "'<pack>:<class>' (e.g. 'en206:XC4') -- verified with the real "
+                        "check_compliance() engine, GA/ACO backend only. Advisory only, "
+                        "never a certification -- see docs/specs/R8.2.")
+    d.add_argument("--allow-unknown", action="store_true",
+                   help="With --exposure: accept a design whose EVALUABLE rules all PASS "
+                        "even when some rules are UNKNOWN (unsourced by the pack). Default: "
+                        "strict -- UNKNOWN counts as a violation.")
     d.set_defaults(fn=cmd_design)
 
     n = sub.add_parser("pareto", help="Map the strength/carbon/cost Pareto front (NSGA).")

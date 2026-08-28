@@ -11,7 +11,9 @@ import streamlit as st
 from src.exotics import EXOTIC_STRENGTH_DISCLAIMER
 from src.materials import validate_epd_json, carbon_provenance
 from src.chemistry_advanced import FUEL_EF, GRID_EF, clinker_scope_split
+from src.compliance import load_packs
 from ui.context import AppContext
+from ui.state import EXPOSURE_NONE
 
 
 def render_config(predictor, bayesian, presets) -> AppContext:
@@ -156,11 +158,24 @@ def render_config(predictor, bayesian, presets) -> AppContext:
                 )
 
         # One carbon config threaded to every carbon computation across the tabs.
+        #
+        # R8.5 P1 (coherence repair): `transport_detail` MUST be here, not only in
+        # `ticket_config` below -- this dict (`ctx.carbon_kwargs`) is what
+        # `recommend_recipe`, `scalarized_fitness`, and `run_nsga` consume, so
+        # omitting it here meant the optimizer always minimized the global-km
+        # transport path even with the per-material toggle ON, while the ticket
+        # (compute_metrics, fed from `ticket_config`) showed per-material
+        # transport -- a real ranking divergence (SCM substitution economics
+        # differ between the two paths), not just a display mismatch. See
+        # docs/specs/R8.5-optimizer-capability-integration.md §P1 and
+        # `ui_logic.compute_metrics`'s R8.5 P1 note (the collision guard that
+        # makes this dict safe to carry the key).
         carbon_kwargs = {
             "transport_km": float(transport_km),
             "cement_type": cement_type,
             "factors": st.session_state.carbon_factors,
             "clinker_source": clinker_source,
+            "transport_detail": bool(transport_detail),
         }
 
         # R8.0 WP-A A2: batched material isn't all placed. Applied at the metrics/
@@ -228,14 +243,58 @@ def render_config(predictor, bayesian, presets) -> AppContext:
         if exotic_strength_enabled:
             st.warning(EXOTIC_STRENGTH_DISCLAIMER)
 
+        st.divider()
+        st.subheader("Exposure compliance (advisory)")
+        st.caption(
+            "Check this mix against a jurisdiction's exposure-class deemed-to-"
+            "satisfy limits (water/binder, minimum cement, minimum strength "
+            "class, SCM fraction). ADVISORY ONLY — indicative values from "
+            "unverified secondary sources (see each pack's own disclosure "
+            "below), never a substitute for checking the published standard. "
+            f"Leave both selectors at \"{EXPOSURE_NONE}\" to leave this feature off."
+        )
+        # Options built from load_packs() ONLY -- never a hardcoded jurisdiction
+        # list (R8.2's honesty contract: a pack is a JSON drop-in). load_packs()
+        # already excludes the `_fixture` test pack from this listing.
+        exposure_packs = load_packs()
+        exposure_pack_choice = st.selectbox(
+            "Exposure pack (jurisdiction)",
+            [EXPOSURE_NONE] + sorted(exposure_packs),
+            key="cfg_exposure_pack",
+            help="Selecting a pack here does not certify anything by itself -- "
+                 "pick a class below to run the check.",
+        )
+        exposure_class_choice = EXPOSURE_NONE
+        if exposure_pack_choice != EXPOSURE_NONE:
+            pack = exposure_packs[exposure_pack_choice]
+            class_options = [EXPOSURE_NONE] + sorted(pack["classes"])
+            # Guard: a class id left over from a DIFFERENTLY-chosen pack (still in
+            # session state from before the user switched packs) is not a member
+            # of THIS pack's classes -- reset to "none" before the widget below
+            # instantiates, rather than letting Streamlit raise on a stale value
+            # that is not among this run's options.
+            if st.session_state.get("cfg_exposure_class") not in class_options:
+                st.session_state["cfg_exposure_class"] = EXPOSURE_NONE
+            exposure_class_choice = st.selectbox(
+                "Exposure class", class_options, key="cfg_exposure_class",
+            )
+            if exposure_class_choice != EXPOSURE_NONE:
+                st.caption(
+                    f"Advisory only — NOT a certification. Check against "
+                    f"{pack['source'].get('standard', '?')} before any structural "
+                    f"use. {pack['source'].get('verification_note', '')}"
+                )
+
     ticket_config = {
         **carbon_kwargs, "advanced": use_advanced_chemistry, "costs": st.session_state.costs,
         "robust": robust_mode, "waste_factor": float(waste_factor),
-        # R8.0 WP-E Decisions 1 & 2: UI-session concerns only (the CLI's run
-        # config deliberately gains neither key — see src/cli.py), so they ride
-        # only on the app's own ticket_config, not carbon_kwargs (carbon_kwargs
-        # feeds every carbon call site, including the optimizers, which must keep
-        # targeting today's batched figures unchanged).
+        # R8.0 WP-E Decision 1 (site_temp_c): a UI-session concern only (the CLI's
+        # run config deliberately gains no such key — see src/cli.py), so it rides
+        # only on the app's own ticket_config, not carbon_kwargs. `transport_detail`
+        # below used to get the same treatment, but R8.5 P1 moved it INTO
+        # carbon_kwargs above (the optimizers need it too) -- the spread already
+        # carries it here, so this explicit entry is now a harmless redundant
+        # override with the identical value, kept for readability at the call site.
         "transport_detail": bool(transport_detail),
         "site_temp_c": float(site_temp_c),
         "carbon_provenance": carbon_provenance(st.session_state.carbon_factors,
