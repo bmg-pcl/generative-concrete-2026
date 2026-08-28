@@ -25,6 +25,15 @@ and the front is always checked against the conformal LOWER bound of strength
 (R8.2's core design decision), independent of `robust`. See
 `generative_ga`'s module docstring for the UNKNOWN-handling decision this
 constraint inherits (UNKNOWN counts as a violation).
+
+R8.5 P1 (coherence contract, kept forever): `MixDesignProblem._evaluate`'s carbon
+objective column is `carbon_for_mode(mix_dict(x), advanced, **carbon_kwargs)` for
+every candidate -- the SAME call `ui_logic.compute_metrics`/`scalarized_fitness`
+make -- so the front's carbon column is always the number the ticket would show
+for that mix under the identical config, `transport_detail` included whenever
+`carbon_kwargs` carries it (`self.carbon_kwargs` is forwarded unmodified via
+`**`, never filtered to a subset of keys). See tests/test_nsga.py's parametrized
+`test_p1_coherence_*` tests, this spec's durable artifact.
 """
 from typing import Dict, List, Optional, Tuple
 

@@ -354,7 +354,9 @@ def compute_metrics(
 
     `transport_detail` (R8.0 WP-E Decision 2, default False -- bit-identical) swaps
     `carbon`'s single global-km transport term for the per-material-registry-plus-
-    partial-global-km split (see `carbon_for_mode`).
+    partial-global-km split (see `carbon_for_mode`). R8.5 P1: if `carbon_kwargs`
+    ALSO carries a `transport_detail` key, that value wins over this parameter --
+    see the ONE-SOURCE note where `carbon` is computed below.
 
     `site_temp_c` (R8.0 WP-E Decision 1, default 20.0) only feeds the disclosure-
     only `curing_maturity_days` secondary metric below -- it never touches `curing`
@@ -394,8 +396,24 @@ def compute_metrics(
     lo, _, hi = predictor.predict_interval(arr)
     interval_lo = float(lo[0]) + delta
     novelty = float(predictor.novelty(arr)[0])
-    carbon = (carbon_for_mode(d, advanced, exotic=exotic, transport_detail=transport_detail,
-                              **(carbon_kwargs or {}))
+    # R8.5 P1: `carbon_kwargs` (the SAME dict scalarized_fitness/recommend_recipe/
+    # run_nsga consume unmodified via **carbon_kwargs) is the single source for
+    # every `carbon_for_mode` kwarg it carries, `transport_detail` included --
+    # this function's own `transport_detail` parameter is a legacy convenience for
+    # callers that don't route it through carbon_kwargs (every current call site:
+    # cli.py never sets it, ui/compare.py passes it alongside carbon_kwargs from
+    # session state). Once carbon_kwargs carries a `transport_detail` key (as
+    # ui/config.py's WP-2 fix puts there), IT wins over the explicit parameter --
+    # both already read the same underlying toggle, so this is not a behaviour
+    # change, only a spread-collision guard: without it, a carbon_kwargs dict that
+    # also carries `transport_detail` would raise "got multiple values for
+    # keyword argument" the moment this function forwarded both. `carbon_kwargs`
+    # lacking the key (today, before ui/config.py's dict entry lands, and every
+    # existing call site) is bit-identical to before.
+    ck = dict(carbon_kwargs or {})
+    effective_transport_detail = ck.pop("transport_detail", transport_detail)
+    carbon = (carbon_for_mode(d, advanced, exotic=exotic, transport_detail=effective_transport_detail,
+                              **ck)
              + exotic_carbon(exotic))
     cost = calculate_mix_cost(d, costs) + exotic_cost(exotic)
     disclosure = _disclosure_metrics(d, exotic, carbon_kwargs, carbon, site_temp_c=site_temp_c)
@@ -459,7 +477,16 @@ def scalarized_fitness(
     """Maximise strength, penalise carbon and cost -- the optimizer objective.
 
     With `robust=True`, the strength term is the conformal lower bound (guaranteed
-    strength) and an out-of-support penalty discourages extrapolated mixes."""
+    strength) and an out-of-support penalty discourages extrapolated mixes.
+
+    R8.5 P1 (coherence contract, kept forever): the carbon term is
+    `carbon_for_mode(d, advanced, **carbon_kwargs)` -- the SAME call
+    `compute_metrics` makes for its displayed `carbon` -- so this term is
+    ALWAYS the number the ticket would show for the identical config,
+    `transport_detail` included whenever `carbon_kwargs` carries it (it is
+    forwarded unmodified, never filtered to a subset of keys). See
+    tests/test_ui_logic.py's parametrized `test_p1_coherence_*` tests, this
+    spec's durable artifact."""
     arr = np.asarray(mix, dtype=float)
     d = mix_dict(arr)
     if robust:
@@ -499,6 +526,12 @@ def recommend_recipe(
     the target and that sits inside the trusted data region.
 
     Returns the mix vector, its named params, and predicted strength/carbon/cost.
+
+    R8.5 P1 (coherence contract): the returned `"carbon"` is
+    `carbon_for_mode(d, advanced, **carbon_kwargs)` on the CHOSEN mix -- the same
+    call `compute_metrics`/`scalarized_fitness` make -- so it is bit-identical to
+    what the ticket would show for this mix under the identical config,
+    `transport_detail` included whenever `carbon_kwargs` carries it.
     """
     predictor = explorer.predictor
     if method in ("ga", "aco"):

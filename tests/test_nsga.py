@@ -9,10 +9,10 @@ import pytest
 
 pytest.importorskip("pymoo")
 
-from src.nsga import run_nsga  # noqa: E402
+from src.nsga import run_nsga, MixDesignProblem  # noqa: E402
 from src.models import StrengthPredictor  # noqa: E402
 from src.generative_ga import PARAM_NAMES, data_envelope  # noqa: E402
-from src.ui_logic import pareto_front_mask, mix_dict  # noqa: E402
+from src.ui_logic import pareto_front_mask, mix_dict, compute_metrics  # noqa: E402
 from src.compliance import load_packs, check_compliance  # noqa: E402
 
 
@@ -126,6 +126,66 @@ def test_nsga_compliance_constraint_keeps_three_objectives(predictor):
     assert out["strength"].ndim == 1
     baseline = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15)
     assert out["mixes"].shape[1] == baseline["mixes"].shape[1]
+
+
+# --- R8.5 P1: the coherence contract, kept forever (NSGA leg) ---------------------
+#
+# See tests/test_ui_logic.py's matching block for the full rationale. This is
+# the "Same for the NSGA objective column" half of the spec's gate: the front's
+# carbon OBJECTIVE COLUMN (MixDesignProblem._evaluate's out["F"][:, 1]) must
+# equal compute_metrics's displayed carbon for the identical mix/config. Tested
+# directly against MixDesignProblem._evaluate (not a full run_nsga optimization)
+# so the coherence gate is cheap and deterministic -- it is arithmetic
+# reconciliation, not a search-quality property.
+
+def _p1_factors_variants():
+    from src.chemistry_simple import CARBON_FACTORS
+    overridden = dict(CARBON_FACTORS)
+    overridden["cement"] = overridden["cement"] * 0.5
+    return (None, overridden)
+
+
+_P1_NSGA_AXES = [
+    (advanced, transport_km, transport_detail, factors_override, clinker_source)
+    for advanced in (False, True)
+    for transport_km in (0.0, 500.0)
+    for transport_detail in (False, True)
+    for factors_override in _p1_factors_variants()
+    for clinker_source in (None, {"kiln_fuel": "natural_gas", "electricity": "hydro"})
+]
+
+
+@pytest.mark.parametrize(
+    "advanced,transport_km,transport_detail,factors_override,clinker_source", _P1_NSGA_AXES,
+    ids=[f"advanced={a}-km={k}-detail={t}-factors={'override' if f else 'default'}-"
+         f"clinker={'set' if c else 'none'}"
+         for a, k, t, f, c in _P1_NSGA_AXES],
+)
+def test_p1_nsga_objective_carbon_column_matches_compute_metrics(
+    predictor, advanced, transport_km, transport_detail, factors_override, clinker_source,
+):
+    mix = np.array([350.0, 100.0, 0.0, 175.0, 5.0, 1000.0, 750.0, 28.0])
+    carbon_kwargs = {
+        "transport_km": transport_km,
+        "cement_type": "OPC",
+        "factors": factors_override,
+        "clinker_source": clinker_source,
+        "transport_detail": transport_detail,
+    }
+    bounds = data_envelope()
+    problem = MixDesignProblem(predictor, bounds, advanced, costs=None,
+                               carbon_kwargs=carbon_kwargs)
+    out = {}
+    problem._evaluate(mix.reshape(1, -1), out)
+    nsga_carbon = float(out["F"][0, 1])
+
+    m = compute_metrics(mix, {}, {}, predictor, advanced=advanced, carbon_kwargs=carbon_kwargs)
+
+    assert nsga_carbon == pytest.approx(m["carbon"]), (
+        f"NSGA carbon objective column diverged from compute_metrics carbon: "
+        f"advanced={advanced} transport_km={transport_km} "
+        f"transport_detail={transport_detail} clinker_source={clinker_source}"
+    )
 
 
 def test_nsga_compliance_uses_lower_bound_not_point_estimate(predictor):

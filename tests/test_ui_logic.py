@@ -24,7 +24,7 @@ from src.ui_logic import (
     compliance_advisory_text,
     compliance_matrix,
 )
-from src.chemistry_simple import calculate_embodied_carbon, calculate_mix_cost
+from src.chemistry_simple import calculate_embodied_carbon, calculate_mix_cost, CARBON_FACTORS
 from src.chemistry_advanced import embodied_carbon_advanced
 from src.exotics import exotic_strength_delta
 from src.models import StrengthPredictor
@@ -563,6 +563,139 @@ def test_compute_metrics_transport_detail_on_matches_breakdown(predictor):
     d = mix_dict(MIX)
     bd = carbon_breakdown(d, transport_km=120.0, exotic=exotic, transport_detail=True)
     assert sum(bd.values()) == pytest.approx(m["carbon"])
+
+
+# --- R8.5 P1: the coherence contract, kept forever ---------------------------------
+#
+# ui_logic's module docstring promises "ONE carbon path, ONE metrics path, ONE
+# fitness path" -- the audit for docs/specs/R8.5 found exactly one live
+# divergence from that promise: `ui/config.py:161` builds `ctx.carbon_kwargs`
+# WITHOUT `transport_detail`, so with the per-material transport toggle ON the
+# ticket (compute_metrics) shows per-material transport carbon while the
+# optimizer (scalarized_fitness/recommend_recipe/run_nsga) still minimizes the
+# global-km path. `ui/config.py` is WP-2's file (P4's package, dispatched after
+# this one) -- the one-line dict-entry fix lands there. This test suite is the
+# ENGINE-side half of the contract: it proves that once `transport_detail`
+# arrives inside `carbon_kwargs` (exactly the shape the WP-2 fix produces),
+# every engine consumer honours it identically to `compute_metrics`, regardless
+# of when the UI-side dict entry lands. It is written so it ALREADY exercises
+# that exact shape (a `carbon_kwargs` dict carrying a `transport_detail` key)
+# rather than waiting for WP-2 -- which is how it caught a second, more subtle
+# defect: `compute_metrics` used to ALSO accept `transport_detail` as its own
+# keyword parameter and unconditionally re-passed it alongside `**carbon_kwargs`
+# to `carbon_for_mode`, so a `carbon_kwargs` dict carrying that key (the post-fix
+# shape) would raise "got multiple values for keyword argument 'transport_detail'"
+# on the very first call -- fixed in `compute_metrics` by letting `carbon_kwargs`
+# win when both are present (see its docstring).
+
+def _factors_variants():
+    """None (registry defaults) and a real override -- every core key present,
+    so the override changes the arithmetic without silently zeroing materials
+    `factors` doesn't mention (carbon_for_mode's `factors` dict REPLACES, not
+    merges with, the registry defaults -- see chemistry_simple.calculate_embodied_carbon)."""
+    overridden = dict(CARBON_FACTORS)
+    overridden["cement"] = overridden["cement"] * 0.5
+    return (None, overridden)
+
+
+def _clinker_source_variants():
+    """None (legacy default) and a real descriptor. Only affects the advanced
+    tier (carbon_for_mode's own contract) -- included in every combination
+    anyway so the coherence test also proves it stays a true no-op in simple
+    mode on BOTH sides of the comparison, not just tested in isolation."""
+    return (None, {"kiln_fuel": "natural_gas", "electricity": "hydro"})
+
+
+_P1_AXES = [
+    (advanced, transport_km, transport_detail, factors_override, clinker_source)
+    for advanced in (False, True)
+    for transport_km in (0.0, 500.0)
+    for transport_detail in (False, True)
+    for factors_override in _factors_variants()
+    for clinker_source in _clinker_source_variants()
+]
+
+
+@pytest.mark.parametrize(
+    "advanced,transport_km,transport_detail,factors_override,clinker_source", _P1_AXES,
+    ids=[f"advanced={a}-km={k}-detail={t}-factors={'override' if f else 'default'}-"
+         f"clinker={'set' if c else 'none'}"
+         for a, k, t, f, c in _P1_AXES],
+)
+def test_p1_scalarized_fitness_carbon_term_matches_compute_metrics(
+    predictor, advanced, transport_km, transport_detail, factors_override, clinker_source,
+):
+    """The durable gate this spec names explicitly: `scalarized_fitness`'s carbon
+    term `==` `compute_metrics(...)["carbon"]` for the same mix, across every
+    axis of the R8 config surface -- simple/advanced x transport_km {0, 500} x
+    transport_detail {off, on} x factor overrides x clinker_source. `w_strength`
+    and `w_cost` are zeroed so `fitness == -carbon` isolates the carbon term
+    exactly; `exotic={}` on the compute_metrics side matches scalarized_fitness
+    having no exotic dosing concept at all (both `exotic_carbon({})` and
+    `carbon_for_mode(..., exotic=None)` contribute zero -- see
+    test_carbon_for_mode_exotic_default_is_bit_identical)."""
+    carbon_kwargs = {
+        "transport_km": transport_km,
+        "cement_type": "OPC",
+        "factors": factors_override,
+        "clinker_source": clinker_source,
+        "transport_detail": transport_detail,
+    }
+    fitness = scalarized_fitness(MIX, COSTS, predictor, 0.0, 1.0, 0.0,
+                                 advanced=advanced, carbon_kwargs=carbon_kwargs)
+    fitness_carbon = -fitness
+
+    m = compute_metrics(MIX, {}, COSTS, predictor, advanced=advanced,
+                        carbon_kwargs=carbon_kwargs)
+
+    assert fitness_carbon == pytest.approx(m["carbon"]), (
+        f"scalarized_fitness carbon term diverged from compute_metrics carbon: "
+        f"advanced={advanced} transport_km={transport_km} "
+        f"transport_detail={transport_detail} clinker_source={clinker_source}"
+    )
+
+
+def test_p1_compute_metrics_carbon_kwargs_transport_detail_overrides_explicit_param():
+    """The collision-avoidance regression: `compute_metrics` must not raise when
+    `carbon_kwargs` carries `transport_detail` (the post-WP-2 shape) -- and once
+    it does, that value governs (matches calling with the EQUIVALENT explicit
+    parameter, never both silently disagreeing)."""
+    predictor = StrengthPredictor()
+    exotic = {}
+    via_dict = compute_metrics(MIX, exotic, COSTS, predictor,
+                               carbon_kwargs={"transport_km": 300.0, "transport_detail": True})
+    via_param = compute_metrics(MIX, exotic, COSTS, predictor,
+                                carbon_kwargs={"transport_km": 300.0},
+                                transport_detail=True)
+    assert via_dict["carbon"] == pytest.approx(via_param["carbon"])
+    # And the explicit parameter is silently ignored (not summed/double-applied)
+    # when carbon_kwargs disagrees with it -- carbon_kwargs is the one source.
+    dict_says_off_param_says_on = compute_metrics(
+        MIX, exotic, COSTS, predictor,
+        carbon_kwargs={"transport_km": 300.0, "transport_detail": False},
+        transport_detail=True,
+    )
+    off_explicit = compute_metrics(MIX, exotic, COSTS, predictor,
+                                   carbon_kwargs={"transport_km": 300.0},
+                                   transport_detail=False)
+    assert dict_says_off_param_says_on["carbon"] == pytest.approx(off_explicit["carbon"])
+
+
+def test_p1_recommend_recipe_carbon_matches_compute_metrics_for_returned_mix():
+    """`recommend_recipe`'s returned `"carbon"` must equal `compute_metrics`'s
+    carbon for the SAME returned mix under the SAME carbon_kwargs, with
+    transport_detail on and off -- the third leg of the coherence contract (the
+    NSGA leg lives in tests/test_nsga.py)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    for transport_detail in (False, True):
+        carbon_kwargs = {"transport_km": 200.0, "transport_detail": transport_detail}
+        rec = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS,
+                               carbon_kwargs=carbon_kwargs)
+        m = compute_metrics(rec["mix"], {}, COSTS, explorer.predictor,
+                            carbon_kwargs=carbon_kwargs)
+        assert rec["carbon"] == pytest.approx(m["carbon"]), transport_detail
 
 
 # --- D1/D2/D3/C1/C3 ticket rows -----------------------------------------------------
