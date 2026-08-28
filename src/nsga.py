@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .generative_ga import PARAM_NAMES, data_envelope, resolve_compliance_target, compliance_violation
-from .ui_logic import mix_dict, carbon_for_mode
+from .ui_logic import mix_dict, carbon_term
 from .chemistry_simple import calculate_mix_cost
 from .physical import volume_error, VOLUME_TOLERANCE
 from .compliance import check_compliance
@@ -71,7 +71,7 @@ if _PYMOO_AVAILABLE:
         """
 
         def __init__(self, predictor, bounds, advanced, costs, carbon_kwargs=None, robust=False,
-                     compliance_pack=None, compliance_cls=None):
+                     compliance_pack=None, compliance_cls=None, robust_carbon=False):
             # Constraints: volume balance (always) + in-support (robust only)
             # + compliance (only when a compliance target is given). This is a
             # CONSTRAINT, not a 4th objective -- deliberately, so front
@@ -87,6 +87,10 @@ if _PYMOO_AVAILABLE:
             self.threshold = predictor.support_threshold() if robust else None
             self.compliance_pack = compliance_pack
             self.compliance_cls = compliance_cls
+            # R8.5 P2: swaps the carbon OBJECTIVE COLUMN for its +1.96*sigma upper
+            # bound (ui_logic.carbon_term) -- dimensionality unchanged, still 3
+            # objectives (see the module docstring). Default False -- bit-identical.
+            self.robust_carbon = robust_carbon
 
         def _evaluate(self, X, out, *args, **kwargs):
             if self.robust:
@@ -94,7 +98,8 @@ if _PYMOO_AVAILABLE:
                 strength, _, _ = self.predictor.predict_interval(X)
             else:
                 strength = self.predictor.predict_batch(X)
-            carbon = np.array([carbon_for_mode(mix_dict(x), self.advanced, **self.carbon_kwargs) for x in X])
+            carbon = np.array([carbon_term(mix_dict(x), self.advanced, self.carbon_kwargs,
+                                           robust_carbon=self.robust_carbon) for x in X])
             cost = np.array([calculate_mix_cost(mix_dict(x), self.costs) for x in X])
             out["F"] = np.column_stack([-strength, carbon, cost])
             # Physical-validity constraint (<=0 feasible): the front is batchable by
@@ -166,6 +171,7 @@ def run_nsga(
     robust: bool = False,
     age: Optional[float] = None,
     compliance: Optional[Tuple[str, str]] = None,
+    robust_carbon: bool = False,
 ) -> Dict:
     """
     Run NSGA-II or NSGA-III and return the Pareto front.
@@ -180,12 +186,18 @@ def run_nsga(
             objective -- the front stays 3-objective strength/carbon/cost) to
             satisfy that exposure class, checked against the conformal LOWER
             bound of strength. See the module docstring.
+        robust_carbon: R8.5 P2 (default False, independent of `robust`). Swaps
+            the carbon OBJECTIVE COLUMN for its +1.96*sigma upper bound
+            (`ui_logic.carbon_term`) -- front dimensionality stays 3-objective
+            (see the module docstring's coherence-contract note). Default False
+            is bit-identical to before this flag existed.
 
     Returns dict with the front mixes and their objective values (natural units),
-    plus a per-generation convergence history. When `compliance` is given, also
-    includes a `"compliance"` block reporting, per front member, the real
-    `check_compliance()` verdict -- never inferred from the optimizer's soft
-    constraint alone -- and an honest `"all_pass"` flag.
+    plus a per-generation convergence history, and `"carbon_basis"` ("point" or
+    "upper_95", per `robust_carbon`) disclosing what the "carbon" column is.
+    When `compliance` is given, also includes a `"compliance"` block reporting,
+    per front member, the real `check_compliance()` verdict -- never inferred
+    from the optimizer's soft constraint alone -- and an honest `"all_pass"` flag.
     """
     if not _PYMOO_AVAILABLE:
         raise ImportError("pymoo is not installed. `pip install pymoo` to use NSGA-II/III.")
@@ -197,7 +209,8 @@ def run_nsga(
     compliance_pack, compliance_cls = resolve_compliance_target(compliance)
     problem = MixDesignProblem(predictor, bounds, advanced, costs,
                                carbon_kwargs=carbon_kwargs, robust=robust,
-                               compliance_pack=compliance_pack, compliance_cls=compliance_cls)
+                               compliance_pack=compliance_pack, compliance_cls=compliance_cls,
+                               robust_carbon=robust_carbon)
     sampling = _seed_sampling(seed_population, pop_size, bounds)
 
     if algorithm.lower() == "nsga3":
@@ -239,6 +252,9 @@ def run_nsga(
         },
         "front_size": len(X),
         "compliance": None,
+        # R8.5 P2: discloses what the "carbon" column above IS -- the point
+        # total, or (robust_carbon=True) its +1.96*sigma upper bound.
+        "carbon_basis": "upper_95" if robust_carbon else "point",
     }
     if compliance_pack is not None:
         # Verify HONESTLY with the real engine -- the constraint above pulled the

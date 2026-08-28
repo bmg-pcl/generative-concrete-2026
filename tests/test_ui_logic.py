@@ -9,6 +9,7 @@ import pytest
 from src.ui_logic import (
     PARAM_NAMES,
     carbon_for_mode,
+    carbon_term,
     pareto_front_mask,
     compute_metrics,
     batch_metrics,
@@ -696,6 +697,130 @@ def test_p1_recommend_recipe_carbon_matches_compute_metrics_for_returned_mix():
         m = compute_metrics(rec["mix"], {}, COSTS, explorer.predictor,
                             carbon_kwargs=carbon_kwargs)
         assert rec["carbon"] == pytest.approx(m["carbon"]), transport_detail
+
+
+# --- R8.5 P2: robust carbon -- optimize the upper bound, symmetric with robust strength --
+#
+# R1's flagship move was optimizing the strength LOWER bound; carbon_term's
+# robust_carbon mirrors it on the carbon side by optimizing the UPPER bound
+# (materials.carbon_interval's +1.96*sigma, re-centered on the point total --
+# same convention _disclosure_metrics's carbon_interval_hi already established).
+
+def test_p2_carbon_term_point_mode_matches_carbon_for_mode():
+    """robust_carbon=False (the default) is exactly carbon_for_mode -- no new
+    arithmetic on the default path."""
+    d = mix_dict(MIX)
+    carbon_kwargs = {"transport_km": 150.0}
+    assert carbon_term(d, advanced=False, carbon_kwargs=carbon_kwargs) == (
+        carbon_for_mode(d, advanced=False, **carbon_kwargs)
+    )
+    assert carbon_term(d, advanced=False, carbon_kwargs=carbon_kwargs, robust_carbon=False) == (
+        carbon_for_mode(d, advanced=False, **carbon_kwargs)
+    )
+
+
+def test_p2_scalarized_fitness_robust_carbon_default_bit_identical(predictor):
+    """No caller touches `robust_carbon` (default False) -> identical to before
+    the flag existed."""
+    carbon_kwargs = {"transport_km": 200.0}
+    omitted = scalarized_fitness(MIX, COSTS, predictor, 1.0, 0.05, 0.5,
+                                 carbon_kwargs=carbon_kwargs)
+    explicit_false = scalarized_fitness(MIX, COSTS, predictor, 1.0, 0.05, 0.5,
+                                        carbon_kwargs=carbon_kwargs, robust_carbon=False)
+    assert omitted == explicit_false
+
+
+def test_p2_robust_carbon_zero_uncertainty_bit_identical(predictor, monkeypatch):
+    """Gate: with every registry uncertainty patched to zero, robust_carbon's
+    output is bit-identical to point mode (sigma == 0 collapses the upper bound
+    onto the point total exactly)."""
+    import src.ui_logic as ui_logic
+    monkeypatch.setattr(ui_logic, "factor_uncertainties_view", lambda: {})
+    carbon_kwargs = {"transport_km": 150.0}
+    point = scalarized_fitness(MIX, COSTS, predictor, 0.0, 1.0, 0.0,
+                               carbon_kwargs=carbon_kwargs, robust_carbon=False)
+    robust = scalarized_fitness(MIX, COSTS, predictor, 0.0, 1.0, 0.0,
+                                carbon_kwargs=carbon_kwargs, robust_carbon=True)
+    assert robust == point
+
+
+def test_p2_robust_carbon_prefers_better_characterized_composition():
+    """Gate: two mixes with EQUAL point carbon but different composition
+    uncertainty -- robust_carbon must rank the mix built from the LOWER-
+    relative-uncertainty material as cheaper, even though their plain point
+    carbon ties exactly. Uses the spec's own example: fly ash's factor is tiny
+    but +/-50% uncertain; slag's is larger but only +/-30%."""
+    from src.materials import carbon_factors_view, factor_uncertainties_view
+    factors = carbon_factors_view()
+    uncertainties = factor_uncertainties_view()
+    assert uncertainties["slag"] < uncertainties["ash"]  # 0.30 vs 0.50
+
+    # A shared baseline (cement/water/etc, from MIX); swap in slag vs ash masses
+    # chosen so each contributes IDENTICAL point carbon.
+    contribution = 20.0  # kg CO2/m3, arbitrary but shared
+    slag_qty = contribution / factors["slag"]
+    ash_qty = contribution / factors["ash"]
+    base = dict(zip(PARAM_NAMES, MIX))
+    mix_slag = mix_dict([{**base, "slag": slag_qty, "ash": 0.0}[p] for p in PARAM_NAMES])
+    mix_ash = mix_dict([{**base, "slag": 0.0, "ash": ash_qty}[p] for p in PARAM_NAMES])
+
+    point_slag = carbon_for_mode(mix_slag, advanced=False)
+    point_ash = carbon_for_mode(mix_ash, advanced=False)
+    assert point_slag == pytest.approx(point_ash)  # equal point carbon, by construction
+
+    robust_slag = carbon_term(mix_slag, advanced=False, robust_carbon=True)
+    robust_ash = carbon_term(mix_ash, advanced=False, robust_carbon=True)
+    assert robust_slag < robust_ash  # slag (better-characterized) wins under robust_carbon
+
+
+def test_p2_robust_carbon_monotone_in_tightened_uncertainty(monkeypatch):
+    """Gate: tightening ONE material's uncertainty (an EPD attaching a tighter
+    number, per the spec's 'attach an EPD, your guaranteed number improves'
+    framing) lowers that mix's robust_carbon objective MONOTONICALLY."""
+    import src.ui_logic as ui_logic
+    from src.materials import factor_uncertainties_view as real_view
+    base_unc = real_view()
+    d = mix_dict(MIX)  # MIX carries slag=100 -- a nonzero mass so tightening moves sigma
+
+    def patched(u):
+        merged = dict(base_unc)
+        merged["slag"] = u
+        return merged
+
+    values = []
+    for u in (0.30, 0.20, 0.10, 0.0):
+        monkeypatch.setattr(ui_logic, "factor_uncertainties_view", lambda u=u: patched(u))
+        values.append(carbon_term(d, advanced=False, robust_carbon=True))
+    assert all(values[i] > values[i + 1] for i in range(len(values) - 1)), values
+
+
+def test_p2_recommend_recipe_discloses_carbon_basis():
+    """Gate: the returned dict always carries `carbon_basis`, correctly set."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    rec_point = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS)
+    assert rec_point["carbon_basis"] == "point"
+    rec_explicit_point = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS,
+                                          robust_carbon=False)
+    assert rec_explicit_point["carbon_basis"] == "point"
+    rec_robust = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS, robust_carbon=True)
+    assert rec_robust["carbon_basis"] == "upper_95"
+
+
+def test_p2_recommend_recipe_robust_carbon_default_bit_identical():
+    """No caller touches `robust_carbon` -> identical mix chosen and identical
+    carbon reported (same GA seed)."""
+    from src.bayesian import BayesFlowExplorer
+    np.random.seed(0)
+    explorer = BayesFlowExplorer()
+    omitted = recommend_recipe(explorer, 40.0, method="ga", costs=COSTS)
+    np.random.seed(0)
+    explorer2 = BayesFlowExplorer()
+    explicit_false = recommend_recipe(explorer2, 40.0, method="ga", costs=COSTS,
+                                      robust_carbon=False)
+    assert np.array_equal(omitted["mix"], explicit_false["mix"])
+    assert omitted["carbon"] == explicit_false["carbon"]
 
 
 # --- D1/D2/D3/C1/C3 ticket rows -----------------------------------------------------

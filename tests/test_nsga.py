@@ -188,6 +188,50 @@ def test_p1_nsga_objective_carbon_column_matches_compute_metrics(
     )
 
 
+# --- R8.5 P2: robust carbon -- optimize the upper bound, symmetric with robust strength --
+
+def test_p2_nsga_robust_carbon_default_bit_identical(predictor):
+    """No caller touches `robust_carbon` (default False) -> identical front,
+    same seed."""
+    out1 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3)
+    out2 = run_nsga(predictor, algorithm="nsga2", pop_size=30, n_gen=10, random_seed=3,
+                    robust_carbon=False)
+    assert np.array_equal(out1["mixes"], out2["mixes"])
+    assert np.array_equal(out1["carbon"], out2["carbon"])
+    assert out1["carbon_basis"] == out2["carbon_basis"] == "point"
+
+
+def test_p2_nsga_robust_carbon_swaps_column_dimensionality_unchanged(predictor):
+    """Gate: robust_carbon swaps the carbon column -- front stays 3-objective
+    (strength/carbon/cost), and the basis is disclosed correctly either way."""
+    baseline = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15)
+    assert baseline["carbon_basis"] == "point"
+    robust = run_nsga(predictor, algorithm="nsga2", pop_size=40, n_gen=15, robust_carbon=True)
+    assert robust["carbon_basis"] == "upper_95"
+    assert robust["mixes"].shape[1] == baseline["mixes"].shape[1] == len(PARAM_NAMES)
+    assert robust["strength"].shape == robust["carbon"].shape == robust["cost"].shape
+    assert robust["strength"].ndim == 1
+
+
+def test_p2_nsga_robust_carbon_zero_uncertainty_bit_identical(predictor, monkeypatch):
+    """The MixDesignProblem leg of the zero-uncertainty gate: with every
+    registry uncertainty patched to zero, the robust_carbon objective column
+    equals the point column exactly."""
+    import src.ui_logic as ui_logic
+    monkeypatch.setattr(ui_logic, "factor_uncertainties_view", lambda: {})
+    mix = np.array([350.0, 100.0, 0.0, 175.0, 5.0, 1000.0, 750.0, 28.0])
+    bounds = data_envelope()
+    carbon_kwargs = {"transport_km": 150.0}
+    point_problem = MixDesignProblem(predictor, bounds, False, costs=None,
+                                     carbon_kwargs=carbon_kwargs, robust_carbon=False)
+    robust_problem = MixDesignProblem(predictor, bounds, False, costs=None,
+                                      carbon_kwargs=carbon_kwargs, robust_carbon=True)
+    out_point, out_robust = {}, {}
+    point_problem._evaluate(mix.reshape(1, -1), out_point)
+    robust_problem._evaluate(mix.reshape(1, -1), out_robust)
+    assert out_point["F"][0, 1] == pytest.approx(out_robust["F"][0, 1])
+
+
 def test_nsga_compliance_uses_lower_bound_not_point_estimate(predictor):
     """The constraint must be built on strength_lo, not the mean -- confirm the
     reported front verdicts were computed against predict_interval's lower

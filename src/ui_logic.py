@@ -235,6 +235,53 @@ def _split_transport(mix: Dict[str, float], transport_km: float,
     return transport_registry, transport_global
 
 
+def _carbon_sigma(mix: Dict[str, float], exotic: Optional[Dict[str, float]],
+                  ck: dict) -> float:
+    """Half-width (kg CO2/m3) of `materials.carbon_interval`'s 95%-ish band for
+    this mix, using the SAME merged core+exotic factor table and registry
+    uncertainties `_disclosure_metrics`'s `carbon_interval_lo/hi` re-centers on
+    the displayed carbon -- extracted so P2's `robust_carbon` (below) reuses the
+    identical sigma rather than a second, potentially-diverging computation.
+    `ck` is an already-resolved `carbon_kwargs` dict (or `{}`), read the same
+    way `_disclosure_metrics` does (`ck.get("factors")`); it is never spread,
+    so an unrelated key like `transport_detail` is harmless here."""
+    merged_factors = _merged_carbon_factors(ck.get("factors"))
+    uncertainties = factor_uncertainties_view()
+    raw_lo, raw_hi = carbon_interval(mix, merged_factors, uncertainties, exotic=exotic)
+    return (raw_hi - raw_lo) / 2.0
+
+
+def carbon_term(mix: Dict[str, float], advanced: bool,
+                carbon_kwargs: Optional[dict] = None,
+                exotic: Optional[Dict[str, float]] = None,
+                robust_carbon: bool = False) -> float:
+    """R8.5 P2: the carbon figure an optimizer should target -- `carbon_for_mode`'s
+    point total by default, or (when `robust_carbon=True`) its +1.96*sigma UPPER
+    bound, symmetric with R1's robust strength move (optimize the strength LOWER
+    bound). Sigma is `materials.carbon_interval`'s per-material uncertainty band,
+    re-centered on the point total exactly as `_disclosure_metrics`'s
+    `carbon_interval_hi` already is (`_carbon_sigma`, shared) -- so with every
+    registry uncertainty at 0, `carbon_term(..., robust_carbon=True) ==
+    carbon_term(..., robust_carbon=False)` exactly (bit-identical gate).
+
+    The incentive this creates is deliberate (spec P2): a material with a small
+    factor but a wide relative uncertainty (fly ash, +/-50%) costs more under
+    `robust_carbon` than one with a larger factor but tighter uncertainty (slag,
+    +/-30%) contributing the same point carbon -- so the optimizer is pushed
+    toward BETTER-CHARACTERIZED compositions, not just lower-carbon ones. An EPD
+    that tightens a factor's uncertainty genuinely lowers this term.
+
+    Shared by `scalarized_fitness`, `recommend_recipe`, and
+    `nsga.MixDesignProblem` (never a per-backend fork -- this spec's cross-
+    cutting rule) so ACO/annealing inherit it automatically via
+    `PopulationInverseDesigner`/`base_optimizer` reusing the same functions."""
+    ck = carbon_kwargs or {}
+    total = carbon_for_mode(mix, advanced, exotic=exotic, **ck)
+    if not robust_carbon:
+        return total
+    return total + _carbon_sigma(mix, exotic, ck)
+
+
 def _disclosure_metrics(mix: Dict[str, float], exotic: Optional[Dict[str, float]],
                         carbon_kwargs: Optional[dict], carbon_total: float,
                         site_temp_c: float = 20.0) -> dict:
@@ -265,10 +312,7 @@ def _disclosure_metrics(mix: Dict[str, float], exotic: Optional[Dict[str, float]
     ck = carbon_kwargs or {}
     cement_type = ck.get("cement_type", "OPC")
     clinker_source = ck.get("clinker_source")
-    merged_factors = _merged_carbon_factors(ck.get("factors"))
-    uncertainties = factor_uncertainties_view()
-    raw_lo, raw_hi = carbon_interval(mix, merged_factors, uncertainties, exotic=exotic)
-    sigma = (raw_hi - raw_lo) / 2.0
+    sigma = _carbon_sigma(mix, exotic, ck)
 
     delta_t = adiabatic_temperature_rise(mix, cement_type=cement_type)
     analysis = analyze_mix(mix, cement_type=cement_type, clinker_source=clinker_source)
@@ -473,14 +517,20 @@ def scalarized_fitness(
     advanced: bool = False,
     carbon_kwargs: Optional[dict] = None,
     robust: bool = False,
+    robust_carbon: bool = False,
 ) -> float:
     """Maximise strength, penalise carbon and cost -- the optimizer objective.
 
     With `robust=True`, the strength term is the conformal lower bound (guaranteed
     strength) and an out-of-support penalty discourages extrapolated mixes.
 
-    R8.5 P1 (coherence contract, kept forever): the carbon term is
-    `carbon_for_mode(d, advanced, **carbon_kwargs)` -- the SAME call
+    R8.5 P2: `robust_carbon` (default False, independent of `robust`) swaps the
+    carbon term for its +1.96*sigma upper bound (`carbon_term`) -- carbon's
+    mirror of the strength lower-bound move above. Default False is bit-
+    identical to before this flag existed.
+
+    R8.5 P1 (coherence contract, kept forever): the carbon term (`robust_carbon`
+    aside) is `carbon_for_mode(d, advanced, **carbon_kwargs)` -- the SAME call
     `compute_metrics` makes for its displayed `carbon` -- so this term is
     ALWAYS the number the ticket would show for the identical config,
     `transport_detail` included whenever `carbon_kwargs` carries it (it is
@@ -494,7 +544,7 @@ def scalarized_fitness(
         strength = float(lo[0])
     else:
         strength = float(predictor.predict(arr))
-    carbon = carbon_for_mode(d, advanced, **(carbon_kwargs or {}))
+    carbon = carbon_term(d, advanced, carbon_kwargs, robust_carbon=robust_carbon)
     cost = calculate_mix_cost(d, costs)
     fitness = w_strength * strength - w_carbon * carbon - w_cost * cost
     if robust:
@@ -513,6 +563,7 @@ def recommend_recipe(
     carbon_kwargs: Optional[dict] = None,
     robust: bool = False,
     age: Optional[float] = None,
+    robust_carbon: bool = False,
 ) -> dict:
     """
     Return a single recommended mix for a target strength, via the chosen backend.
@@ -527,11 +578,20 @@ def recommend_recipe(
 
     Returns the mix vector, its named params, and predicted strength/carbon/cost.
 
-    R8.5 P1 (coherence contract): the returned `"carbon"` is
-    `carbon_for_mode(d, advanced, **carbon_kwargs)` on the CHOSEN mix -- the same
-    call `compute_metrics`/`scalarized_fitness` make -- so it is bit-identical to
-    what the ticket would show for this mix under the identical config,
-    `transport_detail` included whenever `carbon_kwargs` carries it.
+    R8.5 P1 (coherence contract): the returned `"carbon"` is `carbon_term`'s point
+    total (`robust_carbon=False`, the default) -- `carbon_for_mode(d, advanced,
+    **carbon_kwargs)`, the SAME call `compute_metrics`/`scalarized_fitness` make
+    -- so it is bit-identical to what the ticket would show for this mix under
+    the identical config, `transport_detail` included whenever `carbon_kwargs`
+    carries it.
+
+    R8.5 P2: `robust_carbon` (default False, independent of `robust`) reports
+    the +1.96*sigma upper bound instead (see `carbon_term`); NOTE this is a
+    DISCLOSURE/selection-figure swap only -- the search itself (GA/ACO's
+    internal `carbon_target` bias, when given) is unaffected, same as `robust`
+    does not change what `carbon_target` means. `carbon_basis` in the returned
+    dict discloses which ("point" or "upper_95"). Default False is bit-identical
+    to before this flag existed.
     """
     predictor = explorer.predictor
     if method in ("ga", "aco"):
@@ -575,7 +635,8 @@ def recommend_recipe(
         "workability": workability_flag(d),
         "tensile": tensile_estimate(float(predictor.predict(arr))),
         "curing": estimate_curing_time(d),
-        "carbon": carbon_for_mode(d, advanced, **(carbon_kwargs or {})),
+        "carbon": carbon_term(d, advanced, carbon_kwargs, robust_carbon=robust_carbon),
+        "carbon_basis": "upper_95" if robust_carbon else "point",
         "cost": calculate_mix_cost(d, costs) if costs else calculate_mix_cost(d),
     }
 
