@@ -2,6 +2,7 @@
 import json
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -9,7 +10,7 @@ from src.ui_logic import PARAM_NAMES, batch_metrics, recommend_recipe, mix_ticke
 from src.generative_ga import SLUMP_SP_DOSING_NOTE
 from src.properties import get_slump_model
 from ui.context import AppContext
-from ui.state import load_mix_into, EXPOSURE_NONE
+from ui.state import load_mix_into, EXPOSURE_NONE, SLIDER_SPECS
 
 param_names = list(PARAM_NAMES)
 
@@ -288,9 +289,42 @@ def render_inverse(ctx: AppContext):
         st.caption(f"90% interval [{rec['interval_lo']:.0f}–{rec['interval_hi']:.0f}] MPa"
                    + (" · robust: optimized the guaranteed lower bound, kept in-support" if robust_mode else "")
                    + (" · carbon basis: upper_95 (robust)" if rec.get("carbon_basis") == "upper_95" else ""))
+        # R8.6 WP-U4: robust mode matches the search to the *guaranteed lower
+        # bound* (interval_lo), not the point estimate (see recommend_recipe's
+        # docstring) -- so whenever that leaves the point estimate above the
+        # target, it is the designed consequence of robust matching, not an
+        # overshoot/error. Only shown when robust is on AND it actually
+        # happened for this recipe; robust-off is unchanged (deliverable 2).
+        if robust_mode and rec["strength"] > target_str:
+            st.caption(
+                "Robust mode matches the **guaranteed lower bound** to your target, "
+                "not the point estimate above — the lower bound is what met "
+                f"{target_str} MPa; the point estimate reads higher by design "
+                "(the width of the uncertainty interval above that guaranteed floor), "
+                "not an overshoot."
+            )
         if not rec["in_support"]:
             st.warning("This recipe sits outside the well-sampled data region — the prediction is "
                        "extrapolated. Prefer a mix inside the data, or collect lab data here.")
+
+        # R8.6 WP-U4: recipe as a compact table (kg/m³ per material + age),
+        # replacing the old run-on caption text line -- and the Load buttons
+        # directly under it, side by side.
+        st.markdown("**Recipe (kg/m³, age in days)**")
+        recipe_rows = [
+            {"Material": label, "Amount": f"{rec['params'][p]:.0f} " + ("days" if p == "age" else "kg/m³")}
+            for p, label, _lo, _hi in SLIDER_SPECS
+        ]
+        st.dataframe(pd.DataFrame(recipe_rows), hide_index=True, use_container_width=True)
+        rec_vec = [rec["params"][p] for p in param_names]
+        load_a, load_b = st.columns(2)
+        # on_click callbacks write the keyed sliders BEFORE the Compare tab reinstantiates
+        # them on the next run — the only clean way to set a keyed widget programmatically.
+        load_a.button("Load into Mix A", key="load_rec_a",
+                      on_click=load_mix_into, args=("A", rec_vec))
+        load_b.button("Load into Mix B", key="load_rec_b",
+                      on_click=load_mix_into, args=("B", rec_vec))
+
         if rec.get("workability"):
             st.caption(f"Workability: {rec['workability']}")
         # R8.5 P3: slump-target disclosure (recommend_recipe's own result already
@@ -327,15 +361,6 @@ def render_inverse(ctx: AppContext):
                 st.error(label)
             else:
                 st.warning(label)
-        st.caption("  ·  ".join(f"{p}: {rec['params'][p]:.0f}" for p in param_names))
-        rec_vec = [rec["params"][p] for p in param_names]
-        load_a, load_b = st.columns(2)
-        # on_click callbacks write the keyed sliders BEFORE the Compare tab reinstantiates
-        # them on the next run — the only clean way to set a keyed widget programmatically.
-        load_a.button("Load into Mix A", key="load_rec_a",
-                      on_click=load_mix_into, args=("A", rec_vec))
-        load_b.button("Load into Mix B", key="load_rec_b",
-                      on_click=load_mix_into, args=("B", rec_vec))
         ticket_csv = mix_ticket(rec["params"], rec, ctx.ticket_config)
         if compliance_pair is not None:
             # mix_ticket (frozen) has no row for this -- append it ourselves in
