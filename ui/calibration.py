@@ -1,9 +1,11 @@
 """Calibration tab — retrain on lab data, active learning, accuracy history."""
+import os
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.data_fetcher import append_experimental_results
+from src.data_fetcher import OVERLAY_FILE, append_experimental_results
 from src.models import load_metrics_history
 from src.ui_logic import validate_lab_csv
 from ui.context import AppContext
@@ -15,6 +17,24 @@ def render_calibration(ctx: AppContext):
     bayesian = ctx.bayesian
 
     st.header("Calibration")
+
+    # R8.6 WP-U1: status line up front — is an overlay already loaded, and how
+    # many rows? Reads the same OVERLAY_FILE that append_experimental_results()
+    # writes and load_data() merges in (src/data_fetcher.py); no new persistence.
+    if os.path.exists(OVERLAY_FILE):
+        overlay_rows = len(pd.read_csv(OVERLAY_FILE))
+        st.success(
+            f"Calibration overlay loaded — {overlay_rows} field result"
+            f"{'s' if overlay_rows != 1 else ''} on top of the base UIUC dataset.",
+            icon="✅",
+        )
+    else:
+        st.info(
+            "No calibration data loaded — the model is running on the base UIUC "
+            "dataset alone.",
+            icon="ℹ️",
+        )
+
     st.markdown("""
     **How to use:** Upload a CSV of actual lab test results to improve the model's accuracy.
     Required columns: `cement, slag, ash, water, superplasticizer, coarse_agg, fine_agg, age, strength`.
