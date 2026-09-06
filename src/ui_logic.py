@@ -103,6 +103,21 @@ def _compliance_block(mix: Dict[str, float], exposure_pack: Optional[str],
     return check_compliance(mix, pack, exposure_class, strength_lo=strength_lo, air_pct=air_pct)
 
 
+def slump_disclosure_text(metrics: dict) -> str:
+    """R8.6 WP-U2: the full-text slump disclosure for ONE metrics dict, whichever
+    basis path produced it -- the model path's width caveat (`slump_caveat`,
+    called verbatim, unchanged) or the heuristic path's basis/reason sentence.
+    Presentation-only: does not alter what either path returns, only picks
+    between the two existing wordings so a caller (the Compare tab) can compare
+    two mixes' disclosure text for equality and dedupe an identical caveat
+    instead of rendering it twice -- see docs/specs/R8.6-ux-visual-flow.md,
+    WP-U2 deliverable 2."""
+    if metrics["slump_basis"] == "model":
+        return slump_caveat(metrics["slump_lo"], metrics["slump_hi"])
+    return (f"No measured estimate (basis: heuristic) -- "
+            f"{metrics.get('slump_reason') or 'outside the slump corpus.'}")
+
+
 def compliance_advisory_text(source: dict) -> str:
     """The mandatory advisory disclosure (R8.2 "honesty problem", point 3: every
     user-facing surface must say advisory AND name the standard to check against).

@@ -1,4 +1,5 @@
 """Compare Mixes tab — two mixes side by side with predicted performance."""
+import pandas as pd
 import streamlit as st
 
 from src.exotics import EXOTIC_ADMIXTURES, compliance_warnings
@@ -8,7 +9,7 @@ from src.ui_logic import (
     mix_ticket,
     compliance_advisory_text,
     compliance_matrix,
-    slump_caveat,
+    slump_disclosure_text,
 )
 from ui.context import AppContext
 from ui.state import SLIDER_SPECS, current_mix, load_mix_into, EXPOSURE_NONE
@@ -90,6 +91,14 @@ def render_compare(ctx: AppContext):
     m_a = get_metrics(mix_a, st.session_state.exotic_a)
     m_b = get_metrics(mix_b, st.session_state.exotic_b)
 
+    # R8.6 WP-U2 deliverable 2: A and B often carry byte-identical slump
+    # disclosure text (e.g. both fall back to the same generic out-of-support
+    # reason for the default mixes). Detected once here so each column's
+    # popover is suppressed in favor of one shared, full-width rendering below.
+    slump_caveat_a = slump_disclosure_text(m_a)
+    slump_caveat_b = slump_disclosure_text(m_b)
+    slump_caveat_shared = slump_caveat_a == slump_caveat_b
+
     def strength_caption(metrics):
         """Honest note on how exotics relate to the strength number shown."""
         if ctx.exotic_strength_enabled and metrics.get("exotic_strength"):
@@ -97,20 +106,25 @@ def render_compare(ctx: AppContext):
         else:
             st.caption("model strength — exotics affect cost & carbon only")
 
-    def slump_display(metrics):
+    def slump_display(metrics, own_caveat_hidden):
         """R8.1 WP-1b's two non-negotiable display rules: show the POINT ESTIMATE,
         state the interval width plainly as a caveat, and NEVER render it as an
         error bar or a guaranteed range the way strength's interval is rendered.
         Out-of-support mixes show the heuristic result with its basis label, never
-        a model number."""
+        a model number.
+
+        R8.6 WP-U2: the value+basis line always shows; the full multi-sentence
+        caveat text moves behind a popover (verbatim, via `slump_disclosure_text`)
+        UNLESS `own_caveat_hidden` is True, meaning this mix's caveat is byte-
+        identical to the other mix's and the caller will render it once, shared,
+        full-width below both columns instead (deliverable 2's dedupe)."""
         if metrics["slump_basis"] == "model":
-            st.caption(f"Slump ~{metrics['slump_cm']:.1f} cm (point estimate, basis: model)")
-            st.caption(slump_caveat(metrics["slump_lo"], metrics["slump_hi"]))
+            st.caption(f"Slump ~{metrics['slump_cm']:.1f} cm · basis: model")
         else:
-            st.caption(
-                f"Slump: no measured estimate (basis: heuristic) — "
-                f"{metrics.get('slump_reason') or 'outside the slump corpus.'}"
-            )
+            st.caption("Slump: no measured estimate · basis: heuristic")
+        if not own_caveat_hidden:
+            with st.popover("Slump interval detail"):
+                st.caption(slump_disclosure_text(metrics))
 
     def render_compliance(metrics, slot):
         """R8.2's per-mix compliance panel: verdict banner, per-rule table, and
@@ -149,7 +163,7 @@ def render_compare(ctx: AppContext):
             st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
         if m_a["workability"]:
             st.caption(f"Workability: {m_a['workability']}")
-        slump_display(m_a)
+        slump_display(m_a, own_caveat_hidden=slump_caveat_shared)
         # R8.0 WP-D2/WP-E: compliance advisories for any dosed restricted material
         # (e.g. calcium_chloride in reinforced concrete) — advisory, not a hard
         # constraint; this tool doesn't know the end use, only that the question exists.
@@ -172,7 +186,7 @@ def render_compare(ctx: AppContext):
             st.warning("Outside the well-sampled data region — treat this prediction as extrapolation.")
         if m_b["workability"]:
             st.caption(f"Workability: {m_b['workability']}")
-        slump_display(m_b)
+        slump_display(m_b, own_caveat_hidden=slump_caveat_shared)
         for w in compliance_warnings(st.session_state.exotic_b):
             st.warning(w)
         render_compliance(m_b, "B")
@@ -180,6 +194,14 @@ def render_compare(ctx: AppContext):
                            data=mix_ticket(dict(zip(param_names, mix_b)), m_b, ctx.ticket_config,
                                            exotic=st.session_state.exotic_b),
                            file_name="mix_B_ticket.csv", mime="text/csv")
+
+    # R8.6 WP-U2 deliverable 2: when Mix A and Mix B's slump disclosure text is
+    # byte-identical (both `slump_display` calls above were told to hide their
+    # own popover), render it once here, full-width, instead of twice -- same
+    # verbatim text either way, via the shared `slump_disclosure_text` helper.
+    if slump_caveat_shared:
+        with st.popover("Slump interval detail (Mix A & Mix B — identical)"):
+            st.caption(slump_caveat_a)
 
     # R8.2 WP-3: the cross-jurisdiction table -- the feature's headline, since it
     # makes national variation visible at a glance. Always rendered (not gated on
@@ -189,14 +211,15 @@ def render_compare(ctx: AppContext):
     # above swaps that pack's row for the user's own choice.
     st.divider()
     st.subheader("Cross-jurisdiction compliance (advisory)")
+    # R8.6 WP-U2 deliverable 3: one short, always-visible framing sentence
+    # (which representative class each row is checked against, and that a real
+    # Config selection is what makes the verdict meaningful) above the table.
+    # The full original disclosure paragraph moves — verbatim, unshortened —
+    # inside the expander below, one click away.
     st.caption(
-        "The same two mixes checked against each jurisdiction pack's own "
-        "representative exposure class (named in every row). **The classes are "
-        "not equivalent requirements** — EN 206 and ACI 318 use different "
-        "taxonomies, so a differing verdict reflects a difference in what was "
-        "checked, not necessarily a regulatory difference. Pick a pack and class "
-        "above to check one deliberately. Always advisory; check the named standard before any structural "
-        "use (see each pack's own disclosure above)."
+        "Each row below checks these two mixes against its jurisdiction's own "
+        "*representative* exposure class, named in the row — selecting a real "
+        "exposure class in Config is what makes a verdict meaningful."
     )
     rows_a = compliance_matrix(
         dict(zip(param_names, mix_a)), strength_lo=m_a["interval_lo"],
@@ -215,4 +238,34 @@ def render_compare(ctx: AppContext):
             "Mix A": ra["verdict"], "Mix B": rb["verdict"] if rb else "n/a",
         })
     if table:
-        st.dataframe(table, hide_index=True, use_container_width=True)
+        # R8.6 WP-U2 deliverable 3: collapsed until a real exposure class is
+        # picked in Config (exposure_class_id is None otherwise, see above),
+        # expanded once one is — so a first-time visitor doesn't land on a
+        # wall of FAIL/FAIL for the default mixes' representative-class check.
+        with st.expander("Per-jurisdiction verdicts", expanded=exposure_class_id is not None):
+            # Full original disclosure paragraph, verbatim, unshortened -- see
+            # deliverable 3's short caption above for the always-visible summary.
+            st.caption(
+                "The same two mixes checked against each jurisdiction pack's own "
+                "representative exposure class (named in every row). **The classes are "
+                "not equivalent requirements** — EN 206 and ACI 318 use different "
+                "taxonomies, so a differing verdict reflects a difference in what was "
+                "checked, not necessarily a regulatory difference. Pick a pack and class "
+                "above to check one deliberately. Always advisory; check the named standard before any structural "
+                "use (see each pack's own disclosure above)."
+            )
+            # R8.6 WP-U2 deliverable 4: UNKNOWN is visually distinct from FAIL
+            # (neutral/grey vs red) -- semantics untouched, UNKNOWN never reads
+            # as PASS. Styled via a pandas Styler so the distinction survives
+            # into st.dataframe's rendering, same verdict strings underneath.
+            def _verdict_style(v):
+                if v == "FAIL":
+                    return "color: #b42318; font-weight: 600;"
+                if v == "UNKNOWN":
+                    return "color: #667085; font-style: italic;"
+                if v == "PASS":
+                    return "color: #027a48; font-weight: 600;"
+                return ""
+
+            styled = pd.DataFrame(table).style.map(_verdict_style, subset=["Mix A", "Mix B"])
+            st.dataframe(styled, hide_index=True, use_container_width=True)

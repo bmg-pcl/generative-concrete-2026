@@ -72,6 +72,7 @@ span) before per-spec actuals were tracked; R7.1 on, actuals are recorded at clo
 | R8.0 | ~2–2.5 d serial / ~1 d parallel (Wave A) + ~0.5 d Wave B | **~0.4 d wall total** (Wave A ~0.3 d + WP-E ~25 min agent time) | Five concurrent sonnet packages under the v2 process: four ran clean start-to-finish (~5–8 min, ~70–106k tokens each, zero stalls); WP-A stalled twice on background-and-wait and was killed by a session usage limit before reporting — its commit was recoverable and the orchestrator verified its gates independently. WP-C caught a real spec error (the ΔT band was derived from 28-day heat, not full-hydration heat) and corrected the band with the derivation instead of tuning — the report-deviations clause working as designed. Headline: LC3 cement term landed at 0.544 kg/kg inside the published 0.50–0.65 EPD band with no coefficient fit to it. Wave B (WP-E) pending |
 | R8.1 + R8.2 | ~1.5 d serial / ~0.9 d parallel | **~0.5 d wall** | Six packages across two specs, run concurrently where files were disjoint. Two agents stalled on background-and-wait and were harvested by the orchestrator (the F3 failure mode again — the v2 test policy is stated in every prompt and still not always followed; consider making it the FIRST line rather than a section). Two genuine spec defects surfaced: R8.2's "packs must differ" gate rewarded fabricating a limit, and the cross-jurisdiction representative-class rule defaulted to ACI's null-exposure C0, making an uninformative comparison look meaningful. Both were caught at integration by reading what the user would see, not by the tests — worth remembering that green suites did not catch either |
 | R8.5 | ~1 d serial (deliberately near-serial) | **~0.35 d wall** | Two sequential packages, +119 tests. The spec's audit found one coherence defect; implementation found two MORE adjacent ones (a kwarg collision that would have fired on the fix, and a stale inverse-tab cache key serving pre-toggle recipes) — three holes in the same guarantee, each caught at a different layer. One F3 stall despite the policy being the prompt's first line; recovered by nudge, agent then finished clean in-foreground |
+| R8.6 | ~0.75 d serial / ~0.3 d parallel | **~0.25 d wall** | Four concurrent sonnet packages, +21 tests, presentation-only (the no-numeric-change invariant held: every optimizer/logic suite green untouched). U1/U3/U4 ran clean; U2 produced a correct diff but stalled repeatedly on its gate — a NEW F3 variant: the platform's ~10-min foreground cap auto-backgrounds a compliant gate that outlives it, and three concurrent AppTest gates on 4 cores (load ~11) guaranteed it would. Orchestrator harvested U2's diff, killed the zombie runs by cwd, and ran its gate quiet at integration (261 s). Lesson recorded in DELEGATION_WORKFLOW.md: size per-agent gates under the cap on a contended box; serialize heavy gates at integration. One critique error found by implementation: the gene-pool chart already WAS a violin plot (px.violin) — the audit misread it from a small screenshot; U3 made it explicit go.Violin |
 | R7.5 | ~1.25 d serial / ~0.7 d parallel | **~0.7 d** (≈0.4 d implementation + ≈0.3 d failure recovery) | Four-agent fan-out; wall clock hit the parallel estimate but for the wrong reason — logistics failures (see `../DELEGATION_WORKFLOW.md`) ate what parallelism saved. WP-5, run solo under the v2 process, took ~6 min of agent time with zero stalls |
 
 **Reading the log so far:** the block estimates (R1–R6) were accurate at block
@@ -313,6 +314,26 @@ so importers are now the only route to an informative workability interval.
   users wanting mass-pour safety today get a direct cement-content cap.
 - Deliberately near-serial (two packages), because every phase converges on the same
   three optimizer files.
+
+**R8.6 UX & visual flow** — ✅ **Shipped** (2026-09-06):
+[`R8.6-ux-visual-flow.md`](R8.6-ux-visual-flow.md)
+- **Origin:** a screenshot-driven UX audit of every tab (headless app + Playwright,
+  including a driven live GA run). Verdict: strong bones — the aesthetic, honesty
+  discipline, and optimization visuals are above the bar; the gaps are *information
+  hierarchy* and *workflow ordering*, not raw visual quality.
+- **The findings, prioritized:** (1) tab order contradicts the numbered guide (Config
+  is step 1 but tab 5; the Workflow tab duplicates the sidebar); (2) honest
+  disclosures accrete into undifferentiated caption noise, with one caveat duplicated
+  verbatim under both columns; (3) the compliance table ambushes defaults with
+  FAIL/FAIL and no framing; (4) raw optimizer internals as headline numbers ("Best
+  Fitness: −11.38", cryptic weight scales, a robust overshoot badge that reads as an
+  error); (5) the Pareto tab is empty pre-run and buries its completion summary
+  mid-page; (6) a triple-y-axis chart and a violin/box text-chart mismatch; (7) the
+  recipe as an unstyled text line.
+- **Structure:** presentation-only release — four parallel packages with exclusive
+  file ownership (U1 nav/guide, U2 compare disclosures, U3 pareto, U4 inverse), with
+  the invariant *no disclosure may be deleted, no numeric behavior may change*
+  repeated in every prompt and gated by the untouched optimizer/logic test files.
 
 ### Horizon 3 — R9/R10: The shared information layer (quarter+)
 

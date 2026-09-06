@@ -11,7 +11,12 @@ def render():
     with st.sidebar:
         st.header("How to use")
         st.caption("Collapse this panel with the arrow at its top-right; reopen it from the same edge.")
-        with st.expander("Step-by-step guide", expanded=True):
+        # R8.6 WP-U1: expanded on the session's first script run only, collapsed on
+        # every run after that -- a plain session_state flag, not a keyed widget
+        # value (expanded= isn't governed by ui/state.py's keyed-widget rules).
+        guide_expanded = not st.session_state.get("_guide_seen", False)
+        st.session_state["_guide_seen"] = True
+        with st.expander("Step-by-step guide", expanded=guide_expanded):
             st.markdown(
                 "**1. Config** — set material costs and choose the carbon model "
                 "(Simple or Advanced). These apply everywhere.\n\n"

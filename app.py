@@ -38,9 +38,14 @@ st.markdown("AI-powered concrete formulation: prediction, optimization, and inve
 sidebar.render()
 
 # --- Main Layout ---
-tab1, tab2, tab3, tab4, tab_config, tab_workflow, tab5, tab6 = st.tabs([
-    "Compare Mixes", "Inverse Design", "Pareto Optimization",
-    "Calibration", "Config", "Workflow", "Technical Report", "References",
+# R8.6 WP-U1: tab labels follow the numbered workflow the sidebar guide walks
+# through (Config first, since its settings apply everywhere else) — but the
+# execution order below is unchanged from before this release: `with
+# tab_config:` still runs first, building the AppContext every other renderer
+# consumes, regardless of where "Config" sits visually in the tab strip.
+tab_config, tab_compare, tab_inverse, tab_pareto, tab_calibration, tab_workflow, tab_report, tab_references = st.tabs([
+    "Config", "Compare Mixes", "Inverse Design", "Pareto Optimization",
+    "Calibration", "Workflow", "Technical Report", "References",
 ])
 
 # render_config builds the AppContext the other tabs consume; passing ctx into the
@@ -48,17 +53,17 @@ tab1, tab2, tab3, tab4, tab_config, tab_workflow, tab5, tab6 = st.tabs([
 # dependency now, not a comment-guarded ordering.
 with tab_config:
     ctx = render_config(predictor, bayesian, presets)
-with tab1:
+with tab_compare:
     render_compare(ctx)
-with tab2:
+with tab_inverse:
     render_inverse(ctx)
-with tab3:
+with tab_pareto:
     render_pareto(ctx)
-with tab4:
+with tab_calibration:
     render_calibration(ctx)
 with tab_workflow:
     render_workflow()
-with tab5:
+with tab_report:
     render_technical_report()
-with tab6:
+with tab_references:
     render_references()

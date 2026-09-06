@@ -73,6 +73,18 @@ indefinite wake/stall loop.
 ~5 minutes, kill it and *report contention* rather than waiting. Waiting is an
 orchestrator behavior, not an agent behavior.
 
+**R8.6 addendum — F3 without disobedience:** an agent can comply perfectly and
+still land in F3, because the platform auto-backgrounds any foreground shell call
+that outlives the ~10-minute tool cap. A gate that legitimately runs longer than
+the cap (e.g. three AppTest files under load) therefore *becomes* background-and-
+wait through no fault of the prompt. Two fixes, both orchestrator-side: (a) size
+per-agent gates to finish inside the cap on a *contended* box — split the slow
+suite out and let the orchestrator run it at integration; (b) never let two heavy
+AppTest gates run concurrently on a 4-core box — in R8.6, three concurrent gates
+drove load to ~11, a quiet 100 s gate took >20 min, and every timeout fired
+spuriously. Stagger heavy gates or serialize them at integration, where they run
+once, quiet, and observed.
+
 ### F4. A confident, false incident report
 
 **Evidence:** WP-3 reported its worktree "destroyed mid-session by an out-of-band
