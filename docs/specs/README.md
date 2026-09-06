@@ -314,6 +314,26 @@ so importers are now the only route to an informative workability interval.
 - Deliberately near-serial (two packages), because every phase converges on the same
   three optimizer files.
 
+**R8.6 UX & visual flow** — spec ready for parallel dispatch:
+[`R8.6-ux-visual-flow.md`](R8.6-ux-visual-flow.md)
+- **Origin:** a screenshot-driven UX audit of every tab (headless app + Playwright,
+  including a driven live GA run). Verdict: strong bones — the aesthetic, honesty
+  discipline, and optimization visuals are above the bar; the gaps are *information
+  hierarchy* and *workflow ordering*, not raw visual quality.
+- **The findings, prioritized:** (1) tab order contradicts the numbered guide (Config
+  is step 1 but tab 5; the Workflow tab duplicates the sidebar); (2) honest
+  disclosures accrete into undifferentiated caption noise, with one caveat duplicated
+  verbatim under both columns; (3) the compliance table ambushes defaults with
+  FAIL/FAIL and no framing; (4) raw optimizer internals as headline numbers ("Best
+  Fitness: −11.38", cryptic weight scales, a robust overshoot badge that reads as an
+  error); (5) the Pareto tab is empty pre-run and buries its completion summary
+  mid-page; (6) a triple-y-axis chart and a violin/box text-chart mismatch; (7) the
+  recipe as an unstyled text line.
+- **Structure:** presentation-only release — four parallel packages with exclusive
+  file ownership (U1 nav/guide, U2 compare disclosures, U3 pareto, U4 inverse), with
+  the invariant *no disclosure may be deleted, no numeric behavior may change*
+  repeated in every prompt and gated by the untouched optimizer/logic test files.
+
 ### Horizon 3 — R9/R10: The shared information layer (quarter+)
 
 The theme: cross the organizational boundary. Everything above serves one user at a
