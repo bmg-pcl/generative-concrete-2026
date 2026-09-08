@@ -124,7 +124,7 @@ def render_pareto(ctx: AppContext):
             st.subheader("Objective Weights")
             st.caption(
                 "These weights multiply the optimizer's raw predicted quantities directly — "
-                "Strength in MPa, Carbon in kg CO₂/m³, Cost in $/m³ — not normalized "
+                "Strength in MPa, Carbon in kg CO₂/m³, nominal cost in $/m³ — not normalized "
                 "percentages. The combined score is "
                 "`w_strength·strength − w_carbon·carbon − w_cost·cost`, and because carbon "
                 "and cost are numerically much larger than strength, their default weights "
@@ -134,7 +134,7 @@ def render_pareto(ctx: AppContext):
             )
             w_strength = st.slider("Strength Weight", 0.0, 2.0, 1.0, help="Weight for maximizing compressive strength.")
             w_carbon = st.slider("Carbon Penalty Weight", 0.0, 1.0, 0.05, help="Weight for minimizing embodied carbon.")
-            w_cost = st.slider("Cost Penalty Weight", 0.0, 1.0, 0.5, help="Weight for minimizing material cost.")
+            w_cost = st.slider("Nominal Cost Penalty Weight", 0.0, 1.0, 0.5, help="Weight for minimizing nominal material cost.")
 
         st.divider()
         # R8.6 WP-U3: run controls + live feedback anchored here at the controls
@@ -226,12 +226,12 @@ def render_pareto(ctx: AppContext):
                 conv = go.Figure()
                 conv.add_trace(go.Scatter(y=h["best_strength"], name="Best Strength (MPa)", line=dict(color="#00E676")))
                 conv.add_trace(go.Scatter(y=h["min_carbon"], name="Min Carbon (kg/m³)", line=dict(color="#FFB300"), yaxis="y2"))
-                conv.add_trace(go.Scatter(y=h["min_cost"], name="Min Cost ($/m³)", line=dict(color="#E91E63"), yaxis="y3"))
+                conv.add_trace(go.Scatter(y=h["min_cost"], name="Min Nominal Cost ($/m³)", line=dict(color="#E91E63"), yaxis="y3"))
                 conv.update_layout(
                     template="plotly_dark", title="Per-objective best over generations", xaxis_title="Generation",
                     yaxis=dict(title=dict(text="Strength", font=dict(color="#00E676")), tickfont=dict(color="#00E676")),
                     yaxis2=dict(title=dict(text="Carbon", font=dict(color="#FFB300")), tickfont=dict(color="#FFB300"), overlaying="y", side="right"),
-                    yaxis3=dict(title=dict(text="Cost", font=dict(color="#E91E63")), tickfont=dict(color="#E91E63"), overlaying="y", side="right", anchor="free", autoshift=True),
+                    yaxis3=dict(title=dict(text="Nominal cost", font=dict(color="#E91E63")), tickfont=dict(color="#E91E63"), overlaying="y", side="right", anchor="free", autoshift=True),
                     height=340, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h", y=1.2))
                 st.plotly_chart(conv, use_container_width=True)
 
@@ -242,7 +242,7 @@ def render_pareto(ctx: AppContext):
                     hoverinfo="text", name="Pareto front"))
                 front_fig.update_layout(
                     template="plotly_dark", height=600, margin=dict(l=0, r=0, t=10, b=0),
-                    scene=dict(xaxis_title="Strength (MPa)", yaxis_title="Carbon (kg/m³)", zaxis_title="Cost ($/m³)"))
+                    scene=dict(xaxis_title="Strength (MPa)", yaxis_title="Carbon (kg/m³)", zaxis_title="Nominal cost ($/m³)"))
                 st.plotly_chart(front_fig, use_container_width=True)
 
                 st.markdown("**Pick a mix from the front → Mix A:**")
@@ -334,9 +334,9 @@ def render_pareto(ctx: AppContext):
                         conv_fig = go.Figure()
                         conv_fig.add_trace(go.Scatter(y=history_best, mode="lines+markers", name="Best (internal score)", line=dict(color="#00E676", width=3)))
                         conv_fig.add_trace(go.Scatter(y=history_avg, mode="lines", name="Avg (internal score)", line=dict(color="#2979FF", dash="dash")))
-                        conv_fig.add_trace(go.Scatter(y=history_diversity, mode="lines", name="Gen Diversity", line=dict(color="#FFB300"), yaxis="y2"))
+                        conv_fig.add_trace(go.Scatter(y=history_diversity, mode="lines", name="Population diversity", line=dict(color="#FFB300"), yaxis="y2"))
                         conv_fig.update_layout(
-                            template="plotly_dark", title="GA Performance & Genetic Diversity",
+                            template="plotly_dark", title="Optimization Progress & Population Diversity",
                             xaxis_title="Generation", yaxis_title="Internal Score",
                             yaxis2=dict(title="Diversity (Std Dev)", overlaying="y", side="right"),
                             height=350, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h", y=1.1)
@@ -356,7 +356,7 @@ def render_pareto(ctx: AppContext):
                                 points=False, line_color=palette[gi % len(palette)],
                             ))
                         gene_fig.update_layout(
-                            template="plotly_dark", title="Population Gene Pool Distribution (Violin Plots)",
+                            template="plotly_dark", title="Population Diversity by Parameter (Violin Plots)",
                             height=350, showlegend=False, xaxis_title="", yaxis_title="Mass (kg/m³)",
                             margin=dict(l=10, r=10, t=40, b=10),
                         )
@@ -364,7 +364,7 @@ def render_pareto(ctx: AppContext):
 
                         # 3D Pareto
                         pareto_df = pd.DataFrame(all_pareto_points[-pop_size:])
-                        pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Current population (evaluated mixes)")
+                        pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Current population (evaluated mixes)", labels={"Strength": "Strength (MPa)", "Carbon": "Carbon (kg/m³)", "Cost": "Nominal cost ($/m³)"})
                         pareto_fig.update_layout(height=650, margin=dict(l=0, r=0, t=30, b=0))
                         pareto_placeholder.plotly_chart(pareto_fig, use_container_width=True)
 
@@ -411,7 +411,7 @@ def render_pareto(ctx: AppContext):
                         convergence_placeholder.plotly_chart(conv_fig, use_container_width=True)
 
                         pareto_df = pd.DataFrame(all_pareto_points[-100:])
-                        pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Annealing trajectory (evaluated mixes)")
+                        pareto_fig = px.scatter_3d(pareto_df, x="Strength", y="Carbon", z="Cost", color="Strength", hover_data=["Mix"], template="plotly_dark", title="Annealing trajectory (evaluated mixes)", labels={"Strength": "Strength (MPa)", "Carbon": "Carbon (kg/m³)", "Cost": "Nominal cost ($/m³)"})
                         pareto_fig.update_layout(height=650)
                         pareto_placeholder.plotly_chart(pareto_fig, use_container_width=True)
 
@@ -434,7 +434,7 @@ def render_pareto(ctx: AppContext):
                     with b_col2:
                         st.metric("Best Carbon", f"{history_metrics['carbon'][-1]:.1f} kg/m³")
                     with b_col3:
-                        st.metric("Best Cost", f"${history_metrics['cost'][-1]:.2f}/m³")
+                        st.metric("Best Nominal Cost", f"${history_metrics['cost'][-1]:.2f}/m³")
                     st.caption(
                         f"Internal weighted score (higher is better): {history_best[-1]:.2f} "
                         "— not a physical quantity, only used to rank candidates during the search."
@@ -445,11 +445,11 @@ def render_pareto(ctx: AppContext):
                 # axis collided with the second and clipped a tick).
                 metrics_fig = make_subplots(
                     rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-                    subplot_titles=("Strength (MPa)", "Carbon (kg/m³)", "Cost ($/m³)"),
+                    subplot_titles=("Strength (MPa)", "Carbon (kg/m³)", "Nominal cost ($/m³)"),
                 )
                 metrics_fig.add_trace(go.Scatter(y=history_metrics["strength"], name="Strength (MPa)", line=dict(color="#00E676")), row=1, col=1)
                 metrics_fig.add_trace(go.Scatter(y=history_metrics["carbon"], name="Carbon (kg/m³)", line=dict(color="#FFB300")), row=2, col=1)
-                metrics_fig.add_trace(go.Scatter(y=history_metrics["cost"], name="Cost ($/m³)", line=dict(color="#E91E63")), row=3, col=1)
+                metrics_fig.add_trace(go.Scatter(y=history_metrics["cost"], name="Nominal cost ($/m³)", line=dict(color="#E91E63")), row=3, col=1)
                 metrics_fig.update_xaxes(title_text="Generation/Step", row=3, col=1)
                 metrics_fig.update_layout(
                     template="plotly_dark", title="Evolution of Best Solution Metrics",
@@ -480,11 +480,11 @@ def render_pareto(ctx: AppContext):
                     text=front_df["Mix"], hoverinfo="text", name="Pareto front"))
                 front_fig.update_layout(
                     template="plotly_dark", height=600, margin=dict(l=0, r=0, t=10, b=0),
-                    scene=dict(xaxis_title="Strength (MPa)", yaxis_title="Carbon (kg/m³)", zaxis_title="Cost ($/m³)"),
+                    scene=dict(xaxis_title="Strength (MPa)", yaxis_title="Carbon (kg/m³)", zaxis_title="Nominal cost ($/m³)"),
                     legend=dict(orientation="h", y=1.05))
                 st.plotly_chart(front_fig, use_container_width=True)
 
-                st.subheader("Population Heatmap & Genetic Signatures")
+                st.subheader("Population Heatmap — Parameter Values of the Final Candidates")
                 pop_df = pd.DataFrame(final_pop, columns=param_names)
                 heatmap_fig = px.imshow(pop_df.T, labels=dict(x="Individual", y="Parameter", color="Value"), color_continuous_scale="Viridis", template="plotly_dark")
                 heatmap_fig.update_layout(height=450)
@@ -504,7 +504,7 @@ def render_pareto(ctx: AppContext):
 
         <em>Genetic Algorithm (GA) Mechanics:</em> GA simulates phenotypic evolution. The 'fitness' is a mathematical
         representation of structural requirement (strength) penalized by environmental and economic constraints.
-        The <strong>Gen Diversity</strong> metric tracks the standard deviation of the population's genes.
+        The <strong>Population diversity</strong> metric tracks the standard deviation of the population's parameters.
         A rapid collapse in diversity suggests 'Premature Convergence'—where the population settles into a
         sub-optimal local peak. The <strong>Violin Plots</strong> visualize this in real-time: watch the
         distribution 'blobs' shrink as the population converges on a specific molecular recipe.<br><br>

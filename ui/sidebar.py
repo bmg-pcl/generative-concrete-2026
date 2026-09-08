@@ -21,7 +21,7 @@ def render():
                 "**1. Config** — set material costs and choose the carbon model "
                 "(Simple or Advanced). These apply everywhere.\n\n"
                 "**2. Compare Mixes** — tune Mix A and Mix B and read predicted strength, "
-                "carbon, and cost side by side.\n\n"
+                "carbon, and nominal cost side by side.\n\n"
                 "**3. Inverse Design** — enter a target strength, pick a backend, and get a "
                 "recommended recipe you can load into Mix A or B.\n\n"
                 "**4. Pareto Optimization** — GA/SA (weighted) or NSGA-II/III (true trade-off "

@@ -285,7 +285,7 @@ def render_inverse(ctx: AppContext):
         r1.metric("Predicted Strength", f"{rec['strength']:.1f} MPa", delta=f"{rec['strength']-target_str:+.1f} vs target")
         r2.metric("Carbon", f"{rec['carbon']:.1f} kg CO₂/m³",
                   help="+1.96σ upper bound (robust carbon)" if rec.get("carbon_basis") == "upper_95" else "point total")
-        r3.metric("Cost", f"${rec['cost']:.2f}/m³")
+        r3.metric("Nominal cost", f"${rec['cost']:.2f}/m³")
         st.caption(f"90% interval [{rec['interval_lo']:.0f}–{rec['interval_hi']:.0f}] MPa"
                    + (" · robust: optimized the guaranteed lower bound, kept in-support" if robust_mode else "")
                    + (" · carbon basis: upper_95 (robust)" if rec.get("carbon_basis") == "upper_95" else ""))
