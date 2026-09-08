@@ -33,7 +33,7 @@ state.init_session_state()
 
 # --- App Header ---
 st.markdown('<h1 class="main-title">Generative Mix Design</h1>', unsafe_allow_html=True)
-st.markdown("AI-powered concrete formulation: prediction, optimization, and inverse design.")
+st.markdown("An amortized design framework for concrete formulation: prediction, optimization, and inverse design.")
 
 sidebar.render()
 

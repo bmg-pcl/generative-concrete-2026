@@ -156,7 +156,7 @@ def render_compare(ctx: AppContext):
         st.metric("Strength", f"{m_a['strength']:.1f} MPa")
         strength_caption(m_a)
         st.metric("Carbon", f"{m_a['carbon']:.1f} kg CO₂/m³")
-        st.metric("Cost", f"${m_a['cost']:.2f}/m³")
+        st.metric("Nominal cost", f"${m_a['cost']:.2f}/m³")
         st.caption(f"90% interval [{m_a['interval_lo']:.0f}–{m_a['interval_hi']:.0f}] MPa · "
                    f"tensile ~{m_a['tensile']:.1f} MPa (EC2 derived) · curing ~{m_a['curing']:.0f} d (heuristic)")
         if not m_a["in_support"]:
@@ -179,7 +179,7 @@ def render_compare(ctx: AppContext):
         st.metric("Strength", f"{m_b['strength']:.1f} MPa", delta=f"{m_b['strength']-m_a['strength']:.1f}")
         strength_caption(m_b)
         st.metric("Carbon", f"{m_b['carbon']:.1f} kg CO₂/m³", delta=f"{m_b['carbon']-m_a['carbon']:.1f}", delta_color="inverse")
-        st.metric("Cost", f"${m_b['cost']:.2f}/m³", delta=f"${m_b['cost']-m_a['cost']:.2f}", delta_color="inverse")
+        st.metric("Nominal cost", f"${m_b['cost']:.2f}/m³", delta=f"${m_b['cost']-m_a['cost']:.2f}", delta_color="inverse")
         st.caption(f"90% interval [{m_b['interval_lo']:.0f}–{m_b['interval_hi']:.0f}] MPa · "
                    f"tensile ~{m_b['tensile']:.1f} MPa (EC2 derived) · curing ~{m_b['curing']:.0f} d (heuristic)")
         if not m_b["in_support"]:

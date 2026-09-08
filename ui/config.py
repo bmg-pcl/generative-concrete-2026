@@ -21,8 +21,8 @@ def render_config(predictor, bayesian, presets) -> AppContext:
     st.caption("Costing, carbon model, and experimental options — applied across all tabs.")
     cfg_costs, cfg_model = st.columns(2)
     with cfg_costs:
-        st.subheader("Material Costs")
-        st.caption("Costs in $ per kilogram.")
+        st.subheader("Material Costs (nominal)")
+        st.caption("Nominal costs in $ per kilogram — planning defaults, not supplier quotes; edit to match your procurement.")
         for mat in st.session_state.costs:
             st.session_state.costs[mat] = st.number_input(
                 f"{mat.replace('_', ' ').title()} ($/kg)",
